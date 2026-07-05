@@ -1,0 +1,20 @@
+services:
+  storage-harvester:
+    container_name: storage-harvester
+    build: .
+    restart: unless-stopped
+    user: "0:0"
+    command:
+      - '--config'
+      - '/etc/storage-harvester/config.yaml'
+    ports:
+      - '9799:9799'
+    volumes:
+      - /:/host:ro
+      - ./config.yaml:/etc/storage-harvester/config.yaml:ro
+    networks:
+      - default
+
+networks:
+  default:
+    driver: bridge

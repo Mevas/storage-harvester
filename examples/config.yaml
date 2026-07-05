@@ -1,0 +1,35 @@
+host_root: /host
+listen_address: 0.0.0.0:9799
+metrics_path: /metrics
+log_level: info
+
+defaults:
+  scanner: native
+  baseline_interval: 60s
+  timeout: 30s
+  no_cross_filesystem: true
+  follow_symlinks: false
+  report_mode: tree
+  report_depth: 1
+  sum_remaining: true
+  rollups:
+    - breakdown
+  size_modes:
+    - blocks
+
+targets:
+  - name: var_log
+    path: /var/log
+    baseline_interval: 60s
+    report_depth: 2
+    timeout: 15s
+    labels:
+      class: logs
+
+  - name: docker_volumes
+    path: /var/lib/docker/volumes
+    baseline_interval: 60s
+    report_depth: 1
+    timeout: 30s
+    labels:
+      class: docker
