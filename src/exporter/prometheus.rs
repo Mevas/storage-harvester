@@ -2,12 +2,13 @@ use std::fmt::Write;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::cache::TargetSnapshot;
-use crate::config::{Rollup, SizeMode};
+use crate::config::SizeMode;
 use crate::scanner::NodeObservation;
 
 pub fn render(snapshots: &[TargetSnapshot]) -> String {
     let mut out = String::new();
     write_headers(&mut out);
+    write_build_info(&mut out);
 
     let now = SystemTime::now();
     for snapshot in snapshots {
@@ -29,6 +30,22 @@ pub fn render(snapshots: &[TargetSnapshot]) -> String {
             out,
             "storage_harvester_scan_errors_total{{{base_labels}}} {}",
             snapshot.failure_count
+        )
+        .unwrap();
+        writeln!(
+            out,
+            "storage_harvester_scan_running{{{base_labels}}} {}",
+            u8::from(snapshot.scan_running)
+        )
+        .unwrap();
+        writeln!(
+            out,
+            "storage_harvester_scan_running_seconds{{{base_labels}}} {:.6}",
+            snapshot
+                .scan_started
+                .and_then(|started| now.duration_since(started).ok())
+                .unwrap_or_default()
+                .as_secs_f64()
         )
         .unwrap();
 
@@ -135,19 +152,29 @@ pub fn render(snapshots: &[TargetSnapshot]) -> String {
 fn write_headers(out: &mut String) {
     let headers = [
         (
-            "storage_hotspot_size_bytes",
+            "storage_harvester_build_info",
             "gauge",
-            "Storage hotspot disk usage in bytes.",
+            "Storage Harvester build metadata.",
         ),
         (
-            "storage_hotspot_apparent_size_bytes",
+            "storage_harvester_own_size_bytes",
             "gauge",
-            "Storage hotspot apparent size in bytes.",
+            "Storage bytes directly owned by this reported node.",
         ),
         (
-            "storage_hotspot_entries",
+            "storage_harvester_children_size_bytes",
             "gauge",
-            "Filesystem entries counted during the last successful scan.",
+            "Storage bytes under this reported node's child directories, including unreported descendants when configured.",
+        ),
+        (
+            "storage_harvester_own_entries",
+            "gauge",
+            "Filesystem entries directly owned by this reported node.",
+        ),
+        (
+            "storage_harvester_children_entries",
+            "gauge",
+            "Filesystem entries under this reported node's child directories.",
         ),
         (
             "storage_harvester_scan_success",
@@ -178,6 +205,16 @@ fn write_headers(out: &mut String) {
             "storage_harvester_scan_issue_count",
             "gauge",
             "Last successful scan issue counts by target and issue type.",
+        ),
+        (
+            "storage_harvester_scan_running",
+            "gauge",
+            "Whether a target scan is currently running, 1 for running and 0 otherwise.",
+        ),
+        (
+            "storage_harvester_scan_running_seconds",
+            "gauge",
+            "Seconds since the current target scan started, or 0 when no scan is running.",
         ),
         (
             "storage_harvester_target_stale_seconds",
@@ -232,26 +269,39 @@ fn write_headers(out: &mut String) {
     }
 }
 
+fn write_build_info(out: &mut String) {
+    writeln!(
+        out,
+        "storage_harvester_build_info{{version=\"{}\"}} 1",
+        escape_label_value(env!("CARGO_PKG_VERSION"))
+    )
+    .unwrap();
+}
+
 fn write_node_sizes(
     out: &mut String,
     snapshot: &TargetSnapshot,
     node: &NodeObservation,
     backend: &str,
 ) {
-    for rollup in &snapshot.rollups {
-        for size_mode in &snapshot.size_modes {
-            let value = node_value(node, *rollup, *size_mode);
-            let labels = node_labels(
-                snapshot,
-                node,
-                &[
-                    ("rollup", rollup.as_str()),
-                    ("size_mode", size_mode.as_str()),
-                    ("backend", backend),
-                ],
-            );
-            writeln!(out, "storage_hotspot_size_bytes{{{labels}}} {value}").unwrap();
-        }
+    for size_mode in &snapshot.size_modes {
+        let labels = node_labels(
+            snapshot,
+            node,
+            &[("size_mode", size_mode.as_str()), ("backend", backend)],
+        );
+        writeln!(
+            out,
+            "storage_harvester_own_size_bytes{{{labels}}} {}",
+            node_value(node, SizeComponent::Own, *size_mode)
+        )
+        .unwrap();
+        writeln!(
+            out,
+            "storage_harvester_children_size_bytes{{{labels}}} {}",
+            node_value(node, SizeComponent::Children, *size_mode)
+        )
+        .unwrap();
     }
 }
 
@@ -262,18 +312,34 @@ fn write_node_entries(out: &mut String, snapshot: &TargetSnapshot, node: &NodeOb
         ("symlink", node.symlink_count),
     ] {
         let labels = node_labels(snapshot, node, &[("entry_type", entry_type)]);
-        writeln!(out, "storage_hotspot_entries{{{labels}}} {value}").unwrap();
+        writeln!(out, "storage_harvester_own_entries{{{labels}}} {value}").unwrap();
+    }
+    for (entry_type, value) in [
+        ("file", node.children_file_count),
+        ("directory", node.children_directory_count),
+        ("symlink", node.children_symlink_count),
+    ] {
+        let labels = node_labels(snapshot, node, &[("entry_type", entry_type)]);
+        writeln!(
+            out,
+            "storage_harvester_children_entries{{{labels}}} {value}"
+        )
+        .unwrap();
     }
 }
 
-fn node_value(node: &NodeObservation, rollup: Rollup, size_mode: SizeMode) -> u64 {
-    match (rollup, size_mode) {
-        (Rollup::Inclusive, SizeMode::Blocks) => node.inclusive_blocks,
-        (Rollup::Exclusive, SizeMode::Blocks) => node.exclusive_blocks,
-        (Rollup::Breakdown, SizeMode::Blocks) => node.breakdown_blocks,
-        (Rollup::Inclusive, SizeMode::Apparent) => node.inclusive_apparent,
-        (Rollup::Exclusive, SizeMode::Apparent) => node.exclusive_apparent,
-        (Rollup::Breakdown, SizeMode::Apparent) => node.breakdown_apparent,
+#[derive(Debug, Clone, Copy)]
+enum SizeComponent {
+    Own,
+    Children,
+}
+
+fn node_value(node: &NodeObservation, component: SizeComponent, size_mode: SizeMode) -> u64 {
+    match (component, size_mode) {
+        (SizeComponent::Own, SizeMode::Blocks) => node.own_blocks,
+        (SizeComponent::Children, SizeMode::Blocks) => node.children_blocks,
+        (SizeComponent::Own, SizeMode::Apparent) => node.own_apparent,
+        (SizeComponent::Children, SizeMode::Apparent) => node.children_apparent,
     }
 }
 
@@ -374,16 +440,6 @@ fn unix_seconds(timestamp: SystemTime) -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs()
-}
-
-impl Rollup {
-    fn as_str(self) -> &'static str {
-        match self {
-            Rollup::Inclusive => "inclusive",
-            Rollup::Exclusive => "exclusive",
-            Rollup::Breakdown => "breakdown",
-        }
-    }
 }
 
 impl SizeMode {

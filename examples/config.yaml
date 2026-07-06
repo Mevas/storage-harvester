@@ -11,9 +11,6 @@ defaults:
   follow_symlinks: false
   report_mode: tree
   report_depth: 1
-  sum_remaining: true
-  rollups:
-    - breakdown
   size_modes:
     - blocks
 

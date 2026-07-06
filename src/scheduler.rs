@@ -34,6 +34,7 @@ impl Scheduler {
 }
 
 async fn run_scan(target: &Target, store: &SnapshotStore) {
+    store.record_scan_start(&target.name).await;
     let target_clone = target.clone();
     let scan = tokio::task::spawn_blocking(move || {
         let scanner = scanner::build(&target_clone)?;

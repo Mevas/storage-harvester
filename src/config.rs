@@ -45,12 +45,10 @@ pub struct Defaults {
     pub report_depth: usize,
     #[serde(default)]
     pub max_depth: Option<usize>,
-    #[serde(default = "default_true")]
-    pub sum_remaining: bool,
-    #[serde(default = "default_rollups")]
-    pub rollups: Vec<Rollup>,
     #[serde(default = "default_size_modes")]
     pub size_modes: Vec<SizeMode>,
+    #[serde(default)]
+    pub exclude: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
@@ -58,14 +56,6 @@ pub struct Defaults {
 pub enum ReportMode {
     Tree,
     Leaves,
-}
-
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum Rollup {
-    Inclusive,
-    Exclusive,
-    Breakdown,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
@@ -99,10 +89,6 @@ pub struct TargetConfig {
     #[serde(default)]
     pub max_depth: Option<usize>,
     #[serde(default)]
-    pub sum_remaining: Option<bool>,
-    #[serde(default)]
-    pub rollups: Option<Vec<Rollup>>,
-    #[serde(default)]
     pub size_modes: Option<Vec<SizeMode>>,
     #[serde(default)]
     pub exclude: Vec<String>,
@@ -124,8 +110,6 @@ pub struct Target {
     pub report_mode: ReportMode,
     pub report_depth: usize,
     pub max_depth: Option<usize>,
-    pub sum_remaining: bool,
-    pub rollups: Vec<Rollup>,
     pub size_modes: Vec<SizeMode>,
     pub exclude: Vec<String>,
     pub labels: BTreeMap<String, String>,
@@ -142,9 +126,8 @@ impl Default for Defaults {
             report_mode: default_report_mode(),
             report_depth: default_report_depth(),
             max_depth: None,
-            sum_remaining: true,
-            rollups: default_rollups(),
             size_modes: default_size_modes(),
+            exclude: Vec::new(),
         }
     }
 }
@@ -204,16 +187,17 @@ impl Config {
             report_mode: target.report_mode.unwrap_or(self.defaults.report_mode),
             report_depth: target.report_depth.unwrap_or(self.defaults.report_depth),
             max_depth: target.max_depth.or(self.defaults.max_depth),
-            sum_remaining: target.sum_remaining.unwrap_or(self.defaults.sum_remaining),
-            rollups: target
-                .rollups
-                .clone()
-                .unwrap_or_else(|| self.defaults.rollups.clone()),
             size_modes: target
                 .size_modes
                 .clone()
                 .unwrap_or_else(|| self.defaults.size_modes.clone()),
-            exclude: target.exclude.clone(),
+            exclude: self
+                .defaults
+                .exclude
+                .iter()
+                .chain(target.exclude.iter())
+                .cloned()
+                .collect(),
             labels: target.labels.clone(),
         })
     }
@@ -264,9 +248,6 @@ impl Config {
                         target.name
                     );
                 }
-            }
-            if matches!(target.rollups.as_deref(), Some([])) {
-                bail!("target {} rollups cannot be empty", target.name);
             }
             if matches!(target.size_modes.as_deref(), Some([])) {
                 bail!("target {} size_modes cannot be empty", target.name);
@@ -358,10 +339,6 @@ fn default_report_mode() -> ReportMode {
 
 fn default_report_depth() -> usize {
     1
-}
-
-fn default_rollups() -> Vec<Rollup> {
-    vec![Rollup::Breakdown]
 }
 
 fn default_size_modes() -> Vec<SizeMode> {

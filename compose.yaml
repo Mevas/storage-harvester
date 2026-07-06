@@ -11,7 +11,7 @@ services:
       - '9799:9799'
     volumes:
       - /:/host:ro
-      - ./config.yaml:/etc/storage-harvester/config.yaml:ro
+      - ./configs/nuc.yaml:/etc/storage-harvester/config.yaml:ro
     networks:
       - default
 

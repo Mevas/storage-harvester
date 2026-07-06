@@ -29,15 +29,16 @@ pub struct NodeObservation {
     pub parent: String,
     pub node: String,
     pub depth: usize,
-    pub inclusive_blocks: u64,
-    pub exclusive_blocks: u64,
-    pub breakdown_blocks: u64,
-    pub inclusive_apparent: u64,
-    pub exclusive_apparent: u64,
-    pub breakdown_apparent: u64,
+    pub own_blocks: u64,
+    pub children_blocks: u64,
+    pub own_apparent: u64,
+    pub children_apparent: u64,
     pub file_count: u64,
     pub directory_count: u64,
     pub symlink_count: u64,
+    pub children_file_count: u64,
+    pub children_directory_count: u64,
+    pub children_symlink_count: u64,
 }
 
 pub trait Scanner: Send + Sync {

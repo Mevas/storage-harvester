@@ -73,7 +73,6 @@ impl Scanner for NativeScanner {
         let mut stack = vec![WalkItem {
             path: target.scan_path.clone(),
             depth: 0,
-            reported_ancestor: target.scan_path.clone(),
         }];
         while let Some(item) = stack.pop() {
             let path = item.path;
@@ -93,7 +92,12 @@ impl Scanner for NativeScanner {
                     continue;
                 }
                 Err(error) => {
-                    return Err(error).with_context(|| format!("failed to stat {}", path.display()))
+                    if path != target.scan_path {
+                        state.missing_path_races += 1;
+                        continue;
+                    }
+                    return Err(error)
+                        .with_context(|| format!("failed to stat {}", path.display()));
                 }
             };
 
@@ -103,14 +107,7 @@ impl Scanner for NativeScanner {
             }
 
             state.max_observed_depth = state.max_observed_depth.max(item.depth);
-            account_entry(
-                &mut state,
-                target,
-                &path,
-                item.depth,
-                &item.reported_ancestor,
-                &metadata,
-            );
+            account_entry(&mut state, target, &path, item.depth, &metadata);
 
             if metadata.is_dir() {
                 if target
@@ -137,18 +134,11 @@ impl Scanner for NativeScanner {
                     }
                 };
 
-                let child_reported_ancestor = if should_report(target, item.depth) {
-                    path.clone()
-                } else {
-                    item.reported_ancestor.clone()
-                };
-
                 for entry in entries {
                     match entry {
                         Ok(entry) => stack.push(WalkItem {
                             path: entry.path(),
                             depth: item.depth + 1,
-                            reported_ancestor: child_reported_ancestor.clone(),
                         }),
                         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                             state.missing_path_races += 1;
@@ -174,7 +164,6 @@ impl Scanner for NativeScanner {
 struct WalkItem {
     path: PathBuf,
     depth: usize,
-    reported_ancestor: PathBuf,
 }
 
 #[derive(Debug)]
@@ -233,15 +222,17 @@ struct NodeAccumulator {
     parent: String,
     node: String,
     depth: usize,
-    inclusive_blocks: u64,
-    exclusive_blocks: u64,
-    breakdown_blocks: u64,
-    inclusive_apparent: u64,
-    exclusive_apparent: u64,
-    breakdown_apparent: u64,
+    own_blocks: u64,
+    children_blocks: u64,
+    own_apparent: u64,
+    children_apparent: u64,
+    is_directory: bool,
     file_count: u64,
     directory_count: u64,
     symlink_count: u64,
+    children_file_count: u64,
+    children_directory_count: u64,
+    children_symlink_count: u64,
 }
 
 impl NodeAccumulator {
@@ -269,15 +260,17 @@ impl NodeAccumulator {
             parent,
             node,
             depth,
-            inclusive_blocks: 0,
-            exclusive_blocks: 0,
-            breakdown_blocks: 0,
-            inclusive_apparent: 0,
-            exclusive_apparent: 0,
-            breakdown_apparent: 0,
+            own_blocks: 0,
+            children_blocks: 0,
+            own_apparent: 0,
+            children_apparent: 0,
+            is_directory: false,
             file_count: 0,
             directory_count: 0,
             symlink_count: 0,
+            children_file_count: 0,
+            children_directory_count: 0,
+            children_symlink_count: 0,
         }
     }
 
@@ -287,17 +280,33 @@ impl NodeAccumulator {
             parent: self.parent,
             node: self.node,
             depth: self.depth,
-            inclusive_blocks: self.inclusive_blocks,
-            exclusive_blocks: self.exclusive_blocks,
-            breakdown_blocks: self.breakdown_blocks,
-            inclusive_apparent: self.inclusive_apparent,
-            exclusive_apparent: self.exclusive_apparent,
-            breakdown_apparent: self.breakdown_apparent,
+            own_blocks: self.own_blocks,
+            children_blocks: self.children_blocks,
+            own_apparent: self.own_apparent,
+            children_apparent: self.children_apparent,
             file_count: self.file_count,
             directory_count: self.directory_count,
             symlink_count: self.symlink_count,
+            children_file_count: self.children_file_count,
+            children_directory_count: self.children_directory_count,
+            children_symlink_count: self.children_symlink_count,
         }
     }
+
+    fn add_child_entry(&mut self, entry_kind: EntryKind) {
+        match entry_kind {
+            EntryKind::File => self.children_file_count += 1,
+            EntryKind::Directory => self.children_directory_count += 1,
+            EntryKind::Symlink => self.children_symlink_count += 1,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum EntryKind {
+    File,
+    Directory,
+    Symlink,
 }
 
 fn account_entry(
@@ -305,7 +314,6 @@ fn account_entry(
     target: &Target,
     path: &Path,
     depth: usize,
-    reported_ancestor: &Path,
     metadata: &fs::Metadata,
 ) {
     let blocks = metadata.blocks().saturating_mul(512);
@@ -316,51 +324,73 @@ fn account_entry(
     state.scanned_directories += u64::from(metadata.is_dir());
     state.scanned_symlinks += u64::from(file_type.is_symlink());
 
-    for ancestor in ancestors_from_root(target, path) {
-        let ancestor_depth = relative_depth(target, &ancestor);
-        let node = state.node_mut(target, &ancestor, ancestor_depth);
-        node.inclusive_blocks = node.inclusive_blocks.saturating_add(blocks);
-        node.inclusive_apparent = node.inclusive_apparent.saturating_add(apparent);
-    }
-
     if metadata.is_dir() {
-        let node = state.node_mut(target, path, depth);
-        node.directory_count += 1;
-        node.exclusive_blocks = node.exclusive_blocks.saturating_add(blocks);
-        node.exclusive_apparent = node.exclusive_apparent.saturating_add(apparent);
-        if should_report(target, depth) {
-            node.breakdown_blocks = node.breakdown_blocks.saturating_add(blocks);
-            node.breakdown_apparent = node.breakdown_apparent.saturating_add(apparent);
+        if depth > 0 {
+            let parent = path.parent().unwrap_or(&target.scan_path);
+            let parent_depth = relative_depth(target, parent);
+            state.node_mut(target, parent, parent_depth).directory_count += 1;
+
+            for ancestor in ancestors_between(target, parent) {
+                let ancestor_depth = relative_depth(target, &ancestor);
+                let ancestor_node = state.node_mut(target, &ancestor, ancestor_depth);
+                ancestor_node.children_blocks =
+                    ancestor_node.children_blocks.saturating_add(blocks);
+                ancestor_node.children_apparent =
+                    ancestor_node.children_apparent.saturating_add(apparent);
+                ancestor_node.add_child_entry(EntryKind::Directory);
+            }
         }
+
+        let node = state.node_mut(target, path, depth);
+        node.is_directory = true;
+        node.own_blocks = node.own_blocks.saturating_add(blocks);
+        node.own_apparent = node.own_apparent.saturating_add(apparent);
         return;
     }
 
     let parent = path.parent().unwrap_or(&target.scan_path);
     let parent_depth = relative_depth(target, parent);
     let parent_node = state.node_mut(target, parent, parent_depth);
-    parent_node.exclusive_blocks = parent_node.exclusive_blocks.saturating_add(blocks);
-    parent_node.exclusive_apparent = parent_node.exclusive_apparent.saturating_add(apparent);
-    if metadata.is_file() {
+    parent_node.own_blocks = parent_node.own_blocks.saturating_add(blocks);
+    parent_node.own_apparent = parent_node.own_apparent.saturating_add(apparent);
+    let entry_kind = if metadata.is_file() {
         parent_node.file_count += 1;
+        EntryKind::File
     } else if file_type.is_symlink() {
         parent_node.symlink_count += 1;
+        EntryKind::Symlink
     } else if file_type.is_socket()
         || file_type.is_fifo()
         || file_type.is_char_device()
         || file_type.is_block_device()
     {
         parent_node.file_count += 1;
-    }
-
-    let breakdown_path = if target.sum_remaining {
-        reported_ancestor
+        EntryKind::File
     } else {
-        parent
+        EntryKind::File
     };
-    let breakdown_depth = relative_depth(target, breakdown_path);
-    let breakdown_node = state.node_mut(target, breakdown_path, breakdown_depth);
-    breakdown_node.breakdown_blocks = breakdown_node.breakdown_blocks.saturating_add(blocks);
-    breakdown_node.breakdown_apparent = breakdown_node.breakdown_apparent.saturating_add(apparent);
+
+    for ancestor in ancestors_between(target, parent) {
+        let ancestor_depth = relative_depth(target, &ancestor);
+        let ancestor_node = state.node_mut(target, &ancestor, ancestor_depth);
+        ancestor_node.children_blocks = ancestor_node.children_blocks.saturating_add(blocks);
+        ancestor_node.children_apparent = ancestor_node.children_apparent.saturating_add(apparent);
+        ancestor_node.add_child_entry(entry_kind);
+    }
+}
+
+fn ancestors_between(target: &Target, leaf_parent: &Path) -> Vec<PathBuf> {
+    let mut ancestors = Vec::new();
+    let mut current = leaf_parent;
+    while current != target.scan_path {
+        if let Some(parent) = current.parent() {
+            ancestors.push(parent.to_path_buf());
+            current = parent;
+        } else {
+            break;
+        }
+    }
+    ancestors
 }
 
 fn reported_paths(
@@ -373,7 +403,7 @@ fn reported_paths(
             let Some(node) = nodes.get(*path) else {
                 return false;
             };
-            if node.directory_count == 0 {
+            if !node.is_directory {
                 return false;
             }
             let depth = relative_depth(target, path);
@@ -384,28 +414,6 @@ fn reported_paths(
         })
         .cloned()
         .collect()
-}
-
-fn should_report(target: &Target, depth: usize) -> bool {
-    match target.report_mode {
-        ReportMode::Tree => depth <= target.report_depth,
-        ReportMode::Leaves => depth == 0 || depth == target.report_depth,
-    }
-}
-
-fn ancestors_from_root(target: &Target, path: &Path) -> Vec<PathBuf> {
-    let mut ancestors = Vec::new();
-    let mut current = Some(path);
-    while let Some(path) = current {
-        if path.starts_with(&target.scan_path) {
-            ancestors.push(path.to_path_buf());
-        }
-        if path == target.scan_path {
-            break;
-        }
-        current = path.parent();
-    }
-    ancestors
 }
 
 fn relative_depth(target: &Target, path: &Path) -> usize {
@@ -455,7 +463,7 @@ mod tests {
     use tempfile::tempdir;
 
     use super::*;
-    use crate::config::{Rollup, SizeMode};
+    use crate::config::SizeMode;
 
     #[test]
     fn scans_regular_files_and_directories() {
@@ -474,10 +482,20 @@ mod tests {
         let root = result
             .observations
             .iter()
-            .find(|node| node.depth == 0)
+            .find(|node| node.path == temp.path().display().to_string())
             .unwrap();
-        assert!(root.inclusive_blocks > 0);
-        assert!(root.inclusive_apparent > 0);
+        assert_eq!(root.directory_count, 1);
+        assert!(root.children_blocks > 0);
+        assert_eq!(root.children_file_count, 1);
+        assert_eq!(root.children_directory_count, 0);
+        assert!(result
+            .observations
+            .iter()
+            .any(|node| node.own_blocks + node.children_blocks > 0));
+        assert!(result
+            .observations
+            .iter()
+            .any(|node| node.own_apparent + node.children_apparent > 0));
     }
 
     #[test]
@@ -500,7 +518,7 @@ mod tests {
     }
 
     #[test]
-    fn reports_depth_nodes_and_breakdown_rollup() {
+    fn reports_depth_nodes_and_children_size() {
         let temp = tempdir().unwrap();
         fs::create_dir_all(temp.path().join("a/b")).unwrap();
         let mut file = File::create(temp.path().join("a/b/file.txt")).unwrap();
@@ -517,8 +535,20 @@ mod tests {
             .iter()
             .find(|node| node.path == "/root/a")
             .unwrap();
+        let root = result
+            .observations
+            .iter()
+            .find(|node| node.path == "/root")
+            .unwrap();
         assert_eq!(child.depth, 1);
-        assert!(child.breakdown_blocks > 0);
+        assert_eq!(child.directory_count, 1);
+        assert_eq!(child.own_blocks, 0);
+        assert!(child.children_blocks > 0);
+        assert!(root.children_blocks >= child.own_blocks + child.children_blocks);
+        assert_eq!(root.children_file_count, 1);
+        assert_eq!(root.children_directory_count, 1);
+        assert_eq!(child.children_file_count, 1);
+        assert_eq!(child.children_directory_count, 0);
         assert!(!result
             .observations
             .iter()
@@ -539,8 +569,6 @@ mod tests {
             report_mode: ReportMode::Tree,
             report_depth: 1,
             max_depth: None,
-            sum_remaining: true,
-            rollups: vec![Rollup::Breakdown],
             size_modes: vec![SizeMode::Blocks],
             exclude,
             labels: BTreeMap::new(),

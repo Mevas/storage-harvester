@@ -24,12 +24,21 @@ struct Args {
         default_value = "/etc/storage-harvester/config.yaml"
     )]
     config: PathBuf,
+
+    #[arg(long)]
+    check_config: bool,
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
     let config = Config::load(&args.config)?;
+    if args.check_config {
+        TargetRegistry::from_config(&config)?;
+        println!("configuration ok: {} target(s)", config.targets.len());
+        return Ok(());
+    }
+
     init_logging(&config.log_level)?;
 
     let registry = TargetRegistry::from_config(&config)?;

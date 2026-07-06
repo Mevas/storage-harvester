@@ -1,0 +1,40 @@
+host_root: /host
+listen_address: 0.0.0.0:9799
+metrics_path: /metrics
+log_level: info
+
+defaults:
+  scanner: native
+  baseline_interval: 5m
+  timeout: 120s
+  no_cross_filesystem: true
+  follow_symlinks: false
+  report_mode: tree
+  report_depth: 2
+  max_depth: 2
+  size_modes:
+    - blocks
+  exclude:
+    - '**/.git/**'
+    - '**/.cache/**'
+    - '**/node_modules/**'
+    - '**/target/**'
+    - '**/tmp/**'
+    - '**/cache/**'
+
+targets:
+  - name: nuc_root
+    path: /
+    report_depth: 2
+    max_depth: 2
+    labels:
+      host: nuc
+      class: local_root
+
+  - name: nuc_docker
+    path: /home/mevas/docker
+    report_depth: 3
+    max_depth: 3
+    labels:
+      host: nuc
+      class: docker_config

@@ -1,6 +1,6 @@
 # Storage Harvester
 
-Rust MVP for a per-host storage hotspot exporter. It scans configured local paths in the background with Linux block accounting and exposes cached Prometheus metrics.
+Rust MVP for a per-host storage exporter. It scans configured local paths in the background with Linux block accounting and exposes cached Prometheus metrics.
 
 ## Run Locally
 
@@ -8,7 +8,14 @@ Rust MVP for a per-host storage hotspot exporter. It scans configured local path
 cargo run -- --config examples/config.yaml
 ```
 
+Validate a config without starting the HTTP server:
+
+```bash
+cargo run -- --config examples/nuc.yaml --check-config
+```
+
 For deployment, provide your own `config.yaml` beside the Compose file. The repository only includes `examples/config.yaml`.
+`examples/nuc.yaml` is a NUC-oriented starting point based on the observed local paths on `nuc-ubuntu`.
 
 For host-path scanning in Docker, mount the host root read-only at `/host` and keep config paths written as host paths:
 
@@ -33,6 +40,8 @@ volumes:
 
 ## Endpoints
 
+- `GET /` or `GET /status`: lightweight HTML status UI backed by cached scan state.
+- `GET /status/fragment`: partial HTML used by the live-updating status UI.
 - `GET /metrics`: Prometheus text exposition from the cached snapshot store only.
 - `GET /-/health`: process health.
 - `GET /-/ready`: ready after each configured target has completed at least one scan.
@@ -46,10 +55,11 @@ volumes:
 - Glob excludes.
 - Per-target scan interval and timeout.
 - Depth-based directory reporting with `tree` and `leaves` modes.
-- `inclusive`, `exclusive`, and `breakdown` rollups.
+- Separate own and child-directory size metrics for each reported node.
 - `blocks` and `apparent` size modes.
 - Cached background scans.
 - Core scan health metrics.
+- Lightweight status web UI.
 
 Deferred: inotify, Docker API metadata, textfile output, deep snapshots, and advanced child-label parsing.
 
@@ -86,21 +96,32 @@ defaults:
   report_mode: tree          # tree or leaves
   report_depth: 1            # emit root plus nodes up to this relative depth
   max_depth: null            # optional traversal cap; null scans full tree
-  sum_remaining: true        # roll deeper bytes into nearest reported ancestor
-  rollups:
-    - breakdown              # breakdown, inclusive, exclusive
   size_modes:
     - blocks                 # blocks, apparent
+  exclude:                   # inherited by every target
+    - '**/.git/**'
+    - '**/.cache/**'
+    - '**/node_modules/**'
+    - '**/target/**'
 ```
 
-Rollups:
+Size components:
 
-- `inclusive`: directory plus all descendants.
-- `exclusive`: entries directly in that directory only.
-- `breakdown`: direct entries plus unreported deeper descendants when `sum_remaining` is enabled; useful for additive Grafana breakdowns.
+- `storage_harvester_own_size_bytes`: bytes directly owned by the reported node, including the directory inode and direct file children.
+- `storage_harvester_children_size_bytes`: bytes under child directories.
+
+Total size for a node is `own_size + children_size`.
+
+Entry components mirror the size model:
+
+- `storage_harvester_own_entries`: direct files, directories, and symlinks owned by this node.
+- `storage_harvester_children_entries`: recursive files, directories, and symlinks under child directories.
+
+Total entries for a node are `own_entries + children_entries` grouped by `entry_type`.
 
 Metric groups:
 
-- Data: `storage_hotspot_size_bytes`, `storage_hotspot_entries`.
-- Scan health: `storage_harvester_scan_success`, `storage_harvester_scan_duration_seconds`, `storage_harvester_scan_timestamp_seconds`, `storage_harvester_target_stale_seconds`, `storage_harvester_scan_count_total`, `storage_harvester_scan_errors_total`, `storage_harvester_scan_issue_count`.
+- Data: `storage_harvester_own_size_bytes`, `storage_harvester_children_size_bytes`, `storage_harvester_own_entries`, `storage_harvester_children_entries`.
+- Build: `storage_harvester_build_info` with the crate `version` label.
+- Scan health: `storage_harvester_scan_success`, `storage_harvester_scan_running`, `storage_harvester_scan_running_seconds`, `storage_harvester_scan_duration_seconds`, `storage_harvester_scan_timestamp_seconds`, `storage_harvester_target_stale_seconds`, `storage_harvester_scan_count_total`, `storage_harvester_scan_errors_total`, `storage_harvester_scan_issue_count`.
 - Cardinality/output: `storage_harvester_reported_nodes`, `storage_harvester_scanned_directories`, `storage_harvester_scanned_files`, `storage_harvester_scanned_symlinks`, `storage_harvester_max_observed_depth`, `storage_harvester_depth_limit_hits`.
