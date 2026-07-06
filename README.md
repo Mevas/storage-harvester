@@ -60,6 +60,7 @@ volumes:
 - Cached background scans.
 - Core scan health metrics.
 - Lightweight status web UI.
+- Structured scan lifecycle logs with issue breakdowns.
 
 Deferred: inotify, Docker API metadata, textfile output, deep snapshots, and advanced child-label parsing.
 

@@ -34,6 +34,15 @@ impl Scheduler {
 }
 
 async fn run_scan(target: &Target, store: &SnapshotStore) {
+    info!(
+        target = %target.name,
+        path = %target.display_path.display(),
+        interval_seconds = target.baseline_interval.as_secs(),
+        timeout_seconds = target.timeout.as_secs(),
+        report_depth = target.report_depth,
+        max_depth = ?target.max_depth,
+        "scan started"
+    );
     store.record_scan_start(&target.name).await;
     let target_clone = target.clone();
     let scan = tokio::task::spawn_blocking(move || {
@@ -43,19 +52,41 @@ async fn run_scan(target: &Target, store: &SnapshotStore) {
 
     match time::timeout(target.timeout, scan).await {
         Ok(Ok(Ok(result))) => {
-            info!(target = %target.name, backend = %result.backend, path = %target.display_path.display(), duration = ?result.duration, "scan completed");
+            let issue_count = result.permission_errors
+                + result.missing_path_races
+                + result.skipped_cross_device
+                + result.skipped_excluded;
+            info!(
+                target = %target.name,
+                backend = %result.backend,
+                path = %target.display_path.display(),
+                duration_seconds = result.duration.as_secs_f64(),
+                scanned_directories = result.scanned_directories,
+                scanned_files = result.scanned_files,
+                scanned_symlinks = result.scanned_symlinks,
+                reported_nodes = result.observations.len(),
+                direct_entries = result.entries.len(),
+                max_observed_depth = result.max_observed_depth,
+                depth_limit_hits = result.depth_limit_hits,
+                issue_count,
+                permission_errors = result.permission_errors,
+                missing_path_races = result.missing_path_races,
+                skipped_cross_device = result.skipped_cross_device,
+                skipped_excluded = result.skipped_excluded,
+                "scan completed"
+            );
             store.record_success(&target.name, result).await;
         }
         Ok(Ok(Err(error))) => {
-            warn!(target = %target.name, error = %error, "scan failed");
+            warn!(target = %target.name, path = %target.display_path.display(), error = %error, "scan failed");
             store.record_failure(&target.name, error.to_string()).await;
         }
         Ok(Err(error)) => {
-            error!(target = %target.name, error = %error, "scan task failed");
+            error!(target = %target.name, path = %target.display_path.display(), error = %error, "scan task failed");
             store.record_failure(&target.name, error.to_string()).await;
         }
         Err(_) => {
-            warn!(target = %target.name, timeout = ?target.timeout, "scan timed out");
+            warn!(target = %target.name, path = %target.display_path.display(), timeout_seconds = target.timeout.as_secs(), "scan timed out");
             store
                 .record_failure(
                     &target.name,

@@ -211,15 +211,23 @@ fn write_target_detail(out: &mut String, snapshot: &TargetSnapshot) {
         return;
     };
 
+    let issue_count = result.permission_errors
+        + result.missing_path_races
+        + result.skipped_cross_device
+        + result.skipped_excluded;
     write!(
         out,
-        "<div class=\"facts\"><span>Backend <strong>{}</strong></span><span>Age <strong>{}</strong></span><span>Interval <strong>{}</strong></span><span>Max depth <strong>{}</strong></span><span>Depth hits <strong>{}</strong></span><span>Issues <strong>{}</strong></span></div>",
+        "<div class=\"facts\"><span>Backend <strong>{}</strong></span><span>Age <strong>{}</strong></span><span>Interval <strong>{}</strong></span><span>Max depth <strong>{}</strong></span><span>Depth hits <strong>{}</strong></span><span>Issues <strong>{}</strong></span><span>Permission <strong>{}</strong></span><span>Races <strong>{}</strong></span><span>Cross-device <strong>{}</strong></span><span>Excluded <strong>{}</strong></span></div>",
         escape_html(&result.backend),
         escape_html(&format_age(result.timestamp)),
         escape_html(&format_duration(snapshot.interval)),
         result.max_observed_depth,
         result.depth_limit_hits,
-        result.permission_errors + result.missing_path_races + result.skipped_cross_device + result.skipped_excluded
+        issue_count,
+        result.permission_errors,
+        result.missing_path_races,
+        result.skipped_cross_device,
+        result.skipped_excluded
     )
     .unwrap();
 

@@ -337,7 +337,10 @@ fn account_entry(
         if depth > 0 {
             let parent = path.parent().unwrap_or(&target.scan_path);
             let parent_depth = relative_depth(target, parent);
-            state.node_mut(target, parent, parent_depth).directory_count += 1;
+            let parent_node = state.node_mut(target, parent, parent_depth);
+            parent_node.directory_count += 1;
+            parent_node.children_blocks = parent_node.children_blocks.saturating_add(blocks);
+            parent_node.children_apparent = parent_node.children_apparent.saturating_add(apparent);
 
             for ancestor in ancestors_between(target, parent) {
                 let ancestor_depth = relative_depth(target, &ancestor);
