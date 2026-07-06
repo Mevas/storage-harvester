@@ -13,7 +13,7 @@ use tracing::{error, info};
 use crate::cache::{SnapshotStore, TargetSnapshot};
 use crate::config::{Config, SizeMode};
 use crate::exporter::prometheus;
-use crate::scanner::NodeObservation;
+use crate::scanner::{EntryObservation, NodeObservation};
 
 #[derive(Clone)]
 pub struct ApiState {
@@ -223,18 +223,55 @@ fn write_target_detail(out: &mut String, snapshot: &TargetSnapshot) {
     )
     .unwrap();
 
-    let mut nodes = result.observations.iter().collect::<Vec<_>>();
-    nodes.sort_by(|left, right| {
-        left.path
-            .cmp(&right.path)
-            .then_with(|| left.depth.cmp(&right.depth))
+    let mut rows = result
+        .observations
+        .iter()
+        .map(TreeRow::Node)
+        .chain(result.entries.iter().map(TreeRow::Entry))
+        .collect::<Vec<_>>();
+    rows.sort_by(|left, right| {
+        left.path()
+            .cmp(right.path())
+            .then(left.kind_order().cmp(&right.kind_order()))
+            .then(left.depth().cmp(&right.depth()))
     });
 
-    out.push_str("<div class=\"table-wrap\"><table class=\"tree-table\"><thead><tr><th>Tree</th><th>Depth</th><th>Own</th><th>Children</th><th>Total</th><th>Direct entries</th><th>Total entries</th></tr></thead><tbody>");
-    for node in nodes {
-        write_node_row(out, node, &snapshot.size_modes);
+    out.push_str("<div class=\"table-wrap\"><table class=\"tree-table\"><thead><tr><th>Tree</th><th>Type</th><th>Depth</th><th>Own</th><th>Children</th><th>Total</th><th>Direct entries</th><th>Total entries</th></tr></thead><tbody>");
+    for row in rows {
+        match row {
+            TreeRow::Node(node) => write_node_row(out, node, &snapshot.size_modes),
+            TreeRow::Entry(entry) => write_entry_row(out, entry, &snapshot.size_modes),
+        }
     }
     out.push_str("</tbody></table></div></section>");
+}
+
+enum TreeRow<'a> {
+    Node(&'a NodeObservation),
+    Entry(&'a EntryObservation),
+}
+
+impl TreeRow<'_> {
+    fn path(&self) -> &str {
+        match self {
+            TreeRow::Node(node) => &node.path,
+            TreeRow::Entry(entry) => &entry.path,
+        }
+    }
+
+    fn depth(&self) -> usize {
+        match self {
+            TreeRow::Node(node) => node.depth,
+            TreeRow::Entry(entry) => entry.depth,
+        }
+    }
+
+    fn kind_order(&self) -> u8 {
+        match self {
+            TreeRow::Node(_) => 0,
+            TreeRow::Entry(_) => 1,
+        }
+    }
 }
 
 fn write_node_row(out: &mut String, node: &NodeObservation, size_modes: &[SizeMode]) {
@@ -248,7 +285,7 @@ fn write_node_row(out: &mut String, node: &NodeObservation, size_modes: &[SizeMo
 
     write!(
         out,
-        "<tr style=\"--depth:{}\"><td><code>{}</code><div class=\"muted small\">parent: {}</div></td><td>{}</td><td>{}</td><td>{}</td><td><strong>{}</strong></td><td>{} files / {} dirs / {} links</td><td>{} files / {} dirs / {} links</td></tr>",
+        "<tr style=\"--depth:{}\"><td><code>{}</code><div class=\"muted small\">parent: {}</div></td><td>directory</td><td>{}</td><td>{}</td><td>{}</td><td><strong>{}</strong></td><td>{} files / {} dirs / {} links</td><td>{} files / {} dirs / {} links</td></tr>",
         node.depth,
         escape_html(&node.path),
         escape_html(if node.parent.is_empty() { "-" } else { &node.parent }),
@@ -262,6 +299,24 @@ fn write_node_row(out: &mut String, node: &NodeObservation, size_modes: &[SizeMo
         total_files,
         total_dirs,
         total_links
+    )
+    .unwrap();
+}
+
+fn write_entry_row(out: &mut String, entry: &EntryObservation, size_modes: &[SizeMode]) {
+    let preferred_mode = preferred_size_mode(size_modes);
+    let size = entry_size(entry, preferred_mode);
+
+    write!(
+        out,
+        "<tr class=\"entry-row\" style=\"--depth:{}\"><td><code>{}</code><div class=\"muted small\">parent: {}</div></td><td>{}</td><td>{}</td><td>{}</td><td>-</td><td><strong>{}</strong></td><td>-</td><td>-</td></tr>",
+        entry.depth,
+        escape_html(&entry.path),
+        escape_html(&entry.parent_path),
+        escape_html(entry.entry_type.as_str()),
+        entry.depth,
+        escape_html(&format_bytes(size)),
+        escape_html(&format_bytes(size)),
     )
     .unwrap();
 }
@@ -328,6 +383,13 @@ fn node_size(node: &NodeObservation, component: SizeComponent, mode: SizeMode) -
         (SizeComponent::Children, SizeMode::Blocks) => node.children_blocks,
         (SizeComponent::Own, SizeMode::Apparent) => node.own_apparent,
         (SizeComponent::Children, SizeMode::Apparent) => node.children_apparent,
+    }
+}
+
+fn entry_size(entry: &EntryObservation, mode: SizeMode) -> u64 {
+    match mode {
+        SizeMode::Blocks => entry.blocks,
+        SizeMode::Apparent => entry.apparent,
     }
 }
 

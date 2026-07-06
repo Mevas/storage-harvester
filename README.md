@@ -116,7 +116,6 @@ Entry components mirror the size model:
 
 - `storage_harvester_own_entries`: direct files, directories, and symlinks owned by this node.
 - `storage_harvester_children_entries`: recursive files, directories, and symlinks under child directories.
-
 Total entries for a node are `own_entries + children_entries` grouped by `entry_type`.
 
 Metric groups:

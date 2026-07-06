@@ -8,7 +8,7 @@ use anyhow::{Context, Result};
 use globset::{Glob, GlobSet, GlobSetBuilder};
 
 use crate::config::{ReportMode, Target};
-use crate::scanner::{NodeObservation, ScanResult, Scanner};
+use crate::scanner::{EntryObservation, EntryType, NodeObservation, ScanResult, Scanner};
 
 #[derive(Debug)]
 pub struct NativeScanner {
@@ -58,6 +58,7 @@ impl Scanner for NativeScanner {
         let mut state = ScanState {
             backend: self.backend().to_string(),
             nodes: BTreeMap::new(),
+            entries: Vec::new(),
             permission_errors: 0,
             missing_path_races: 0,
             skipped_cross_device: 0,
@@ -170,6 +171,7 @@ struct WalkItem {
 struct ScanState {
     backend: String,
     nodes: BTreeMap<PathBuf, NodeAccumulator>,
+    entries: Vec<EntryObservation>,
     permission_errors: u64,
     missing_path_races: u64,
     skipped_cross_device: u64,
@@ -197,10 +199,16 @@ impl ScanState {
             .filter(|(path, _)| reported.contains(path))
             .map(|(_, node)| node.into_observation())
             .collect();
+        let entries = self
+            .entries
+            .into_iter()
+            .filter(|entry| reported.contains(Path::new(&entry.parent_path)))
+            .collect();
 
         ScanResult {
             backend: self.backend,
             observations,
+            entries,
             permission_errors: self.permission_errors,
             missing_path_races: self.missing_path_races,
             skipped_cross_device: self.skipped_cross_device,
@@ -295,7 +303,7 @@ impl NodeAccumulator {
 
     fn add_child_entry(&mut self, entry_kind: EntryKind) {
         match entry_kind {
-            EntryKind::File => self.children_file_count += 1,
+            EntryKind::File | EntryKind::Other => self.children_file_count += 1,
             EntryKind::Directory => self.children_directory_count += 1,
             EntryKind::Symlink => self.children_symlink_count += 1,
         }
@@ -307,6 +315,7 @@ enum EntryKind {
     File,
     Directory,
     Symlink,
+    Other,
 }
 
 fn account_entry(
@@ -365,10 +374,11 @@ fn account_entry(
         || file_type.is_block_device()
     {
         parent_node.file_count += 1;
-        EntryKind::File
+        EntryKind::Other
     } else {
-        EntryKind::File
+        EntryKind::Other
     };
+    record_direct_entry(state, target, parent, path, depth, metadata, entry_kind);
 
     for ancestor in ancestors_between(target, parent) {
         let ancestor_depth = relative_depth(target, &ancestor);
@@ -376,6 +386,42 @@ fn account_entry(
         ancestor_node.children_blocks = ancestor_node.children_blocks.saturating_add(blocks);
         ancestor_node.children_apparent = ancestor_node.children_apparent.saturating_add(apparent);
         ancestor_node.add_child_entry(entry_kind);
+    }
+}
+
+fn record_direct_entry(
+    state: &mut ScanState,
+    target: &Target,
+    parent: &Path,
+    path: &Path,
+    depth: usize,
+    metadata: &fs::Metadata,
+    entry_kind: EntryKind,
+) {
+    let display_path = display_path_for(target, path);
+    let parent_display_path = display_path_for(target, parent);
+    let name = display_path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| display_path.display().to_string());
+
+    state.entries.push(EntryObservation {
+        parent_path: parent_display_path.display().to_string(),
+        path: display_path.display().to_string(),
+        name,
+        entry_type: entry_type_for(entry_kind),
+        depth,
+        blocks: metadata.blocks().saturating_mul(512),
+        apparent: metadata.size(),
+    });
+}
+
+fn entry_type_for(entry_kind: EntryKind) -> EntryType {
+    match entry_kind {
+        EntryKind::File => EntryType::File,
+        EntryKind::Directory => EntryType::Directory,
+        EntryKind::Symlink => EntryType::Symlink,
+        EntryKind::Other => EntryType::Other,
     }
 }
 

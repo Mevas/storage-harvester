@@ -10,6 +10,7 @@ pub mod native;
 pub struct ScanResult {
     pub backend: String,
     pub observations: Vec<NodeObservation>,
+    pub entries: Vec<EntryObservation>,
     pub permission_errors: u64,
     pub missing_path_races: u64,
     pub skipped_cross_device: u64,
@@ -21,6 +22,36 @@ pub struct ScanResult {
     pub depth_limit_hits: u64,
     pub duration: Duration,
     pub timestamp: SystemTime,
+}
+
+#[derive(Debug, Clone)]
+pub struct EntryObservation {
+    pub parent_path: String,
+    pub path: String,
+    pub name: String,
+    pub entry_type: EntryType,
+    pub depth: usize,
+    pub blocks: u64,
+    pub apparent: u64,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum EntryType {
+    File,
+    Directory,
+    Symlink,
+    Other,
+}
+
+impl EntryType {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            EntryType::File => "file",
+            EntryType::Directory => "directory",
+            EntryType::Symlink => "symlink",
+            EntryType::Other => "other",
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
