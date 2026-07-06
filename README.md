@@ -108,8 +108,8 @@ defaults:
 
 Size components:
 
-- `storage_harvester_own_size_bytes`: bytes directly owned by the reported node, including the directory inode and direct file children.
-- `storage_harvester_children_size_bytes`: bytes under child directories.
+- `storage_harvester_own_size_bytes`: bytes for the reported node itself.
+- `storage_harvester_children_size_bytes`: bytes under the reported node, including direct files and child directories.
 
 Total size for a node is `own_size + children_size`.
 

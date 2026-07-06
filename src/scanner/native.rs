@@ -363,8 +363,8 @@ fn account_entry(
     let parent = path.parent().unwrap_or(&target.scan_path);
     let parent_depth = relative_depth(target, parent);
     let parent_node = state.node_mut(target, parent, parent_depth);
-    parent_node.own_blocks = parent_node.own_blocks.saturating_add(blocks);
-    parent_node.own_apparent = parent_node.own_apparent.saturating_add(apparent);
+    parent_node.children_blocks = parent_node.children_blocks.saturating_add(blocks);
+    parent_node.children_apparent = parent_node.children_apparent.saturating_add(apparent);
     let entry_kind = if metadata.is_file() {
         parent_node.file_count += 1;
         EntryKind::File
