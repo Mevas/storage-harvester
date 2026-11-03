@@ -1,9 +1,9 @@
 //! How fast is a scan, what does it cost, and is it still correct at size?
 //!
 //! Generates a metadata-heavy tree, runs the real binary against it, and reports:
-//! - scan duration and entries/s, for the first scan (cold when caches were dropped) and a warm
-//!   rescan, from the harvester's own `scan_duration_seconds`;
-//! - the same walk done by the independent oracle, as a same-machine baseline;
+//! - scan duration and entries/s, for the first scan (cold when caches were dropped) and the
+//!   fastest of four warm rescans, from the harvester's own `scan_duration_seconds`;
+//! - the fastest of four walks by the independent oracle, as a same-machine baseline;
 //! - resident memory of the harvester process;
 //! - the size and render time of `/metrics`, and series per target (cardinality).
 //!
@@ -23,6 +23,9 @@ use std::fs;
 use std::time::{Duration, Instant};
 
 use support::*;
+
+/// Warm harvester scans and oracle walks timed; the fastest of each is compared.
+const TIMED_RUNS: u64 = 4;
 
 #[test]
 fn scan_performance_report() {
@@ -65,7 +68,18 @@ targets:
     let first_seconds = first
         .target_value("storage_harvester_scan_duration_seconds", "perf")
         .unwrap();
-    let warm = h.wait_for_scans("perf", 3, timeout);
+    // Best of several warm rescans, and below best of several oracle walks: the two are timed
+    // at different moments, so one load spike on a shared machine would otherwise skew the
+    // ratio (seen at 6.5-7.7x under load, 1.3-1.7x on the same machine idle).
+    let mut warm_seconds = f64::INFINITY;
+    let mut warm = first;
+    for scans in 2..=1 + TIMED_RUNS {
+        warm = h.wait_for_scans("perf", scans, timeout);
+        warm_seconds = warm_seconds.min(
+            warm.target_value("storage_harvester_scan_duration_seconds", "perf")
+                .unwrap(),
+        );
+    }
     // Scan counts include failures, and a failed rescan leaves the last success's numbers in
     // place, so without this the "warm" figures could be the first scan's.
     assert_eq!(
@@ -74,9 +88,6 @@ targets:
         "a rescan failed:\n{}",
         h.log_tail(20)
     );
-    let warm_seconds = warm
-        .target_value("storage_harvester_scan_duration_seconds", "perf")
-        .unwrap();
 
     let (rss_kib, rss_kind) = rss_kib(h.pid()).unwrap_or((0, "unavailable"));
     let fetch = Instant::now();
@@ -91,9 +102,13 @@ targets:
         .count();
     drop(h); // stop rescanning before timing the oracle on the same disk
 
-    let oracle_started = Instant::now();
-    let walk = oracle_walk(&data, &WalkRules::default());
-    let oracle_seconds = oracle_started.elapsed().as_secs_f64();
+    let mut oracle_seconds = f64::INFINITY;
+    let mut walk = Walk::default();
+    for _ in 0..TIMED_RUNS {
+        let started = Instant::now();
+        walk = oracle_walk(&data, &WalkRules::default());
+        oracle_seconds = oracle_seconds.min(started.elapsed().as_secs_f64());
+    }
 
     // Speed only means something if the walk was complete and right.
     let mut out = Mismatches::default();
