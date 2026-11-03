@@ -200,6 +200,71 @@ fn realistic_tree_matches_an_independent_walk() {
     assert!(walk.excluded_children > 0);
 }
 
+#[test]
+fn every_thread_count_reports_the_same_tree() {
+    // Workers share the walk and meet the tree in a different order every time. However many
+    // there are, the numbers must be the oracle's, and the exports identical.
+    let host = Host::new();
+    realistic_tree(&host.data(), 42);
+    let walk = oracle_walk(&host.data(), &realistic_rules());
+    let mut exports = Vec::new();
+    for threads in [1, 3, 16] {
+        let config = REALISTIC_CONFIG.replacen(
+            "defaults:\n",
+            &format!("defaults:\n  scan_threads: {threads}\n"),
+            1,
+        );
+        let h = host.start(&config);
+        let m = scanned(&h, "data");
+        let mut out = Mismatches::default();
+        check_scan_counts(&m, "data", &walk, &mut out);
+        check_dirs(&m, "data", DATA, &walk, 2, &mut out);
+        out.assert_none(&format!("scan_threads {threads} vs oracle"));
+        exports.push((threads, tree_samples(&m), status_page_entries(&h)));
+    }
+    for pair in exports.windows(2) {
+        let ((a, a_samples, a_rows), (b, b_samples, b_rows)) = (&pair[0], &pair[1]);
+        assert_eq!(
+            a_samples, b_samples,
+            "metrics differ: scan_threads {a} vs {b}"
+        );
+        assert_eq!(
+            a_rows, b_rows,
+            "status page rows differ: scan_threads {a} vs {b}"
+        );
+    }
+}
+
+/// Every sample that describes the tree rather than the scan's timing, as comparable text.
+fn tree_samples(m: &Metrics) -> Vec<String> {
+    const TREE: &[&str] = &[
+        "storage_harvester_own_size_bytes",
+        "storage_harvester_children_size_bytes",
+        "storage_harvester_own_entries",
+        "storage_harvester_children_entries",
+        "storage_harvester_reported_nodes",
+        "storage_harvester_scanned_files",
+        "storage_harvester_scanned_directories",
+        "storage_harvester_scanned_symlinks",
+        "storage_harvester_max_observed_depth",
+        "storage_harvester_depth_limit_hits",
+        "storage_harvester_scan_issue_count",
+    ];
+    let mut samples: Vec<String> = m
+        .samples
+        .iter()
+        .filter(|sample| TREE.contains(&sample.name.as_str()))
+        .map(|sample| format!("{}{:?} {}", sample.name, sample.labels, sample.value))
+        .collect();
+    samples.sort();
+    assert!(
+        samples.len() > 100,
+        "too few tree samples: {}",
+        samples.len()
+    );
+    samples
+}
+
 /// Paths of the file rows on the status page, unescaped.
 fn status_page_entries(h: &Harvester) -> std::collections::BTreeSet<String> {
     let (status, page) = h.get("/status/fragment");

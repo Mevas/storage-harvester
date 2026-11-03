@@ -12,8 +12,10 @@
 //! Knobs (environment):
 //! - `HARVESTER_PERF_FILES` (default 20000): files in the generated tree.
 //! - `HARVESTER_PERF_DROP_CACHES=1`: drop Linux caches before the first scan (needs sudo -n).
-//! - `HARVESTER_PERF_MAX_RATIO` (default 4.0): fail if a warm harvester scan takes longer than
-//!   this multiple of the oracle's warm walk.
+//! - `HARVESTER_PERF_MAX_RATIO` (default 1.0): fail if a warm harvester scan takes longer than
+//!   this multiple of the oracle's warm walk. The oracle is a plain single-threaded walk; the
+//!   harvester's measured 0.13-0.42x of it, and the walker it replaced 2x.
+//! - `HARVESTER_PERF_THREADS`: the harvester's `scan_threads` (default: its own default).
 //!
 //! Run optimised for meaningful numbers: `cargo test --release --test perf -- --nocapture`.
 
@@ -30,7 +32,12 @@ const TIMED_RUNS: u64 = 4;
 #[test]
 fn scan_performance_report() {
     let files: u64 = env_or("HARVESTER_PERF_FILES", 20_000);
-    let max_ratio: f64 = env_or("HARVESTER_PERF_MAX_RATIO", 4.0);
+    let max_ratio: f64 = env_or("HARVESTER_PERF_MAX_RATIO", 1.0);
+    let threads = std::env::var("HARVESTER_PERF_THREADS").ok();
+    let threads_line = threads
+        .as_deref()
+        .map(|threads| format!("  scan_threads: {threads}\n"))
+        .unwrap_or_default();
 
     let tmp = tempfile::tempdir().unwrap();
     let host_root = tmp.path().join("host");
@@ -49,7 +56,7 @@ defaults:
   baseline_interval: 1s
   timeout: 1800s
   report_depth: 2
-targets:
+{threads_line}targets:
   - name: perf
     path: /srv/perf
 ",
@@ -131,6 +138,7 @@ targets:
         r#"{{
   "profile": "{profile}",
   "os": "{os}",
+  "scan_threads": "{threads}",
   "files": {files},
   "entries": {entries},
   "directories": {dirs},
@@ -150,6 +158,7 @@ targets:
             "release"
         },
         os = std::env::consts::OS,
+        threads = threads.as_deref().unwrap_or("default"),
         dirs = walk.directories,
         bytes = walk.root().total_blocks,
         first_rate = entries as f64 / first_seconds.max(1e-6),
