@@ -123,40 +123,6 @@ fn check_dirs(
     }
 }
 
-/// Non-directory entries directly inside reported directories, which the scanner emits as
-/// their own size series.
-fn check_entries(
-    m: &Metrics,
-    target: &str,
-    root: &str,
-    walk: &Walk,
-    report_depth: usize,
-    out: &mut Mismatches,
-) {
-    for (rel, entry) in walk
-        .entries
-        .iter()
-        .filter(|(_, e)| e.depth <= report_depth + 1)
-    {
-        let path = display(root, rel);
-        out.check(
-            format!("{path} blocks"),
-            m.size("storage_harvester_own_size_bytes", target, &path, "blocks"),
-            Some(entry.blocks),
-        );
-        out.check(
-            format!("{path} apparent"),
-            m.size(
-                "storage_harvester_own_size_bytes",
-                target,
-                &path,
-                "apparent",
-            ),
-            Some(entry.apparent),
-        );
-    }
-}
-
 fn check_scan_counts(m: &Metrics, target: &str, walk: &Walk, out: &mut Mismatches) {
     let v = |name: &str| m.target_value(name, target).map(|x| x as u64);
     out.check(
@@ -234,70 +200,87 @@ fn realistic_tree_matches_an_independent_walk() {
     assert!(walk.excluded_children > 0);
 }
 
-/// Runs the same tree with `host_root: /` and the real path as the target, which is the only
-/// configuration in which the scanner emits per-file series today (see the known bug below).
-fn start_without_host_root(host: &Host, report_depth: usize) -> (Harvester, String) {
-    let real = fs::canonicalize(host.data()).unwrap();
-    let real = real.to_str().unwrap().to_string();
-    let h = Harvester::start(
-        &host.tmp.path().join("run-slash"),
-        &format!(
-            "\
-host_root: /
-defaults:
-  baseline_interval: 1h
-  report_depth: {report_depth}
-  size_modes: [blocks, apparent]
-  exclude: ['**/node_modules/**', '**/.git/**']
-targets:
-  - name: data
-    path: '{real}'
-"
-        ),
-    );
-    (h, real)
+/// Paths of the file rows on the status page, unescaped.
+fn status_page_entries(h: &Harvester) -> std::collections::BTreeSet<String> {
+    let (status, page) = h.get("/status/fragment");
+    assert_eq!(status, 200);
+    page.split("<tr class=\"entry-row\"")
+        .skip(1)
+        .map(|row| {
+            let code = row.split_once("<code>").unwrap().1;
+            let path = code.split_once("</code>").unwrap().0;
+            path.replace("&lt;", "<")
+                .replace("&gt;", ">")
+                .replace("&quot;", "\"")
+                .replace("&#39;", "'")
+                .replace("&amp;", "&")
+        })
+        .collect()
 }
 
 #[test]
-fn direct_entries_match_an_independent_walk() {
+fn status_page_lists_every_direct_entry_under_a_host_root() {
+    // The tree view shows each reported directory's direct files. Under a host_root (production
+    // uses /host) it showed none, because entries were filtered by display path against scan
+    // paths.
     let host = Host::new();
     realistic_tree(&host.data(), 42);
-    let (h, root) = start_without_host_root(&host, 2);
+    let h = host.start(REALISTIC_CONFIG);
+    scanned(&h, "data");
+    let walk = oracle_walk(&host.data(), &realistic_rules());
+    let expected: std::collections::BTreeSet<String> = walk
+        .entries
+        .iter()
+        .filter(|(_, entry)| entry.depth <= 3)
+        .map(|(rel, _)| display(DATA, rel))
+        .collect();
+    assert!(expected.len() > 40, "fixture has too few direct entries");
+
+    let listed = status_page_entries(&h);
+    let missing: Vec<_> = expected.difference(&listed).collect();
+    let extra: Vec<_> = listed.difference(&expected).collect();
+    assert!(
+        missing.is_empty() && extra.is_empty(),
+        "status page: {} missing (e.g. {:?}), {} unexpected (e.g. {:?})",
+        missing.len(),
+        missing.first(),
+        extra.len(),
+        extra.first()
+    );
+}
+
+#[test]
+fn metrics_carry_directories_only() {
+    // A path-labelled series per file reached 27k series on one NAS share. Size series exist
+    // for reported directories, one per size mode, and for nothing else.
+    let host = Host::new();
+    realistic_tree(&host.data(), 42);
+    let h = host.start(REALISTIC_CONFIG);
     let m = scanned(&h, "data");
     let walk = oracle_walk(&host.data(), &realistic_rules());
+    let directories: std::collections::BTreeSet<String> = walk
+        .dirs
+        .iter()
+        .filter(|(_, dir)| dir.depth <= 2)
+        .map(|(rel, _)| display(DATA, rel))
+        .collect();
 
-    let mut out = Mismatches::default();
-    check_dirs(&m, "data", &root, &walk, 2, &mut out);
-    check_entries(&m, "data", &root, &walk, 2, &mut out);
-    out.assert_none("direct entries vs oracle");
-}
-
-#[test]
-#[ignore = "known bug: under a host_root (production uses /host) no per-file series are emitted, because native.rs filters entries by display path against scan paths"]
-fn known_bug_direct_entries_do_not_depend_on_host_root() {
-    // Retiring per-file series (v2 plan §4) is an acceptable fix; behaving differently under
-    // /host than in development is not.
-    let host = Host::new();
-    realistic_tree(&host.data(), 42);
-    let relative_series = |m: &Metrics, root: &str| -> std::collections::BTreeSet<String> {
-        m.find("storage_harvester_own_size_bytes", &[("target", "data")])
-            .into_iter()
-            .map(|s| s.labels["path"].strip_prefix(root).unwrap().to_string())
-            .collect()
-    };
-
-    let mounted = host.start(REALISTIC_CONFIG);
-    let with_host_root = relative_series(&scanned(&mounted, "data"), DATA);
-    drop(mounted);
-    let (plain, root) = start_without_host_root(&host, 2);
-    let without_host_root = relative_series(&scanned(&plain, "data"), &root);
-
-    let only_without: Vec<_> = without_host_root.difference(&with_host_root).collect();
+    let sized = m.find("storage_harvester_own_size_bytes", &[("target", "data")]);
+    assert_eq!(
+        sized.len(),
+        directories.len() * 2,
+        "blocks + apparent per directory"
+    );
+    let not_directories: Vec<_> = sized
+        .iter()
+        .filter(|s| !directories.contains(&s.labels["path"]))
+        .map(|s| s.labels["path"].clone())
+        .collect();
     assert!(
-        only_without.is_empty(),
-        "{} series exist only without host_root, e.g. {:?}",
-        only_without.len(),
-        only_without.first()
+        not_directories.is_empty(),
+        "{} size series for non-directories, e.g. {:?}",
+        not_directories.len(),
+        not_directories.first()
     );
 }
 
@@ -511,12 +494,83 @@ fn exported_metrics_are_valid_prometheus_text() {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Known bugs. Each asserts correct behaviour and is ignored until the fix lands.
+// Regressions: each of these was a live defect (v2 plan §2, §6, §8).
 // ---------------------------------------------------------------------------------------------
 
 #[test]
-#[ignore = "known bug: `max_depth: null` inherits the default instead of meaning unlimited (v2 plan §2, Phase A)"]
-fn known_bug_max_depth_null_means_unlimited() {
+fn timed_out_scan_stops_walking() {
+    // A walk that never ends: two links back to the directory itself, followed, under a depth
+    // cap high enough that the walk cannot finish (2^64 paths). A timeout must stop it, not
+    // leave it running in the background while the scheduler moves on.
+    let host = Host::new();
+    write_file(&host.data().join("file.bin"), 10);
+    link(".", &host.data().join("a"));
+    link(".", &host.data().join("b"));
+    let h = host.start(
+        "\
+defaults:
+  baseline_interval: 1h
+  timeout: 1s
+  follow_symlinks: true
+  max_depth: 64
+targets:
+  - name: data
+    path: /srv/data
+",
+    );
+    let m = h.wait_for_scans("data", 1, SCAN_TIMEOUT);
+    assert_eq!(
+        m.target_value("storage_harvester_scan_success", "data"),
+        Some(0.0)
+    );
+    assert_eq!(
+        m.target_value("storage_harvester_scan_errors_total", "data"),
+        Some(1.0)
+    );
+
+    let before = cpu_seconds(h.pid());
+    std::thread::sleep(Duration::from_secs(2));
+    let used = cpu_seconds(h.pid()) - before;
+    assert!(
+        used < 0.5,
+        "the timed-out walk kept running: {used:.2}s of CPU in the 2s after its timeout"
+    );
+}
+
+#[test]
+fn scan_success_reports_the_latest_scan() {
+    // After a success, a failing rescan must read as a failure. Otherwise a target that
+    // starts timing out looks healthy forever, with frozen numbers.
+    let host = Host::new();
+    realistic_tree(&host.data(), 17);
+    let h = host.start(
+        "\
+defaults:
+  baseline_interval: 1s
+targets:
+  - name: data
+    path: /srv/data
+",
+    );
+    scanned(&h, "data");
+    fs::rename(host.data(), host.root().join("srv/moved")).unwrap();
+    let m = h.wait_for("a failed rescan", SCAN_TIMEOUT, |m| {
+        m.target_value("storage_harvester_scan_errors_total", "data")
+            .is_some_and(|n| n >= 1.0)
+    });
+    assert_eq!(
+        m.target_value("storage_harvester_scan_success", "data"),
+        Some(0.0)
+    );
+    // The last good numbers stay visible, and so does their age.
+    assert!(m.total_size("data", DATA, "blocks").is_some());
+    assert!(m
+        .target_value("storage_harvester_target_stale_seconds", "data")
+        .is_some_and(f64::is_finite));
+}
+
+#[test]
+fn max_depth_null_means_unlimited() {
     // The deployed nuc.yaml shape: a capped default, and a target that asks for no cap.
     let host = Host::new();
     realistic_tree(&host.data(), 13);
@@ -542,8 +596,7 @@ targets:
 }
 
 #[test]
-#[ignore = "known bug: --check-config validates written values, not effective ones (v2 plan Phase A)"]
-fn known_bug_check_config_rejects_effective_max_depth_below_report_depth() {
+fn check_config_rejects_effective_max_depth_below_report_depth() {
     let tmp = tempfile::tempdir().unwrap();
     let config = tmp.path().join("config.yaml");
     fs::write(
@@ -572,8 +625,7 @@ targets:
 }
 
 #[test]
-#[ignore = "known bug: hardlinks are counted once per link, not once per allocation (v2 plan §6, Phase B)"]
-fn known_bug_hardlinks_are_counted_once() {
+fn hardlinks_are_counted_once() {
     let host = Host::new();
     let data = host.data();
     write_file(&data.join("original.bin"), 1024 * 1024);
@@ -611,8 +663,7 @@ targets:
 ";
 
 #[test]
-#[ignore = "known bug: /-/ready is true for a target that has only ever failed (v2 plan §8, Phase A)"]
-fn known_bug_target_that_only_failed_is_not_ready() {
+fn target_that_only_failed_is_not_ready() {
     let host = Host::new();
     fs::create_dir_all(host.root()).unwrap();
     let h = host.start(MISSING_TARGET_CONFIG);
@@ -623,11 +674,16 @@ fn known_bug_target_that_only_failed_is_not_ready() {
     );
     let (status, body) = h.get("/-/ready");
     assert_eq!(status, 503, "ready with no successful scan: {body}");
+    // The status page states readiness too, and must agree with the endpoint.
+    let (_, page) = h.get("/status/fragment");
+    assert!(
+        page.contains("<span>Ready</span><strong>no</strong>"),
+        "status page disagrees with /-/ready"
+    );
 }
 
 #[test]
-#[ignore = "known bug: target_stale_seconds is NaN for a never-succeeded target, so `> N` alerts never fire (v2 plan §8, Phase A)"]
-fn known_bug_never_succeeded_target_is_infinitely_stale() {
+fn never_succeeded_target_is_infinitely_stale() {
     let host = Host::new();
     fs::create_dir_all(host.root()).unwrap();
     let h = host.start(MISSING_TARGET_CONFIG);
@@ -642,8 +698,7 @@ fn known_bug_never_succeeded_target_is_infinitely_stale() {
 }
 
 #[test]
-#[ignore = "known bug: a user label named like a built-in emits a duplicate label, which fails the whole scrape (v2 plan §8, Phase A)"]
-fn known_bug_user_label_cannot_duplicate_a_builtin_label() {
+fn user_label_cannot_duplicate_a_builtin_label() {
     let host = Host::new();
     write_file(&host.data().join("file.txt"), 100);
     let body = "\

@@ -86,8 +86,9 @@ pub struct TargetConfig {
     pub report_mode: Option<ReportMode>,
     #[serde(default)]
     pub report_depth: Option<usize>,
-    #[serde(default)]
-    pub max_depth: Option<usize>,
+    /// Absent: inherit the default. `null`: no cap, whatever the default says. A number: that cap.
+    #[serde(default, deserialize_with = "deserialize_explicit")]
+    pub max_depth: Option<Option<usize>>,
     #[serde(default)]
     pub size_modes: Option<Vec<SizeMode>>,
     #[serde(default)]
@@ -167,6 +168,14 @@ impl Config {
 
         let display_path = normalize_display_path(&target.path)?;
         let scan_path = join_host_root(&self.host_root, &display_path);
+        let report_depth = target.report_depth.unwrap_or(self.defaults.report_depth);
+        let max_depth = target.max_depth.unwrap_or(self.defaults.max_depth);
+        if let Some(cap) = max_depth.filter(|&cap| cap < report_depth) {
+            bail!(
+                "target {} max_depth ({cap}) must be greater than or equal to report_depth ({report_depth})",
+                target.name
+            );
+        }
 
         Ok(Target {
             name: target.name.clone(),
@@ -185,8 +194,8 @@ impl Config {
                 .follow_symlinks
                 .unwrap_or(self.defaults.follow_symlinks),
             report_mode: target.report_mode.unwrap_or(self.defaults.report_mode),
-            report_depth: target.report_depth.unwrap_or(self.defaults.report_depth),
-            max_depth: target.max_depth.or(self.defaults.max_depth),
+            report_depth,
+            max_depth,
             size_modes: target
                 .size_modes
                 .clone()
@@ -240,22 +249,45 @@ impl Config {
             if target.timeout == Some(Duration::ZERO) {
                 bail!("target {} timeout must be greater than zero", target.name);
             }
-            if let Some(max_depth) = target.max_depth {
-                let report_depth = target.report_depth.unwrap_or(self.defaults.report_depth);
-                if max_depth < report_depth {
+            if matches!(target.size_modes.as_deref(), Some([])) {
+                bail!("target {} size_modes cannot be empty", target.name);
+            }
+            for key in target.labels.keys() {
+                let valid = key.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
+                    && key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+                    && !key.starts_with("__");
+                if !valid {
                     bail!(
-                        "target {} max_depth must be greater than or equal to report_depth",
+                        "target {} label {key:?} is not a valid Prometheus label name",
                         target.name
                     );
                 }
-            }
-            if matches!(target.size_modes.as_deref(), Some([])) {
-                bail!("target {} size_modes cannot be empty", target.name);
+                if BUILTIN_LABELS.contains(&key.as_str()) {
+                    bail!(
+                        "target {} label {key:?} collides with a built-in label",
+                        target.name
+                    );
+                }
             }
         }
         Ok(())
     }
 }
+
+/// Labels the exporter sets itself (`src/exporter/prometheus.rs`). A user label with one of these
+/// names would repeat a label on the sample, and Prometheus rejects the whole scrape for that.
+const BUILTIN_LABELS: &[&str] = &[
+    "target",
+    "target_type",
+    "path",
+    "parent",
+    "node",
+    "depth",
+    "size_mode",
+    "backend",
+    "entry_type",
+    "issue",
+];
 
 fn normalize_display_path(path: &Path) -> Result<PathBuf> {
     if !path.is_absolute() {
@@ -267,6 +299,16 @@ fn normalize_display_path(path: &Path) -> Result<PathBuf> {
 fn join_host_root(host_root: &Path, display_path: &Path) -> PathBuf {
     let relative = display_path.strip_prefix("/").unwrap_or(display_path);
     host_root.join(relative)
+}
+
+/// With `#[serde(default)]`, keeps an explicit `null` distinct from an absent key: absent is
+/// `None`, `null` is `Some(None)`. Plain `Option<Option<T>>` collapses both to `None`.
+fn deserialize_explicit<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(deserializer).map(Some)
 }
 
 fn deserialize_duration<'de, D>(deserializer: D) -> Result<Duration, D::Error>
@@ -366,6 +408,51 @@ mod tests {
         assert_eq!(parse_duration("30s").unwrap(), Duration::from_secs(30));
         assert_eq!(parse_duration("5m").unwrap(), Duration::from_secs(300));
         assert_eq!(parse_duration("2h").unwrap(), Duration::from_secs(7200));
+    }
+
+    fn resolve(yaml: &str) -> Result<Vec<Target>> {
+        let config: Config = serde_yaml::from_str(yaml)?;
+        config.validate()?;
+        config.resolved_targets()
+    }
+
+    #[test]
+    fn max_depth_absent_inherits_null_uncaps_number_caps() {
+        let targets = resolve(
+            "
+defaults: { max_depth: 1 }
+targets:
+  - { name: absent, path: /a }
+  - { name: null_value, path: /b, max_depth: null }
+  - { name: number, path: /c, max_depth: 3 }
+",
+        )
+        .unwrap();
+        let depths: Vec<_> = targets.iter().map(|t| t.max_depth).collect();
+        assert_eq!(depths, [Some(1), None, Some(3)]);
+    }
+
+    #[test]
+    fn rejects_effective_max_depth_below_report_depth() {
+        let error = resolve(
+            "
+defaults: { max_depth: 1 }
+targets:
+  - { name: docker, path: /d, report_depth: 2 }
+",
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("max_depth (1)"), "{error}");
+    }
+
+    #[test]
+    fn rejects_labels_that_collide_or_are_invalid() {
+        for label in ["path", "size_mode", "my-label", "__reserved"] {
+            let yaml =
+                format!("targets:\n  - {{ name: t, path: /t, labels: {{ {label:?}: x }} }}\n");
+            assert!(resolve(&yaml).is_err(), "accepted label {label:?}");
+        }
+        assert!(resolve("targets:\n  - { name: t, path: /t, labels: { host: nuc } }\n").is_ok());
     }
 
     #[test]

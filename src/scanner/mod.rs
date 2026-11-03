@@ -1,3 +1,4 @@
+use std::sync::atomic::AtomicBool;
 use std::time::{Duration, SystemTime};
 
 use anyhow::{bail, Result};
@@ -28,7 +29,6 @@ pub struct ScanResult {
 pub struct EntryObservation {
     pub parent_path: String,
     pub path: String,
-    pub name: String,
     pub entry_type: EntryType,
     pub depth: usize,
     pub blocks: u64,
@@ -74,7 +74,9 @@ pub struct NodeObservation {
 
 pub trait Scanner: Send + Sync {
     fn backend(&self) -> &'static str;
-    fn scan(&self, target: &Target) -> Result<ScanResult>;
+    /// Walks the target. Returns an error promptly once `cancel` is set, so a timed-out scan
+    /// stops instead of running on in the background.
+    fn scan(&self, target: &Target, cancel: &AtomicBool) -> Result<ScanResult>;
 }
 
 pub fn build(target: &Target) -> Result<Box<dyn Scanner>> {
