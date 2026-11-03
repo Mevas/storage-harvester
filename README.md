@@ -62,6 +62,9 @@ walk of the same tree (`tests/support`), not from the scanner.
 
 ## Docker Compose
 
+Every push to `main` that passes CI publishes `ghcr.io/mevas/storage-harvester:latest` and
+`:<short sha>` (linux/amd64).
+
 The example `compose.yaml` expects deployment-owned configuration at `./config.yaml`:
 
 ```yaml
