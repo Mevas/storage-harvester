@@ -25,6 +25,11 @@ pub struct TargetSnapshot {
 }
 
 impl TargetSnapshot {
+    /// Ready once the target has produced data. A target that has only ever failed is not.
+    pub fn is_ready(&self) -> bool {
+        self.last_success.is_some()
+    }
+
     pub fn from_target(target: &Target) -> Self {
         Self {
             target_name: target.name.clone(),
@@ -97,12 +102,11 @@ impl SnapshotStore {
         self.inner.read().await.values().cloned().collect()
     }
 
-    /// Ready once every target has produced data. A target that has only ever failed is not.
     pub async fn ready(&self) -> bool {
         self.inner
             .read()
             .await
             .values()
-            .all(|snapshot| snapshot.last_success.is_some())
+            .all(TargetSnapshot::is_ready)
     }
 }

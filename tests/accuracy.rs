@@ -690,6 +690,12 @@ fn target_that_only_failed_is_not_ready() {
     );
     let (status, body) = h.get("/-/ready");
     assert_eq!(status, 503, "ready with no successful scan: {body}");
+    // The status page states readiness too, and must agree with the endpoint.
+    let (_, page) = h.get("/status/fragment");
+    assert!(
+        page.contains("<span>Ready</span><strong>no</strong>"),
+        "status page disagrees with /-/ready"
+    );
 }
 
 #[test]
