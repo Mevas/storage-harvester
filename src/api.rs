@@ -514,22 +514,6 @@ const SCRIPT: &str = r#"<script>
 })();
 </script>"#;
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn escapes_html_text() {
-        assert_eq!(escape_html("<&>\"'"), "&lt;&amp;&gt;&quot;&#39;");
-    }
-
-    #[test]
-    fn formats_bytes() {
-        assert_eq!(format_bytes(512), "512 B");
-        assert_eq!(format_bytes(1536), "1.5 KiB");
-    }
-}
-
 async fn shutdown_signal() {
     let ctrl_c = async {
         if let Err(error) = tokio::signal::ctrl_c().await {
@@ -556,4 +540,20 @@ async fn shutdown_signal() {
     }
 
     info!("shutdown signal received");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn escapes_html_text() {
+        assert_eq!(escape_html("<&>\"'"), "&lt;&amp;&gt;&quot;&#39;");
+    }
+
+    #[test]
+    fn formats_bytes() {
+        assert_eq!(format_bytes(512), "512 B");
+        assert_eq!(format_bytes(1536), "1.5 KiB");
+    }
 }
