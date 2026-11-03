@@ -3,7 +3,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::cache::TargetSnapshot;
 use crate::config::SizeMode;
-use crate::scanner::{EntryObservation, NodeObservation};
+use crate::scanner::NodeObservation;
 
 pub fn render(snapshots: &[TargetSnapshot]) -> String {
     let mut out = String::new();
@@ -50,12 +50,11 @@ pub fn render(snapshots: &[TargetSnapshot]) -> String {
         .unwrap();
 
         if let Some(result) = &snapshot.last_success {
+            // Directories only. Direct files appear on the status page, not as series: a
+            // path-labelled series per file reached 27k series on one NAS share.
             for node in &result.observations {
                 write_node_sizes(&mut out, snapshot, node, &result.backend);
                 write_node_entries(&mut out, snapshot, node);
-            }
-            for entry in &result.entries {
-                write_entry_sizes(&mut out, snapshot, entry, &result.backend);
             }
             // The sizes below are the last good scan's; success describes the latest attempt.
             writeln!(
@@ -275,46 +274,6 @@ fn write_headers(out: &mut String) {
     for (name, metric_type, help) in headers {
         writeln!(out, "# HELP {name} {help}").unwrap();
         writeln!(out, "# TYPE {name} {metric_type}").unwrap();
-    }
-}
-
-fn write_entry_sizes(
-    out: &mut String,
-    snapshot: &TargetSnapshot,
-    entry: &EntryObservation,
-    backend: &str,
-) {
-    for size_mode in &snapshot.size_modes {
-        let own_value = match size_mode {
-            SizeMode::Blocks => entry.blocks,
-            SizeMode::Apparent => entry.apparent,
-        };
-        let depth = entry.depth.to_string();
-        let labels = labels_from_pairs(
-            [
-                ("target", snapshot.target_name.as_str()),
-                ("target_type", snapshot.target_type.as_str()),
-                ("path", entry.path.as_str()),
-                ("parent", entry.parent_path.as_str()),
-                ("node", entry.name.as_str()),
-                ("depth", depth.as_str()),
-                ("size_mode", size_mode.as_str()),
-                ("backend", backend),
-            ]
-            .into_iter()
-            .chain(
-                snapshot
-                    .labels
-                    .iter()
-                    .map(|(key, value)| (key.as_str(), value.as_str())),
-            ),
-        );
-        writeln!(
-            out,
-            "storage_harvester_own_size_bytes{{{labels}}} {own_value}"
-        )
-        .unwrap();
-        writeln!(out, "storage_harvester_children_size_bytes{{{labels}}} 0").unwrap();
     }
 }
 

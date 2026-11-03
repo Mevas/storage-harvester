@@ -123,40 +123,6 @@ fn check_dirs(
     }
 }
 
-/// Non-directory entries directly inside reported directories, which the scanner emits as
-/// their own size series.
-fn check_entries(
-    m: &Metrics,
-    target: &str,
-    root: &str,
-    walk: &Walk,
-    report_depth: usize,
-    out: &mut Mismatches,
-) {
-    for (rel, entry) in walk
-        .entries
-        .iter()
-        .filter(|(_, e)| e.depth <= report_depth + 1)
-    {
-        let path = display(root, rel);
-        out.check(
-            format!("{path} blocks"),
-            m.size("storage_harvester_own_size_bytes", target, &path, "blocks"),
-            Some(entry.blocks),
-        );
-        out.check(
-            format!("{path} apparent"),
-            m.size(
-                "storage_harvester_own_size_bytes",
-                target,
-                &path,
-                "apparent",
-            ),
-            Some(entry.apparent),
-        );
-    }
-}
-
 fn check_scan_counts(m: &Metrics, target: &str, walk: &Walk, out: &mut Mismatches) {
     let v = |name: &str| m.target_value(name, target).map(|x| x as u64);
     out.check(
@@ -234,69 +200,87 @@ fn realistic_tree_matches_an_independent_walk() {
     assert!(walk.excluded_children > 0);
 }
 
-/// Runs the same tree with `host_root: /` and the real path as the target, which is the only
-/// configuration in which the scanner emits per-file series today (see the known bug below).
-fn start_without_host_root(host: &Host, report_depth: usize) -> (Harvester, String) {
-    let real = fs::canonicalize(host.data()).unwrap();
-    let real = real.to_str().unwrap().to_string();
-    let h = Harvester::start(
-        &host.tmp.path().join("run-slash"),
-        &format!(
-            "\
-host_root: /
-defaults:
-  baseline_interval: 1h
-  report_depth: {report_depth}
-  size_modes: [blocks, apparent]
-  exclude: ['**/node_modules/**', '**/.git/**']
-targets:
-  - name: data
-    path: '{real}'
-"
-        ),
-    );
-    (h, real)
+/// Paths of the file rows on the status page, unescaped.
+fn status_page_entries(h: &Harvester) -> std::collections::BTreeSet<String> {
+    let (status, page) = h.get("/status/fragment");
+    assert_eq!(status, 200);
+    page.split("<tr class=\"entry-row\"")
+        .skip(1)
+        .map(|row| {
+            let code = row.split_once("<code>").unwrap().1;
+            let path = code.split_once("</code>").unwrap().0;
+            path.replace("&lt;", "<")
+                .replace("&gt;", ">")
+                .replace("&quot;", "\"")
+                .replace("&#39;", "'")
+                .replace("&amp;", "&")
+        })
+        .collect()
 }
 
 #[test]
-fn direct_entries_match_an_independent_walk() {
+fn status_page_lists_every_direct_entry_under_a_host_root() {
+    // The tree view shows each reported directory's direct files. Under a host_root (production
+    // uses /host) it showed none, because entries were filtered by display path against scan
+    // paths.
     let host = Host::new();
     realistic_tree(&host.data(), 42);
-    let (h, root) = start_without_host_root(&host, 2);
+    let h = host.start(REALISTIC_CONFIG);
+    scanned(&h, "data");
+    let walk = oracle_walk(&host.data(), &realistic_rules());
+    let expected: std::collections::BTreeSet<String> = walk
+        .entries
+        .iter()
+        .filter(|(_, entry)| entry.depth <= 3)
+        .map(|(rel, _)| display(DATA, rel))
+        .collect();
+    assert!(expected.len() > 40, "fixture has too few direct entries");
+
+    let listed = status_page_entries(&h);
+    let missing: Vec<_> = expected.difference(&listed).collect();
+    let extra: Vec<_> = listed.difference(&expected).collect();
+    assert!(
+        missing.is_empty() && extra.is_empty(),
+        "status page: {} missing (e.g. {:?}), {} unexpected (e.g. {:?})",
+        missing.len(),
+        missing.first(),
+        extra.len(),
+        extra.first()
+    );
+}
+
+#[test]
+fn metrics_carry_directories_only() {
+    // A path-labelled series per file reached 27k series on one NAS share. Size series exist
+    // for reported directories, one per size mode, and for nothing else.
+    let host = Host::new();
+    realistic_tree(&host.data(), 42);
+    let h = host.start(REALISTIC_CONFIG);
     let m = scanned(&h, "data");
     let walk = oracle_walk(&host.data(), &realistic_rules());
+    let directories: std::collections::BTreeSet<String> = walk
+        .dirs
+        .iter()
+        .filter(|(_, dir)| dir.depth <= 2)
+        .map(|(rel, _)| display(DATA, rel))
+        .collect();
 
-    let mut out = Mismatches::default();
-    check_dirs(&m, "data", &root, &walk, 2, &mut out);
-    check_entries(&m, "data", &root, &walk, 2, &mut out);
-    out.assert_none("direct entries vs oracle");
-}
-
-#[test]
-fn direct_entries_do_not_depend_on_host_root() {
-    // Retiring per-file series (v2 plan §4) is an acceptable fix; behaving differently under
-    // /host than in development is not.
-    let host = Host::new();
-    realistic_tree(&host.data(), 42);
-    let relative_series = |m: &Metrics, root: &str| -> std::collections::BTreeSet<String> {
-        m.find("storage_harvester_own_size_bytes", &[("target", "data")])
-            .into_iter()
-            .map(|s| s.labels["path"].strip_prefix(root).unwrap().to_string())
-            .collect()
-    };
-
-    let mounted = host.start(REALISTIC_CONFIG);
-    let with_host_root = relative_series(&scanned(&mounted, "data"), DATA);
-    drop(mounted);
-    let (plain, root) = start_without_host_root(&host, 2);
-    let without_host_root = relative_series(&scanned(&plain, "data"), &root);
-
-    let only_without: Vec<_> = without_host_root.difference(&with_host_root).collect();
+    let sized = m.find("storage_harvester_own_size_bytes", &[("target", "data")]);
+    assert_eq!(
+        sized.len(),
+        directories.len() * 2,
+        "blocks + apparent per directory"
+    );
+    let not_directories: Vec<_> = sized
+        .iter()
+        .filter(|s| !directories.contains(&s.labels["path"]))
+        .map(|s| s.labels["path"].clone())
+        .collect();
     assert!(
-        only_without.is_empty(),
-        "{} series exist only without host_root, e.g. {:?}",
-        only_without.len(),
-        only_without.first()
+        not_directories.is_empty(),
+        "{} size series for non-directories, e.g. {:?}",
+        not_directories.len(),
+        not_directories.first()
     );
 }
 

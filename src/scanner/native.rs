@@ -432,17 +432,9 @@ fn record_direct_entry(
     (blocks, apparent): (u64, u64),
     entry_kind: EntryKind,
 ) {
-    let display_path = display_path_for(target, path);
-    let parent_display_path = display_path_for(target, parent);
-    let name = display_path
-        .file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_else(|| display_path.display().to_string());
-
     state.entries.push(EntryObservation {
-        parent_path: parent_display_path.display().to_string(),
-        path: display_path.display().to_string(),
-        name,
+        parent_path: display_path_for(target, parent).display().to_string(),
+        path: display_path_for(target, path).display().to_string(),
         entry_type: entry_type_for(entry_kind),
         depth,
         blocks,

@@ -29,7 +29,6 @@ pub struct ScanResult {
 pub struct EntryObservation {
     pub parent_path: String,
     pub path: String,
-    pub name: String,
     pub entry_type: EntryType,
     pub depth: usize,
     pub blocks: u64,
