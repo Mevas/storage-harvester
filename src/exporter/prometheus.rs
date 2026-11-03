@@ -57,7 +57,13 @@ pub fn render(snapshots: &[TargetSnapshot]) -> String {
             for entry in &result.entries {
                 write_entry_sizes(&mut out, snapshot, entry, &result.backend);
             }
-            writeln!(out, "storage_harvester_scan_success{{{base_labels}}} 1").unwrap();
+            // The sizes below are the last good scan's; success describes the latest attempt.
+            writeln!(
+                out,
+                "storage_harvester_scan_success{{{base_labels}}} {}",
+                u8::from(snapshot.last_error.is_none())
+            )
+            .unwrap();
             writeln!(
                 out,
                 "storage_harvester_scan_duration_seconds{{{base_labels},backend=\"{}\"}} {:.6}",
@@ -143,7 +149,7 @@ pub fn render(snapshots: &[TargetSnapshot]) -> String {
             writeln!(out, "storage_harvester_scan_success{{{base_labels}}} 0").unwrap();
             writeln!(
                 out,
-                "storage_harvester_target_stale_seconds{{{base_labels}}} NaN"
+                "storage_harvester_target_stale_seconds{{{base_labels}}} +Inf"
             )
             .unwrap();
         }

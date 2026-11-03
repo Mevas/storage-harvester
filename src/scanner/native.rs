@@ -1,10 +1,11 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fs;
 use std::os::unix::fs::{FileTypeExt, MetadataExt};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant, SystemTime};
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use globset::{Glob, GlobSet, GlobSetBuilder};
 
 use crate::config::{ReportMode, Target};
@@ -48,7 +49,7 @@ impl Scanner for NativeScanner {
         "native"
     }
 
-    fn scan(&self, target: &Target) -> Result<ScanResult> {
+    fn scan(&self, target: &Target, cancel: &AtomicBool) -> Result<ScanResult> {
         let started = Instant::now();
         let timestamp = SystemTime::now();
         let root_metadata = metadata_for(&target.scan_path, target.follow_symlinks)
@@ -68,6 +69,7 @@ impl Scanner for NativeScanner {
             scanned_symlinks: 0,
             max_observed_depth: 0,
             depth_limit_hits: 0,
+            counted_hardlinks: HashSet::new(),
             timestamp,
         };
 
@@ -76,6 +78,9 @@ impl Scanner for NativeScanner {
             depth: 0,
         }];
         while let Some(item) = stack.pop() {
+            if cancel.load(Ordering::Relaxed) {
+                bail!("scan of {} cancelled", target.scan_path.display());
+            }
             let path = item.path;
             if self.is_excluded(target, &path) {
                 state.skipped_excluded += 1;
@@ -181,6 +186,9 @@ struct ScanState {
     scanned_symlinks: u64,
     max_observed_depth: usize,
     depth_limit_hits: u64,
+    /// `(dev, ino)` of multiply-linked files already counted, so N links to one allocation
+    /// count it once, as `du` does.
+    counted_hardlinks: HashSet<(u64, u64)>,
     timestamp: SystemTime,
 }
 
@@ -193,6 +201,12 @@ impl ScanState {
 
     fn finish(self, target: &Target, duration: Duration) -> ScanResult {
         let reported = reported_paths(target, &self.nodes);
+        // Entries carry display paths, while `reported` holds scan paths; they differ whenever
+        // host_root is not `/`, which is every container deployment.
+        let reported_display: BTreeSet<String> = reported
+            .iter()
+            .map(|path| display_path_for(target, path).display().to_string())
+            .collect();
         let observations = self
             .nodes
             .into_iter()
@@ -202,7 +216,7 @@ impl ScanState {
         let entries = self
             .entries
             .into_iter()
-            .filter(|entry| reported.contains(Path::new(&entry.parent_path)))
+            .filter(|entry| reported_display.contains(&entry.parent_path))
             .collect();
 
         ScanResult {
@@ -325,8 +339,17 @@ fn account_entry(
     depth: usize,
     metadata: &fs::Metadata,
 ) {
-    let blocks = metadata.blocks().saturating_mul(512);
-    let apparent = metadata.size();
+    // Every link is an entry, but a multiply-linked file's allocation counts at its first link.
+    let first_link = metadata.is_dir()
+        || metadata.nlink() <= 1
+        || state
+            .counted_hardlinks
+            .insert((metadata.dev(), metadata.ino()));
+    let (blocks, apparent) = if first_link {
+        (metadata.blocks().saturating_mul(512), metadata.size())
+    } else {
+        (0, 0)
+    };
     let file_type = metadata.file_type();
 
     state.scanned_files += u64::from(metadata.is_file());
@@ -381,7 +404,15 @@ fn account_entry(
     } else {
         EntryKind::Other
     };
-    record_direct_entry(state, target, parent, path, depth, metadata, entry_kind);
+    record_direct_entry(
+        state,
+        target,
+        parent,
+        path,
+        depth,
+        (blocks, apparent),
+        entry_kind,
+    );
 
     for ancestor in ancestors_between(target, parent) {
         let ancestor_depth = relative_depth(target, &ancestor);
@@ -398,7 +429,7 @@ fn record_direct_entry(
     parent: &Path,
     path: &Path,
     depth: usize,
-    metadata: &fs::Metadata,
+    (blocks, apparent): (u64, u64),
     entry_kind: EntryKind,
 ) {
     let display_path = display_path_for(target, path);
@@ -414,8 +445,8 @@ fn record_direct_entry(
         name,
         entry_type: entry_type_for(entry_kind),
         depth,
-        blocks: metadata.blocks().saturating_mul(512),
-        apparent: metadata.size(),
+        blocks,
+        apparent,
     });
 }
 
@@ -523,7 +554,7 @@ mod tests {
 
         let target = test_target(temp.path().to_path_buf(), temp.path().to_path_buf(), vec![]);
         let scanner = NativeScanner::new(&target).unwrap();
-        let result = scanner.scan(&target).unwrap();
+        let result = scanner.scan(&target, &AtomicBool::new(false)).unwrap();
 
         assert_eq!(result.backend, "native");
         assert_eq!(result.scanned_directories, 2);
@@ -560,10 +591,20 @@ mod tests {
             vec!["**/.cache/**".to_string()],
         );
         let scanner = NativeScanner::new(&target).unwrap();
-        let result = scanner.scan(&target).unwrap();
+        let result = scanner.scan(&target, &AtomicBool::new(false)).unwrap();
 
         assert_eq!(result.scanned_files, 1);
         assert!(result.skipped_excluded >= 1);
+    }
+
+    #[test]
+    fn stops_when_cancelled() {
+        let temp = tempdir().unwrap();
+        File::create(temp.path().join("file.txt")).unwrap();
+        let target = test_target(temp.path().to_path_buf(), temp.path().to_path_buf(), vec![]);
+        let scanner = NativeScanner::new(&target).unwrap();
+        let error = scanner.scan(&target, &AtomicBool::new(true)).unwrap_err();
+        assert!(error.to_string().contains("cancelled"), "{error}");
     }
 
     #[test]
@@ -576,7 +617,7 @@ mod tests {
         let mut target = test_target(temp.path().to_path_buf(), PathBuf::from("/root"), vec![]);
         target.report_depth = 1;
         let scanner = NativeScanner::new(&target).unwrap();
-        let result = scanner.scan(&target).unwrap();
+        let result = scanner.scan(&target, &AtomicBool::new(false)).unwrap();
 
         assert!(result.observations.iter().any(|node| node.path == "/root"));
         let child = result

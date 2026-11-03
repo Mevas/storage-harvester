@@ -273,8 +273,7 @@ fn direct_entries_match_an_independent_walk() {
 }
 
 #[test]
-#[ignore = "known bug: under a host_root (production uses /host) no per-file series are emitted, because native.rs filters entries by display path against scan paths"]
-fn known_bug_direct_entries_do_not_depend_on_host_root() {
+fn direct_entries_do_not_depend_on_host_root() {
     // Retiring per-file series (v2 plan §4) is an acceptable fix; behaving differently under
     // /host than in development is not.
     let host = Host::new();
@@ -511,12 +510,83 @@ fn exported_metrics_are_valid_prometheus_text() {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Known bugs. Each asserts correct behaviour and is ignored until the fix lands.
+// Regressions: each of these was a live defect (v2 plan §2, §6, §8).
 // ---------------------------------------------------------------------------------------------
 
 #[test]
-#[ignore = "known bug: `max_depth: null` inherits the default instead of meaning unlimited (v2 plan §2, Phase A)"]
-fn known_bug_max_depth_null_means_unlimited() {
+fn timed_out_scan_stops_walking() {
+    // A walk that never ends: two links back to the directory itself, followed, under a depth
+    // cap high enough that the walk cannot finish (2^64 paths). A timeout must stop it, not
+    // leave it running in the background while the scheduler moves on.
+    let host = Host::new();
+    write_file(&host.data().join("file.bin"), 10);
+    link(".", &host.data().join("a"));
+    link(".", &host.data().join("b"));
+    let h = host.start(
+        "\
+defaults:
+  baseline_interval: 1h
+  timeout: 1s
+  follow_symlinks: true
+  max_depth: 64
+targets:
+  - name: data
+    path: /srv/data
+",
+    );
+    let m = h.wait_for_scans("data", 1, SCAN_TIMEOUT);
+    assert_eq!(
+        m.target_value("storage_harvester_scan_success", "data"),
+        Some(0.0)
+    );
+    assert_eq!(
+        m.target_value("storage_harvester_scan_errors_total", "data"),
+        Some(1.0)
+    );
+
+    let before = cpu_seconds(h.pid());
+    std::thread::sleep(Duration::from_secs(2));
+    let used = cpu_seconds(h.pid()) - before;
+    assert!(
+        used < 0.5,
+        "the timed-out walk kept running: {used:.2}s of CPU in the 2s after its timeout"
+    );
+}
+
+#[test]
+fn scan_success_reports_the_latest_scan() {
+    // After a success, a failing rescan must read as a failure. Otherwise a target that
+    // starts timing out looks healthy forever, with frozen numbers.
+    let host = Host::new();
+    realistic_tree(&host.data(), 17);
+    let h = host.start(
+        "\
+defaults:
+  baseline_interval: 1s
+targets:
+  - name: data
+    path: /srv/data
+",
+    );
+    scanned(&h, "data");
+    fs::rename(host.data(), host.root().join("srv/moved")).unwrap();
+    let m = h.wait_for("a failed rescan", SCAN_TIMEOUT, |m| {
+        m.target_value("storage_harvester_scan_errors_total", "data")
+            .is_some_and(|n| n >= 1.0)
+    });
+    assert_eq!(
+        m.target_value("storage_harvester_scan_success", "data"),
+        Some(0.0)
+    );
+    // The last good numbers stay visible, and so does their age.
+    assert!(m.total_size("data", DATA, "blocks").is_some());
+    assert!(m
+        .target_value("storage_harvester_target_stale_seconds", "data")
+        .is_some_and(f64::is_finite));
+}
+
+#[test]
+fn max_depth_null_means_unlimited() {
     // The deployed nuc.yaml shape: a capped default, and a target that asks for no cap.
     let host = Host::new();
     realistic_tree(&host.data(), 13);
@@ -542,8 +612,7 @@ targets:
 }
 
 #[test]
-#[ignore = "known bug: --check-config validates written values, not effective ones (v2 plan Phase A)"]
-fn known_bug_check_config_rejects_effective_max_depth_below_report_depth() {
+fn check_config_rejects_effective_max_depth_below_report_depth() {
     let tmp = tempfile::tempdir().unwrap();
     let config = tmp.path().join("config.yaml");
     fs::write(
@@ -572,8 +641,7 @@ targets:
 }
 
 #[test]
-#[ignore = "known bug: hardlinks are counted once per link, not once per allocation (v2 plan §6, Phase B)"]
-fn known_bug_hardlinks_are_counted_once() {
+fn hardlinks_are_counted_once() {
     let host = Host::new();
     let data = host.data();
     write_file(&data.join("original.bin"), 1024 * 1024);
@@ -611,8 +679,7 @@ targets:
 ";
 
 #[test]
-#[ignore = "known bug: /-/ready is true for a target that has only ever failed (v2 plan §8, Phase A)"]
-fn known_bug_target_that_only_failed_is_not_ready() {
+fn target_that_only_failed_is_not_ready() {
     let host = Host::new();
     fs::create_dir_all(host.root()).unwrap();
     let h = host.start(MISSING_TARGET_CONFIG);
@@ -626,8 +693,7 @@ fn known_bug_target_that_only_failed_is_not_ready() {
 }
 
 #[test]
-#[ignore = "known bug: target_stale_seconds is NaN for a never-succeeded target, so `> N` alerts never fire (v2 plan §8, Phase A)"]
-fn known_bug_never_succeeded_target_is_infinitely_stale() {
+fn never_succeeded_target_is_infinitely_stale() {
     let host = Host::new();
     fs::create_dir_all(host.root()).unwrap();
     let h = host.start(MISSING_TARGET_CONFIG);
@@ -642,8 +708,7 @@ fn known_bug_never_succeeded_target_is_infinitely_stale() {
 }
 
 #[test]
-#[ignore = "known bug: a user label named like a built-in emits a duplicate label, which fails the whole scrape (v2 plan §8, Phase A)"]
-fn known_bug_user_label_cannot_duplicate_a_builtin_label() {
+fn user_label_cannot_duplicate_a_builtin_label() {
     let host = Host::new();
     write_file(&host.data().join("file.txt"), 100);
     let body = "\

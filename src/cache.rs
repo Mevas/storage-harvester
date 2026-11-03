@@ -97,11 +97,12 @@ impl SnapshotStore {
         self.inner.read().await.values().cloned().collect()
     }
 
+    /// Ready once every target has produced data. A target that has only ever failed is not.
     pub async fn ready(&self) -> bool {
         self.inner
             .read()
             .await
             .values()
-            .all(|snapshot| snapshot.last_success.is_some() || snapshot.last_error.is_some())
+            .all(|snapshot| snapshot.last_success.is_some())
     }
 }
