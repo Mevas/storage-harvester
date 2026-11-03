@@ -63,7 +63,11 @@ impl Scanner for NativeScanner {
         let scan_root = target.scan_path.as_os_str().as_bytes();
         let mut first = Worker::default();
 
-        if !self.exclude.is_empty() && self.exclude.is_match(&target.display_path) {
+        let root = sys::stat_path(&target.scan_path, target.follow_symlinks)
+            .with_context(|| format!("failed to stat {}", target.scan_path.display()))?;
+        // The root is matched as `<display path>/`, as it always has been: `**/cache/**`
+        // excludes a `/var/cache` target, and `**/cache` does not.
+        if !self.exclude.is_empty() && self.exclude.is_match(target.display_path.join("")) {
             first.counts.skipped_excluded += 1;
             return Ok(finish(
                 self.backend(),
@@ -74,8 +78,6 @@ impl Scanner for NativeScanner {
                 timestamp,
             ));
         }
-        let root = sys::stat_path(&target.scan_path, target.follow_symlinks)
-            .with_context(|| format!("failed to stat {}", target.scan_path.display()))?;
         let walk = Walk {
             target,
             exclude: &self.exclude,
@@ -590,8 +592,8 @@ impl Drop for HaltOnPanic<'_, '_> {
     }
 }
 
-/// Counts an expected failure (a path that vanished, or one we may not read) and carries on;
-/// anything else fails the scan.
+/// Counts an expected failure (a path that vanished, one we may not read, or one too long to
+/// open) and carries on; anything else fails the scan.
 fn tolerate(
     counts: &mut Counts,
     error: io::Error,
@@ -602,7 +604,7 @@ fn tolerate(
         Ok(())
     } else if matches!(
         error.raw_os_error(),
-        Some(libc::ENOENT | libc::ENOTDIR | libc::ELOOP)
+        Some(libc::ENOENT | libc::ENOTDIR | libc::ELOOP | libc::ENAMETOOLONG)
     ) {
         counts.missing_path_races += 1;
         Ok(())
@@ -1168,6 +1170,70 @@ mod tests {
             seen.push((sizes, charged[0].to_string()));
         }
         assert!(seen.windows(2).all(|pair| pair[0] == pair[1]), "{seen:#?}");
+    }
+
+    #[test]
+    fn root_exclusion_matches_the_root_with_a_trailing_slash() {
+        let temp = tempdir().unwrap();
+        File::create(temp.path().join("kept.txt")).unwrap();
+        let display = PathBuf::from("/var/cache");
+        for (pattern, excluded) in [("**/cache/**", true), ("**/cache", false)] {
+            let target = test_target(
+                temp.path().to_path_buf(),
+                display.clone(),
+                vec![pattern.to_string()],
+            );
+            let scanner = NativeScanner::new(&target).unwrap();
+            let result = scanner.scan(&target, &AtomicBool::new(false)).unwrap();
+            assert_eq!(result.observations.is_empty(), excluded, "{pattern}");
+            assert_eq!(result.skipped_excluded, u64::from(excluded), "{pattern}");
+        }
+
+        // An excluded root is still stat'ed first, so a missing one fails the scan.
+        let target = test_target(
+            temp.path().join("missing"),
+            display,
+            vec!["**/cache/**".to_string()],
+        );
+        let scanner = NativeScanner::new(&target).unwrap();
+        assert!(scanner.scan(&target, &AtomicBool::new(false)).is_err());
+    }
+
+    #[test]
+    fn directories_too_deep_to_open_are_counted_not_fatal() {
+        // Deeper than PATH_MAX: built with mkdirat/openat, since no path reaches the bottom.
+        // On Linux each entry is stat'ed relative to its directory, so the walk gets as far as
+        // opening a directory by a path the kernel refuses.
+        let temp = tempdir().unwrap();
+        let name = CString::new("d".repeat(200)).unwrap();
+        let file = CString::new("f").unwrap();
+        let path = CString::new(temp.path().as_os_str().as_bytes()).unwrap();
+        // SAFETY: plain libc calls on NUL-terminated strings; every descriptor is closed.
+        unsafe {
+            let mut fd = libc::open(path.as_ptr(), libc::O_RDONLY | libc::O_DIRECTORY);
+            assert!(fd >= 0);
+            for _ in 0..30 {
+                let created =
+                    libc::openat(fd, file.as_ptr(), libc::O_CREAT | libc::O_WRONLY, 0o644);
+                assert!(created >= 0);
+                libc::close(created);
+                assert_eq!(libc::mkdirat(fd, name.as_ptr(), 0o755), 0);
+                let next = libc::openat(fd, name.as_ptr(), libc::O_RDONLY | libc::O_DIRECTORY);
+                assert!(next >= 0);
+                libc::close(fd);
+                fd = next;
+            }
+            libc::close(fd);
+        }
+
+        let target = test_target(temp.path().to_path_buf(), PathBuf::from("/deep"), vec![]);
+        let scanner = NativeScanner::new(&target).unwrap();
+        let result = scanner.scan(&target, &AtomicBool::new(false)).unwrap();
+        assert!(result.missing_path_races >= 1, "{result:?}");
+        assert!(
+            result.scanned_files > 1 && result.scanned_files < 30,
+            "{result:?}"
+        );
     }
 
     fn test_target(scan_path: PathBuf, display_path: PathBuf, exclude: Vec<String>) -> Target {
