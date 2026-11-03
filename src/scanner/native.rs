@@ -592,7 +592,10 @@ mod tests {
         assert_eq!(child.depth, 1);
         assert_eq!(child.directory_count, 1);
         // A directory's own size is its inode's allocation: 0 on APFS, a block or more on ext4.
-        let a_blocks = fs::symlink_metadata(temp.path().join("a")).unwrap().blocks() * 512;
+        let a_blocks = fs::symlink_metadata(temp.path().join("a"))
+            .unwrap()
+            .blocks()
+            * 512;
         assert_eq!(child.own_blocks, a_blocks);
         assert!(child.children_blocks > 0);
         assert!(root.children_blocks >= child.own_blocks + child.children_blocks);

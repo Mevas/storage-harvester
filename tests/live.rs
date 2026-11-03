@@ -70,6 +70,20 @@ fn deployed_harvester_matches_its_host() {
             continue;
         }
         let truth = walk_on_host(&ssh, &target, sudo);
+        if truth.dirs == 0 {
+            // Not even the root was listed: the ground truth failed, not the harvester.
+            out.push(format!(
+                "{name}: host walk of {} returned nothing (find exit {})",
+                target.path, truth.find_exit
+            ));
+            continue;
+        }
+        if truth.find_exit != 0 {
+            eprintln!(
+                "warning: {name}: find exited {} (usually files vanishing mid-walk on a live tree)",
+                truth.find_exit
+            );
+        }
         let harvester_bytes = metrics
             .total_size(name, &target.path, "blocks")
             .unwrap_or(0) as f64;
@@ -96,6 +110,12 @@ fn deployed_harvester_matches_its_host() {
         );
 
         let mut near = |what: &str, got: f64, want: f64| {
+            if !got.is_finite() {
+                out.push(format!(
+                    "{name}: {what} missing from the harvester's metrics"
+                ));
+                return;
+            }
             let drift = (got - want).abs() / want.max(1.0);
             if drift > tolerance {
                 out.push(format!(
@@ -174,6 +194,7 @@ struct HostWalk {
     dirs: u64,
     bytes: u64,
     max_depth: u64,
+    find_exit: u64,
 }
 
 fn walk_on_host(ssh: &str, target: &IntendedTarget, sudo: bool) -> HostWalk {
@@ -211,10 +232,13 @@ fn walk_on_host(ssh: &str, target: &IntendedTarget, sudo: bool) -> HostWalk {
     } else {
         "1"
     };
+    // find's exit status travels down the pipe as a final `EXIT n` line, so a failed walk is
+    // visible without relying on the remote shell supporting pipefail.
     let command = format!(
-        "{sudo}find {path} {xdev} {depth} {prune} -printf '%D %y %b %d\\n' 2>/dev/null \
-         | awk 'NR==1{{r=$1}} {same_dev}{{n[$2]++; b+=$3; if($4>m)m=$4}} \
-           END{{printf \"f=%d d=%d blocks=%.0f depth=%d\\n\", n[\"f\"], n[\"d\"], b, m}}'",
+        "{{ {sudo}find {path} {xdev} {depth} {prune} -printf '%D %y %b %d\\n' 2>/dev/null; \
+           echo \"EXIT $?\"; }} \
+         | awk '$1==\"EXIT\"{{e=$2; next}} NR==1{{r=$1}} {same_dev}{{n[$2]++; b+=$3; if($4>m)m=$4}} \
+           END{{printf \"f=%d d=%d blocks=%.0f depth=%d exit=%d\\n\", n[\"f\"], n[\"d\"], b, m, e}}'",
         sudo = if sudo { "sudo -n " } else { "" },
         path = sh(&target.path),
     );
@@ -229,6 +253,7 @@ fn walk_on_host(ssh: &str, target: &IntendedTarget, sudo: bool) -> HostWalk {
         dirs: fields["d"],
         bytes: fields["blocks"] * 512,
         max_depth: fields["depth"],
+        find_exit: fields["exit"],
     }
 }
 

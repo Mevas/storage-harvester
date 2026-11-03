@@ -66,6 +66,14 @@ targets:
         .target_value("storage_harvester_scan_duration_seconds", "perf")
         .unwrap();
     let warm = h.wait_for_scans("perf", 3, timeout);
+    // Scan counts include failures, and a failed rescan leaves the last success's numbers in
+    // place, so without this the "warm" figures could be the first scan's.
+    assert_eq!(
+        warm.target_value("storage_harvester_scan_errors_total", "perf"),
+        Some(0.0),
+        "a rescan failed:\n{}",
+        h.log_tail(20)
+    );
     let warm_seconds = warm
         .target_value("storage_harvester_scan_duration_seconds", "perf")
         .unwrap();
