@@ -102,9 +102,7 @@ fn render_status_page(snapshots: &[TargetSnapshot]) -> String {
 }
 
 fn render_status_content(snapshots: &[TargetSnapshot]) -> String {
-    let ready = snapshots
-        .iter()
-        .all(|snapshot| snapshot.last_success.is_some() || snapshot.last_error.is_some());
+    let ready = snapshots.iter().all(TargetSnapshot::is_ready);
     let successful = snapshots
         .iter()
         .filter(|snapshot| snapshot.last_error.is_none() && snapshot.last_success.is_some())

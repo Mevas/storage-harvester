@@ -233,11 +233,14 @@ fn walk_on_host(ssh: &str, target: &IntendedTarget, sudo: bool) -> HostWalk {
         "1"
     };
     // find's exit status travels down the pipe as a final `EXIT n` line, so a failed walk is
-    // visible without relying on the remote shell supporting pipefail.
+    // visible without relying on the remote shell supporting pipefail. A multiply-linked file's
+    // blocks count at its first link only (`%n` links, `%i` inode), as the harvester counts them.
     let command = format!(
-        "{{ {sudo}find {path} {xdev} {depth} {prune} -printf '%D %y %b %d\\n' 2>/dev/null; \
+        "{{ {sudo}find {path} {xdev} {depth} {prune} -printf '%D %y %b %d %n %i\\n' 2>/dev/null; \
            echo \"EXIT $?\"; }} \
-         | awk '$1==\"EXIT\"{{e=$2; next}} NR==1{{r=$1}} {same_dev}{{n[$2]++; b+=$3; if($4>m)m=$4}} \
+         | awk '$1==\"EXIT\"{{e=$2; next}} NR==1{{r=$1}} \
+           {same_dev}{{n[$2]++; if($4>m)m=$4; k=$1\":\"$6; \
+             if($2==\"d\" || $5<2){{b+=$3}} else if(!(k in s)){{b+=$3; s[k]=1}}}} \
            END{{printf \"f=%d d=%d blocks=%.0f depth=%d exit=%d\\n\", n[\"f\"], n[\"d\"], b, m, e}}'",
         sudo = if sudo { "sudo -n " } else { "" },
         path = sh(&target.path),

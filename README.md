@@ -32,7 +32,7 @@ The service resolves `/var/log` to `/host/var/log` internally but keeps `/var/lo
 
 ```bash
 cargo test                      # unit tests + black-box suites (CI runs this)
-cargo test -- --ignored         # known bugs: each fails until its fix lands
+cargo test -- --ignored         # known bugs, if any: each fails until fixed
 cargo test --release --test perf -- --nocapture
 ```
 
@@ -44,8 +44,8 @@ walk of the same tree (`tests/support`), not from the scanner.
   image, symlinks of every kind, a 15-level chain, and hostile file names. Checks every reported
   size, entry count and scan counter; agreement with `du -sk`; rescans after real growth and
   deletion; explicit depth caps; unreadable directories; and Prometheus exposition validity.
-  Tests named `known_bug_*` are `#[ignore]`d and assert the *correct* behaviour for documented
-  defects. Un-ignore each one in the change that fixes it.
+  A defect found before its fix is recorded as an `#[ignore = "known bug: ..."]` test that
+  asserts the *correct* behaviour; the change that fixes it removes the `ignore`.
 - `tests/perf.rs`: scan time and µs per entry (cold when `HARVESTER_PERF_DROP_CACHES=1` and
   `sudo -n` work), compared against the independent walk on the same machine, plus memory and
   `/metrics` size and series count. Fails if a warm scan exceeds `HARVESTER_PERF_MAX_RATIO`

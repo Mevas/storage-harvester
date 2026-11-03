@@ -693,6 +693,39 @@ pub fn rss_kib(pid: u32) -> Option<(u64, &'static str)> {
         .map(|kib| (kib, "current"))
 }
 
+/// CPU time (user + system) the process has used so far, in seconds.
+pub fn cpu_seconds(pid: u32) -> f64 {
+    if let Ok(stat) = fs::read_to_string(format!("/proc/{pid}/stat")) {
+        // Fields after the parenthesised command name start at field 3 (state); utime and
+        // stime are fields 14 and 15, in clock ticks.
+        let fields: Vec<&str> = stat
+            .rsplit_once(')')
+            .unwrap()
+            .1
+            .split_whitespace()
+            .collect();
+        let ticks: f64 = fields[11].parse::<f64>().unwrap() + fields[12].parse::<f64>().unwrap();
+        let hz: f64 = Command::new("getconf")
+            .arg("CLK_TCK")
+            .output()
+            .ok()
+            .and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse().ok())
+            .unwrap_or(100.0);
+        return ticks / hz;
+    }
+    // BSD ps: [[hh:]mm:]ss.cc
+    let output = Command::new("ps")
+        .args(["-o", "time=", "-p", &pid.to_string()])
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&output.stdout)
+        .trim()
+        .split(':')
+        .fold(0.0, |total, part| {
+            total * 60.0 + part.parse::<f64>().unwrap()
+        })
+}
+
 /// Drops the Linux page, dentry and inode caches when `HARVESTER_PERF_DROP_CACHES=1` and
 /// passwordless sudo is available. Returns whether the next walk starts cold.
 pub fn drop_caches_if_requested() -> bool {

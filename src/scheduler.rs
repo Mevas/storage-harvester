@@ -1,3 +1,6 @@
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+
 use tokio::task::JoinHandle;
 use tokio::time;
 use tracing::{error, info, warn};
@@ -45,12 +48,22 @@ async fn run_scan(target: &Target, store: &SnapshotStore) {
     );
     store.record_scan_start(&target.name).await;
     let target_clone = target.clone();
-    let scan = tokio::task::spawn_blocking(move || {
+    let cancel = Arc::new(AtomicBool::new(false));
+    let walk_cancel = Arc::clone(&cancel);
+    let mut scan = tokio::task::spawn_blocking(move || {
         let scanner = scanner::build(&target_clone)?;
-        scanner.scan(&target_clone)
+        scanner.scan(&target_clone, &walk_cancel)
     });
 
-    match time::timeout(target.timeout, scan).await {
+    let outcome = time::timeout(target.timeout, &mut scan).await;
+    if outcome.is_err() {
+        // A blocking task cannot be aborted, so stop the walk cooperatively and wait for it.
+        // Otherwise it keeps reading the disk while the next scan starts.
+        cancel.store(true, Ordering::Relaxed);
+        let _ = scan.await;
+    }
+
+    match outcome {
         Ok(Ok(Ok(result))) => {
             let issue_count = result.permission_errors
                 + result.missing_path_races
