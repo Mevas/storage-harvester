@@ -45,6 +45,9 @@ pub struct Defaults {
     pub report_depth: usize,
     #[serde(default)]
     pub max_depth: Option<usize>,
+    /// Worker threads per scan. Absent: one per available CPU, up to 16.
+    #[serde(default)]
+    pub scan_threads: Option<usize>,
     #[serde(default = "default_size_modes")]
     pub size_modes: Vec<SizeMode>,
     #[serde(default)]
@@ -90,6 +93,8 @@ pub struct TargetConfig {
     #[serde(default, deserialize_with = "deserialize_explicit")]
     pub max_depth: Option<Option<usize>>,
     #[serde(default)]
+    pub scan_threads: Option<usize>,
+    #[serde(default)]
     pub size_modes: Option<Vec<SizeMode>>,
     #[serde(default)]
     pub exclude: Vec<String>,
@@ -111,6 +116,7 @@ pub struct Target {
     pub report_mode: ReportMode,
     pub report_depth: usize,
     pub max_depth: Option<usize>,
+    pub scan_threads: usize,
     pub size_modes: Vec<SizeMode>,
     pub exclude: Vec<String>,
     pub labels: BTreeMap<String, String>,
@@ -127,6 +133,7 @@ impl Default for Defaults {
             report_mode: default_report_mode(),
             report_depth: default_report_depth(),
             max_depth: None,
+            scan_threads: None,
             size_modes: default_size_modes(),
             exclude: Vec::new(),
         }
@@ -196,6 +203,10 @@ impl Config {
             report_mode: target.report_mode.unwrap_or(self.defaults.report_mode),
             report_depth,
             max_depth,
+            scan_threads: target
+                .scan_threads
+                .or(self.defaults.scan_threads)
+                .unwrap_or_else(default_scan_threads),
             size_modes: target
                 .size_modes
                 .clone()
@@ -217,6 +228,9 @@ impl Config {
         }
         if self.targets.is_empty() {
             bail!("at least one target is required");
+        }
+        if let Some(threads) = self.defaults.scan_threads {
+            check_scan_threads("defaults", threads)?;
         }
 
         let mut names = HashSet::new();
@@ -248,6 +262,9 @@ impl Config {
             }
             if target.timeout == Some(Duration::ZERO) {
                 bail!("target {} timeout must be greater than zero", target.name);
+            }
+            if let Some(threads) = target.scan_threads {
+                check_scan_threads(&format!("target {}", target.name), threads)?;
             }
             if matches!(target.size_modes.as_deref(), Some([])) {
                 bail!("target {} size_modes cannot be empty", target.name);
@@ -288,6 +305,23 @@ const BUILTIN_LABELS: &[&str] = &[
     "entry_type",
     "issue",
 ];
+
+const MAX_SCAN_THREADS: usize = 256;
+
+fn check_scan_threads(scope: &str, threads: usize) -> Result<()> {
+    if !(1..=MAX_SCAN_THREADS).contains(&threads) {
+        bail!("{scope} scan_threads must be between 1 and {MAX_SCAN_THREADS}");
+    }
+    Ok(())
+}
+
+/// One walker per CPU the process may use (cgroup quotas included), up to 16: past that a
+/// warm walk stops getting faster, and a cold one is bound by the disk's queue.
+fn default_scan_threads() -> usize {
+    std::thread::available_parallelism()
+        .map_or(4, usize::from)
+        .clamp(1, 16)
+}
 
 fn normalize_display_path(path: &Path) -> Result<PathBuf> {
     if !path.is_absolute() {
@@ -453,6 +487,38 @@ targets:
             assert!(resolve(&yaml).is_err(), "accepted label {label:?}");
         }
         assert!(resolve("targets:\n  - { name: t, path: /t, labels: { host: nuc } }\n").is_ok());
+    }
+
+    #[test]
+    fn scan_threads_inherit_override_and_stay_in_range() {
+        let targets = resolve(
+            "
+defaults: { scan_threads: 3 }
+targets:
+  - { name: inherited, path: /a }
+  - { name: own, path: /b, scan_threads: 1 }
+",
+        )
+        .unwrap();
+        let threads: Vec<_> = targets.iter().map(|t| t.scan_threads).collect();
+        assert_eq!(threads, [3, 1]);
+
+        let automatic = resolve("targets:\n  - { name: t, path: /t }\n").unwrap();
+        assert!((1..=16).contains(&automatic[0].scan_threads));
+
+        for bad in ["0", "257"] {
+            for yaml in [
+                format!(
+                    "defaults: {{ scan_threads: {bad} }}\ntargets:\n  - {{ name: t, path: /t }}\n"
+                ),
+                format!("targets:\n  - {{ name: t, path: /t, scan_threads: {bad} }}\n"),
+            ] {
+                assert!(
+                    resolve(&yaml).is_err(),
+                    "accepted scan_threads {bad}: {yaml}"
+                );
+            }
+        }
     }
 
     #[test]

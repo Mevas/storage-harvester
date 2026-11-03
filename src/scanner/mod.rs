@@ -35,10 +35,10 @@ pub struct EntryObservation {
     pub apparent: u64,
 }
 
+/// A non-directory entry; directories are reported as nodes.
 #[derive(Debug, Clone, Copy)]
 pub enum EntryType {
     File,
-    Directory,
     Symlink,
     Other,
 }
@@ -47,7 +47,6 @@ impl EntryType {
     pub fn as_str(self) -> &'static str {
         match self {
             EntryType::File => "file",
-            EntryType::Directory => "directory",
             EntryType::Symlink => "symlink",
             EntryType::Other => "other",
         }
