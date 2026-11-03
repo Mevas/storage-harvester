@@ -49,7 +49,7 @@ walk of the same tree (`tests/support`), not from the scanner.
 - `tests/perf.rs`: scan time and µs per entry (cold when `HARVESTER_PERF_DROP_CACHES=1` and
   `sudo -n` work), compared against the independent walk on the same machine, plus memory and
   `/metrics` size and series count. Fails if a warm scan exceeds `HARVESTER_PERF_MAX_RATIO`
-  (default 4×) of that baseline, or if the walk was incomplete. The report goes to
+  (default 1×) of that baseline, or if the walk was incomplete. The report goes to
   `target/tmp/perf-report.json`. Size the tree with `HARVESTER_PERF_FILES` (default 20000).
 - `tests/live.rs`: opt-in. Compares a deployed harvester with `find` run on its host, using the
   depth the config *intends*:
@@ -106,7 +106,7 @@ src/registry.rs               target registry assembled from collectors
 src/collector/filesystem.rs   configured filesystem target collector
 src/scheduler.rs              background scan timing, timeouts, and task ownership
 src/scanner/mod.rs            scanner trait and backend factory
-src/scanner/native.rs         Linux stat walker using block accounting
+src/scanner/native.rs         parallel getdents64/fstatat walker using block accounting
 src/cache.rs                  cached target snapshots read by exporters/API
 src/exporter/prometheus.rs    Prometheus text exposition renderer
 src/api.rs                    HTTP routes and graceful shutdown
@@ -120,6 +120,24 @@ config -> filesystem collector -> target registry -> scheduler -> scanner -> sna
 
 `/metrics` only reads `SnapshotStore`; it never scans synchronously.
 
+## How a Scan Works
+
+A scan is a parallel walk that does a constant amount of work per entry:
+
+- Each entry costs one `fstatat` relative to its directory's open descriptor. On Linux, names
+  come from `getdents64` into a reused buffer, so nothing per entry is allocated or looked up.
+- Sizes and counts are summed per directory, then added once to the nearest reported
+  directory. The scanner keeps nothing for directories deeper than `report_depth`, so its
+  memory follows the reported tree, not the walked one.
+- `scan_threads` workers share directories through one stack. Each worker keeps descending
+  into one child and hands the others out, so a walk stays roughly depth-first.
+- A multiply-linked file counts once, at the link whose path hashes lowest. Its allocation
+  therefore lands in the same directory on every scan, whatever order the workers took.
+
+More threads help a warm walk up to about the number of CPUs. On a cold cache they also keep
+more reads in flight, which is what a large tree on SSD needs. Lower `scan_threads` to keep a
+scan from competing with the host's other work.
+
 ## Reporting Config
 
 Defaults and targets support the same reporting controls:
@@ -129,6 +147,7 @@ defaults:
   report_mode: tree          # tree or leaves
   report_depth: 1            # emit root plus nodes up to this relative depth
   max_depth: null            # optional traversal cap; null scans full tree
+  scan_threads: 8            # walker threads per scan; absent: one per CPU, up to 16
   size_modes:
     - blocks                 # blocks, apparent
   exclude:                   # inherited by every target
