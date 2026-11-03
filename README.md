@@ -28,6 +28,38 @@ targets:
 
 The service resolves `/var/log` to `/host/var/log` internally but keeps `/var/log` in labels.
 
+## Testing
+
+```bash
+cargo test                      # unit tests + black-box suites (CI runs this)
+cargo test -- --ignored         # known bugs: each fails until its fix lands
+cargo test --release --test perf -- --nocapture
+```
+
+The black-box suites in `tests/` run the real binary through a `host_root` mount, the way the
+container runs, and read what it exports over HTTP. Expected values come from an independent
+walk of the same tree (`tests/support`), not from the scanner.
+
+- `tests/accuracy.rs`: a generated tree with vendored dependencies, VCS metadata, logs, a sparse
+  image, symlinks of every kind, a 15-level chain, and hostile file names. Checks every reported
+  size, entry count and scan counter; agreement with `du -sk`; rescans after real growth and
+  deletion; explicit depth caps; unreadable directories; and Prometheus exposition validity.
+  Tests named `known_bug_*` are `#[ignore]`d and assert the *correct* behaviour for documented
+  defects. Un-ignore each one in the change that fixes it.
+- `tests/perf.rs`: scan time and µs per entry (cold when `HARVESTER_PERF_DROP_CACHES=1` and
+  `sudo -n` work), compared against the independent walk on the same machine, plus memory and
+  `/metrics` size and series count. Fails if a warm scan exceeds `HARVESTER_PERF_MAX_RATIO`
+  (default 4×) of that baseline, or if the walk was incomplete. The report goes to
+  `target/tmp/perf-report.json`. Size the tree with `HARVESTER_PERF_FILES` (default 20000).
+- `tests/live.rs`: opt-in. Compares a deployed harvester with `find` run on its host, using the
+  depth the config *intends*:
+
+  ```bash
+  HARVESTER_LIVE_SSH=nuc \
+  HARVESTER_LIVE_CONFIG=../storage-harvester-komodo/configs/nuc.yaml \
+    cargo test --test live -- --nocapture
+  ```
+
 ## Docker Compose
 
 The example `compose.yaml` expects deployment-owned configuration at `./config.yaml`:
