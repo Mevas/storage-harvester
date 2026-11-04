@@ -31,7 +31,7 @@ use crate::scanner::native::{self, NativeScanner};
 use crate::scanner::Scanner;
 use std::cmp::Ordering as Order;
 
-use crate::tree::{Delta, DirTree, LinkOwner, NONE};
+use crate::tree::{plain_key, Delta, DirTree, LinkOwner, NONE};
 
 /// Events kept for clients that connect later.
 const REPLAY: usize = 200;
@@ -98,6 +98,10 @@ pub struct TreeState {
     pub live_at: Option<SystemTime>,
     handles: HashMap<Box<[u8]>, u32>,
     inos: HashMap<u64, u32>,
+    /// The scan's [`DirTree::plain`], and what re-reads found since: which directory each
+    /// singly linked file was in.
+    plain: Vec<(u32, u32)>,
+    plain_live: HashMap<u32, u32>,
 }
 
 impl TreeState {
@@ -112,6 +116,7 @@ impl TreeState {
             .enumerate()
             .map(|(index, node)| (node.ino, index as u32))
             .collect();
+        let plain = std::mem::take(&mut tree.plain);
         Self {
             tree,
             generation,
@@ -119,6 +124,8 @@ impl TreeState {
             live_at: None,
             handles,
             inos,
+            plain,
+            plain_live: HashMap::new(),
         }
     }
 
@@ -130,6 +137,23 @@ impl TreeState {
         for index in from..self.tree.nodes.len() {
             self.inos.insert(self.tree.nodes[index].ino, index as u32);
         }
+        for (key, node) in self.tree.plain.drain(..) {
+            self.plain_live.insert(key, node);
+        }
+    }
+
+    /// Directories that held a singly linked file with this inode, at the scan or since. Some
+    /// may not any more, or may have held another file with the same key.
+    fn plain_holders(&self, (dev, ino): (u64, u64)) -> Vec<u32> {
+        let key = plain_key(dev, ino);
+        let start = self.plain.partition_point(|&(k, _)| k < key);
+        let mut holders: Vec<u32> = self.plain[start..]
+            .iter()
+            .take_while(|&&(k, _)| k == key)
+            .map(|&(_, node)| node)
+            .collect();
+        holders.extend(self.plain_live.get(&key));
+        holders
     }
 
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
@@ -501,12 +525,14 @@ fn relist(lt: &LiveTarget, state: &mut TreeState, node: u32) -> Outcome {
     if !current.alive || current.sealed {
         return out;
     }
+    let by_handle = *lock(&lt.source) == Some("fanotify");
     let listing = match native::read_direct(
         &lt.target,
         &lt.exclude,
         &state.tree.scan_path(node),
         &state.tree.display_path_bytes(node),
         state.tree.root_dev,
+        by_handle,
     ) {
         Ok(listing) => listing,
         Err(error)
@@ -530,8 +556,11 @@ fn relist(lt: &LiveTarget, state: &mut TreeState, node: u32) -> Outcome {
         mut handed,
         writes,
         here,
+        mut adopted,
     } = settle_links(&mut state.tree, node, &listing.links, &mut direct);
-    let by_handle = *lock(&lt.source) == Some("fanotify");
+    for &key in &listing.plain {
+        state.plain_live.insert(key, node);
+    }
 
     // Subdirectories that came or went. A directory replaced under the same name is a new one.
     let mut moved = Delta::default();
@@ -579,6 +608,7 @@ fn relist(lt: &LiveTarget, state: &mut TreeState, node: u32) -> Outcome {
                         j += 1;
                         continue;
                     }
+                    adopted.extend(sub.links.keys().copied());
                     state.tree.graft(node, sub);
                     // Links in the new subtree that are counted elsewhere: it holds them too.
                     for (inode, holders) in shared {
@@ -591,6 +621,18 @@ fn relist(lt: &LiveTarget, state: &mut TreeState, node: u32) -> Outcome {
                     state.index_new(from);
                 }
                 j += 1;
+            }
+        }
+    }
+
+    // fanotify reports a new hard link only to the new link's directory. If the file had one
+    // link before, the directory holding that link still counts it as a plain file: re-read it,
+    // and it sees the file is now counted here.
+    for inode in adopted {
+        for holder in state.plain_holders(inode) {
+            let held = &state.tree.nodes[holder as usize];
+            if held.alive && !held.sealed && holder != node && !out.requeue.contains(&holder) {
+                out.requeue.push(holder);
             }
         }
     }
@@ -692,6 +734,8 @@ struct Settled {
     writes: Vec<(u32, Delta)>,
     /// Every multiply-linked inode the directory lists.
     here: HashSet<(u64, u64)>,
+    /// Multiply-linked inodes the tree did not know, now counted here.
+    adopted: Vec<(u64, u64)>,
 }
 
 /// Counts the multiply-linked files listed in `node` once each, where they already count, and
@@ -705,6 +749,7 @@ fn settle_links(
     let DirTree { nodes, links, .. } = tree;
     let mut seen = HashSet::new();
     let mut writes = Vec::new();
+    let mut adopted = Vec::new();
     for &(inode, blocks, apparent) in listed {
         // Two links in one directory are still one file.
         if !seen.insert(inode) {
@@ -731,6 +776,9 @@ fn settle_links(
                 }
             }
             previous => {
+                if previous.is_none() {
+                    adopted.push(inode);
+                }
                 let mut others = previous
                     .map(|owner| owner.others.clone())
                     .unwrap_or_default();
@@ -766,6 +814,7 @@ fn settle_links(
         handed,
         writes,
         here: seen,
+        adopted,
     }
 }
 
@@ -1268,6 +1317,39 @@ mod tests {
         assert_eq!(tree.root().total_blocks(), fresh.root().total_blocks());
         // Only the directory-inode sizes may differ, if any; the 200 kB are not doubled.
         assert!(tree.root().total_blocks().abs_diff(before) < 100_000);
+    }
+
+    /// fanotify tells only the new link's directory about a new hard link: the directory that
+    /// counted the file while it had one link must be found and re-read too.
+    #[test]
+    fn a_new_link_reported_only_where_it_was_made_counts_once() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        write(&root.join("a/movie.bin"), 200_000);
+        fs::create_dir_all(root.join("b/sub")).unwrap();
+        let mut target = target(root);
+        target.collect_handles = true;
+        let store = started(&target);
+        *lock(&store.targets[0].source) = Some("fanotify");
+        // Created after the scan: only a re-read saw where it is.
+        write(&root.join("a/later.bin"), 300_000);
+        settle(&store, &["/data/a"]);
+
+        fs::hard_link(root.join("a/movie.bin"), root.join("b/movie.bin")).unwrap();
+        fs::hard_link(root.join("a/later.bin"), root.join("b/sub/later.bin")).unwrap();
+        // A new directory holding a link, grafted by its parent's re-read.
+        fs::create_dir_all(root.join("b/fresh")).unwrap();
+        fs::hard_link(root.join("a/movie.bin"), root.join("b/fresh/movie.bin")).unwrap();
+        settle(&store, &["/data/b", "/data/b/sub"]);
+
+        let live = tree_totals(&store);
+        let fresh = totals(&scan(&target));
+        assert_eq!(live["/data"], fresh["/data"], "{live:#?}");
+        let counted = |path: &str| live[path].0 > 150_000;
+        assert!(
+            counted("/data/a") != counted("/data/b"),
+            "movie.bin counted once: {live:#?}"
+        );
     }
 
     fn tree_totals(store: &LiveStore) -> BTreeMap<String, (u64, u64, u64)> {
