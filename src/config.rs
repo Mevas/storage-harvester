@@ -18,9 +18,75 @@ pub struct Config {
     pub metrics_path: String,
     #[serde(default = "default_log_level")]
     pub log_level: String,
+    /// This machine's name, as the scraper's `host` label spells it. Absent: the hostname.
+    #[serde(default)]
+    pub host: Option<String>,
+    /// What the atlas shows for this machine. Absent: `host`.
+    #[serde(default)]
+    pub display_name: Option<String>,
+    #[serde(default)]
+    pub atlas: AtlasConfig,
+    #[serde(default)]
+    pub live: LiveConfig,
     #[serde(default)]
     pub defaults: Defaults,
     pub targets: Vec<TargetConfig>,
+}
+
+/// What `/atlas` needs beyond this harvester: the others, and where history lives.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AtlasConfig {
+    /// Base URLs of the other harvesters, e.g. `http://nas.lan:9799`.
+    #[serde(default)]
+    pub peers: Vec<String>,
+    /// A Prometheus-compatible query API holding this harvester's metrics.
+    #[serde(default)]
+    pub metrics_url: Option<String>,
+    /// Long-running PromQL for a filesystem's used and total bytes, for history that predates
+    /// the harvester's own `storage_harvester_filesystem_*` series.
+    #[serde(default)]
+    pub capacity_queries: Vec<CapacityQuery>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CapacityQuery {
+    /// Any host path on the filesystem.
+    pub path: PathBuf,
+    pub used: String,
+    pub size: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LiveConfig {
+    /// Follow changes between scans: fanotify where the kernel has it (5.9+), btrfs generation
+    /// polling elsewhere. Both need CAP_SYS_ADMIN; without it, only scans update the tree.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// How often btrfs targets are polled for new generations.
+    #[serde(
+        default = "default_btrfs_poll_interval",
+        deserialize_with = "deserialize_duration"
+    )]
+    pub btrfs_poll_interval: Duration,
+    /// The shortest time between two re-reads of one directory.
+    #[serde(
+        default = "default_min_relist_interval",
+        deserialize_with = "deserialize_duration"
+    )]
+    pub min_relist_interval: Duration,
+}
+
+impl Default for LiveConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            btrfs_poll_interval: default_btrfs_poll_interval(),
+            min_relist_interval: default_min_relist_interval(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -52,6 +118,16 @@ pub struct Defaults {
     pub size_modes: Vec<SizeMode>,
     #[serde(default)]
     pub exclude: Vec<String>,
+    /// Directories kept in memory for `/api/tree` and live updates, beyond the reported ones.
+    /// 0 keeps only the reported tree.
+    #[serde(default = "default_tree_max_directories")]
+    pub tree_max_directories: usize,
+    #[serde(default = "default_true")]
+    pub live: bool,
+    /// btrfs only: how often to read the subvolume's extent metadata to work out which bytes
+    /// each directory holds alone. Absent: never.
+    #[serde(default, deserialize_with = "deserialize_optional_duration")]
+    pub sharing_interval: Option<Duration>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
@@ -99,6 +175,13 @@ pub struct TargetConfig {
     #[serde(default)]
     pub exclude: Vec<String>,
     #[serde(default)]
+    pub tree_max_directories: Option<usize>,
+    #[serde(default)]
+    pub live: Option<bool>,
+    /// Absent: inherit. `null`: off. A duration: that interval.
+    #[serde(default, deserialize_with = "deserialize_explicit_duration")]
+    pub sharing_interval: Option<Option<Duration>>,
+    #[serde(default)]
     pub labels: BTreeMap<String, String>,
 }
 
@@ -119,6 +202,12 @@ pub struct Target {
     pub scan_threads: usize,
     pub size_modes: Vec<SizeMode>,
     pub exclude: Vec<String>,
+    pub tree_max_directories: usize,
+    pub live: bool,
+    pub sharing_interval: Option<Duration>,
+    /// Set at startup when the fanotify source runs: the walk then records each directory's
+    /// file handle, the key fanotify reports changes by.
+    pub collect_handles: bool,
     pub labels: BTreeMap<String, String>,
 }
 
@@ -136,6 +225,9 @@ impl Default for Defaults {
             scan_threads: None,
             size_modes: default_size_modes(),
             exclude: Vec::new(),
+            tree_max_directories: default_tree_max_directories(),
+            live: true,
+            sharing_interval: None,
         }
     }
 }
@@ -218,6 +310,14 @@ impl Config {
                 .chain(target.exclude.iter())
                 .cloned()
                 .collect(),
+            tree_max_directories: target
+                .tree_max_directories
+                .unwrap_or(self.defaults.tree_max_directories),
+            live: target.live.unwrap_or(self.defaults.live),
+            sharing_interval: target
+                .sharing_interval
+                .unwrap_or(self.defaults.sharing_interval),
+            collect_handles: false,
             labels: target.labels.clone(),
         })
     }
@@ -231,6 +331,14 @@ impl Config {
         }
         if let Some(threads) = self.defaults.scan_threads {
             check_scan_threads("defaults", threads)?;
+        }
+        for peer in &self.atlas.peers {
+            if !(peer.starts_with("http://") || peer.starts_with("https://")) {
+                bail!("atlas peer {peer:?} must be an http(s) URL");
+            }
+        }
+        if self.live.btrfs_poll_interval.is_zero() {
+            bail!("live.btrfs_poll_interval must be greater than zero");
         }
 
         let mut names = HashSet::new();
@@ -257,6 +365,12 @@ impl Config {
             if target.baseline_interval == Some(Duration::ZERO) {
                 bail!(
                     "target {} baseline_interval must be greater than zero",
+                    target.name
+                );
+            }
+            if target.sharing_interval == Some(Some(Duration::ZERO)) {
+                bail!(
+                    "target {} sharing_interval must be greater than zero",
                     target.name
                 );
             }
@@ -306,6 +420,21 @@ const BUILTIN_LABELS: &[&str] = &[
     "issue",
 ];
 
+impl Config {
+    /// The name this machine goes by: `host`, else the kernel's hostname.
+    pub fn host_name(&self) -> String {
+        if let Some(host) = &self.host {
+            return host.clone();
+        }
+        fs::read_to_string("/proc/sys/kernel/hostname")
+            .ok()
+            .map(|name| name.trim().to_string())
+            .filter(|name| !name.is_empty())
+            .or_else(|| std::env::var("HOSTNAME").ok())
+            .unwrap_or_else(|| "localhost".to_string())
+    }
+}
+
 const MAX_SCAN_THREADS: usize = 256;
 
 fn check_scan_threads(scope: &str, threads: usize) -> Result<()> {
@@ -343,6 +472,15 @@ where
     T: Deserialize<'de>,
 {
     Option::<T>::deserialize(deserializer).map(Some)
+}
+
+fn deserialize_explicit_duration<'de, D>(
+    deserializer: D,
+) -> Result<Option<Option<Duration>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    deserialize_optional_duration(deserializer).map(Some)
 }
 
 fn deserialize_duration<'de, D>(deserializer: D) -> Result<Duration, D::Error>
@@ -431,6 +569,19 @@ fn default_timeout() -> Duration {
 
 fn default_true() -> bool {
     true
+}
+
+/// About 200 bytes each: half a million directories is ~100 MB at most.
+fn default_tree_max_directories() -> usize {
+    500_000
+}
+
+fn default_btrfs_poll_interval() -> Duration {
+    Duration::from_secs(3)
+}
+
+fn default_min_relist_interval() -> Duration {
+    Duration::from_secs(1)
 }
 
 #[cfg(test)]

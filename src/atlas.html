@@ -1,0 +1,1470 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Storage Atlas</title>
+<link rel="icon" href="data:,">
+<style>
+[hidden]{display:none!important}
+/* Storage Atlas: live view over storage-harvester's /api (tree, events) and VictoriaMetrics history.
+   Self-contained: no external scripts, fonts or styles. Layout is an instrument console: a sticky bar with the
+   views and the time range, then full-width panels on a fluid grid. Paths and figures are set in mono. */
+:root{
+  --bg:#f3f5f7; --surface:#fcfcfd; --surface-2:#eef1f4; --surface-3:#e2e6eb;
+  --ink:#0f1318; --ink-2:#485160; --muted:#79818e; --hair:#e0e4e9; --axis:#c2c8d0; --ring:rgba(15,19,24,.10);
+  --accent:#2a78d6; --accent-wash:rgba(42,120,214,.10); --accent-ink:#1c5cab;
+  --s1:#2a78d6; --s2:#eb6834; --s3:#1baf7a; --s4:#eda100; --s5:#e87ba4; --s6:#008300; --s7:#6250d6; --s8:#e34948;
+  --good:#0ca30c; --warn:#fab219; --serious:#ec835a; --crit:#d03b3b; --good-ink:#006300; --crit-ink:#b42525; --warn-ink:#8a5a00;
+  --div-pos:#e34948; --div-pos-deep:#8f1d1d; --div-neg:#2a78d6; --div-neg-deep:#0d366b; --div-mid:#e6e9ed;
+  --share:#6250d6; --share-deep:#2e2280;
+  --free:#eef1f4; --free-line:#cfd6de; --dark-tile:#5a6270; --other:#a3abb6;
+  --font-ui:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+  --font-mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Monaco,Consolas,"Liberation Mono",monospace;
+  --r:6px;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#0b0d10; --surface:#14171b; --surface-2:#1b1f24; --surface-3:#262b32;
+    --ink:#eceff3; --ink-2:#b4bbc6; --muted:#858d99; --hair:#252a31; --axis:#3a404a; --ring:rgba(255,255,255,.10);
+    --accent:#3987e5; --accent-wash:rgba(57,135,229,.16); --accent-ink:#86b6ef;
+    --s1:#3987e5; --s2:#d95926; --s3:#199e70; --s4:#c98500; --s5:#d55181; --s6:#008300; --s7:#9085e9; --s8:#e66767;
+    --good-ink:#0ca30c; --crit-ink:#ef7a7a; --warn-ink:#fab219;
+    --div-pos:#d94a4a; --div-pos-deep:#ffaaa3; --div-neg:#3987e5; --div-neg-deep:#b7d3f6; --div-mid:#262b32;
+    --share:#9085e9; --share-deep:#d4cffa;
+    --free:#1a1e23; --free-line:#2f353e; --dark-tile:#4b525d; --other:#5d6570;
+    color-scheme:dark;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#0b0d10; --surface:#14171b; --surface-2:#1b1f24; --surface-3:#262b32;
+  --ink:#eceff3; --ink-2:#b4bbc6; --muted:#858d99; --hair:#252a31; --axis:#3a404a; --ring:rgba(255,255,255,.10);
+  --accent:#3987e5; --accent-wash:rgba(57,135,229,.16); --accent-ink:#86b6ef;
+  --s1:#3987e5; --s2:#d95926; --s3:#199e70; --s4:#c98500; --s5:#d55181; --s6:#008300; --s7:#9085e9; --s8:#e66767;
+  --good-ink:#0ca30c; --crit-ink:#ef7a7a; --warn-ink:#fab219;
+  --div-pos:#d94a4a; --div-pos-deep:#ffaaa3; --div-neg:#3987e5; --div-neg-deep:#b7d3f6; --div-mid:#262b32;
+  --share:#9085e9; --share-deep:#d4cffa;
+  --free:#1a1e23; --free-line:#2f353e; --dark-tile:#4b525d; --other:#5d6570;
+  color-scheme:dark;
+}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{background:var(--bg);color:var(--ink);font:400 14px/1.45 var(--font-ui);margin:0;min-width:0}
+body::before{content:"";position:fixed;inset:0 0 auto;height:env(safe-area-inset-top,0px);z-index:30;background:var(--surface)}
+button,select,input{font:inherit;color:inherit}
+button{cursor:pointer}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:3px}
+.mono{font-family:var(--font-mono)}
+.num{font-variant-numeric:tabular-nums}
+.muted{color:var(--muted)}
+
+/* bar */
+.bar{position:sticky;top:env(safe-area-inset-top,0px);z-index:20;background:var(--surface);border-bottom:1px solid var(--hair)}
+.bar-in{display:flex;align-items:center;gap:8px 20px;flex-wrap:wrap;padding-block:8px;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}
+.brand{display:flex;align-items:baseline;gap:10px;min-width:0}
+.brand b{font-weight:600;font-size:15px;letter-spacing:-.01em;white-space:nowrap}
+.brand span{color:var(--muted);font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tabs{display:flex;gap:2px;overflow-x:auto;scrollbar-width:none;min-width:0;max-width:100%}
+.tabs::-webkit-scrollbar{display:none}
+.tabs a{padding:6px 10px;border-radius:5px;color:var(--ink-2);text-decoration:none;white-space:nowrap;font-weight:500}
+.tabs a:hover{background:var(--surface-2);color:var(--ink)}
+.tabs a[aria-current="page"]{background:var(--accent-wash);color:var(--accent-ink)}
+.spacer{flex:1}
+.seg{display:inline-flex;background:var(--surface-2);border-radius:6px;padding:2px;gap:2px;flex-wrap:nowrap}
+.seg button{border:0;background:none;padding:4px 10px;border-radius:4px;color:var(--ink-2);font-size:13px;white-space:nowrap}
+.seg button[aria-pressed="true"]{background:var(--surface);color:var(--ink);box-shadow:0 0 0 1px var(--ring)}
+.ctl{display:flex;align-items:center;gap:8px 12px;flex-wrap:wrap}
+.ctl label{display:inline-flex;align-items:center;gap:6px;color:var(--ink-2);font-size:13px;white-space:nowrap}
+.hosts{display:flex;gap:10px;flex-wrap:wrap;font-size:12px;color:var(--ink-2)}
+.hosts span{display:inline-flex;align-items:center;gap:5px;white-space:nowrap}
+.cdot{width:8px;height:8px;border-radius:50%;display:inline-block;flex:none;background:var(--axis)}
+.cdot.open{background:var(--good)}.cdot.wait{background:var(--warn)}.cdot.down{background:var(--crit)}
+.cdot.open.pulse{animation:blip .5s ease-out}
+@keyframes blip{from{box-shadow:0 0 0 4px color-mix(in srgb,var(--good) 35%,transparent)}to{box-shadow:0 0 0 0 transparent}}
+.chip{display:inline-flex;align-items:center;gap:6px;font-size:11.5px;font-weight:500;padding:2px 8px;border-radius:999px;white-space:nowrap;letter-spacing:.01em}
+.chip.real{background:var(--accent-wash);color:var(--accent-ink)}
+.chip.need{background:var(--surface-2);color:var(--ink-2);box-shadow:inset 0 0 0 1px var(--hair)}
+.chip.crit{background:color-mix(in srgb,var(--crit) 14%,transparent);color:var(--crit-ink)}
+.chip.good{background:color-mix(in srgb,var(--good) 14%,transparent);color:var(--good-ink)}
+.chip.warn{background:color-mix(in srgb,var(--warn) 18%,transparent);color:var(--warn-ink)}
+.chip svg{width:11px;height:11px}
+.btn{border:0;background:var(--surface-2);padding:5px 11px;border-radius:5px;font-size:13px;font-weight:500;box-shadow:inset 0 0 0 1px var(--hair);white-space:nowrap}
+.btn:hover{background:var(--surface-3)}
+.btn.on{background:var(--accent);color:#fff;box-shadow:none}
+.btn.sm{padding:2px 8px;font-size:12px}
+
+main{padding-block:16px 40px;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}
+.view{display:grid;gap:12px;grid-template-columns:minmax(0,1fr)}
+.view>*{min-width:0}
+.view-head{display:flex;align-items:flex-end;gap:8px 16px;flex-wrap:wrap;justify-content:space-between}
+.view-head h1{font-size:20px;font-weight:600;letter-spacing:-.015em;margin:0;text-wrap:balance}
+.view-head p{margin:2px 0 0;color:var(--ink-2);max-width:86ch}
+.panel{background:var(--surface);border-radius:var(--r);box-shadow:0 0 0 1px var(--hair);padding:14px 16px;min-width:0}
+.panel h2{font-size:13px;font-weight:600;margin:0;letter-spacing:.005em}
+.ph{display:flex;align-items:center;justify-content:space-between;gap:6px 10px;margin-bottom:10px;flex-wrap:wrap}
+.ph .sub{color:var(--muted);font-size:12px}
+.eyebrow{font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);font-weight:500}
+.empty{color:var(--muted);font-size:13px;padding:14px 0;margin:0}
+.note{font-size:12px;color:var(--muted);margin:8px 0 0;max-width:90ch}
+.fatal{max-width:72ch}
+.fatal code{font-family:var(--font-mono);font-size:12.5px;background:var(--surface-2);padding:1px 5px;border-radius:4px}
+
+/* overview */
+.ov-top{display:grid;grid-template-columns:minmax(0,1.25fr) minmax(0,2fr);gap:12px}
+.hero{display:grid;gap:10px;align-content:start}
+.hero .fig{font-size:52px;line-height:1;font-weight:600;letter-spacing:-.03em}
+.hero .fig small{font-size:20px;font-weight:500;letter-spacing:0;margin-left:6px;color:var(--ink-2)}
+.hero p{margin:0;color:var(--ink-2);max-width:56ch}
+.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px}
+.kpi{background:var(--surface);border-radius:var(--r);box-shadow:0 0 0 1px var(--hair);padding:12px 14px;display:grid;gap:4px;align-content:start;min-width:0}
+.kpi .l{font-size:12px;color:var(--ink-2)}
+.kpi .v{font-size:24px;font-weight:600;letter-spacing:-.02em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.kpi .d{font-size:12px;color:var(--muted)}
+.ov-grid{display:grid;grid-template-columns:repeat(12,minmax(0,1fr));gap:12px}
+.c12{grid-column:span 12}.c8{grid-column:span 8}.c6{grid-column:span 6}.c4{grid-column:span 4}
+.tbl-wrap{overflow-x:auto}
+table{border-collapse:collapse;width:100%}
+th{font-size:11.5px;font-weight:500;color:var(--muted);text-align:left;padding:6px 10px;border-bottom:1px solid var(--hair);white-space:nowrap}
+td{padding:8px 10px;border-bottom:1px solid var(--hair);vertical-align:middle;white-space:nowrap}
+tr:last-child td{border-bottom:0}
+td.r,th.r{text-align:right}
+td.wrap{white-space:normal}
+.pool-name b{font-weight:500;display:flex;align-items:center;gap:7px}
+.pool-name span{color:var(--muted);font-size:12px}
+.meter{position:relative;height:8px;border-radius:4px;background:color-mix(in srgb,var(--accent) 16%,var(--surface-2));min-width:110px;overflow:hidden}
+.meter i{position:absolute;inset:0 auto 0 0;border-radius:4px;background:var(--accent)}
+.meter.crit{background:color-mix(in srgb,var(--crit) 18%,var(--surface-2))}.meter.crit i{background:var(--crit)}
+.meter.warn{background:color-mix(in srgb,var(--warn) 22%,var(--surface-2))}.meter.warn i{background:var(--warn)}
+.segbar{display:flex;gap:2px;height:28px;margin:6px 0 10px}
+.segbar div{border-radius:4px;min-width:0;display:flex;align-items:center;padding-left:6px;font-size:11.5px;font-weight:500;overflow:hidden;white-space:nowrap}
+.legend{display:flex;flex-wrap:wrap;gap:6px 16px;font-size:12px;color:var(--ink-2)}
+.legend span{display:inline-flex;align-items:center;gap:6px}
+.legend i{width:10px;height:10px;border-radius:2px;display:inline-block;flex:none}
+.bars{display:grid;gap:6px}
+.brow{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.2fr) 80px;gap:10px;align-items:center;font-size:13px}
+.brow .lab{display:flex;align-items:center;gap:7px;min-width:0}
+.brow .lab span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.brow .track{height:14px;position:relative}
+.brow .track i{position:absolute;top:0;bottom:0;border-radius:0 4px 4px 0}
+.brow .val{text-align:right;font-variant-numeric:tabular-nums;color:var(--ink-2);font-size:12.5px;white-space:nowrap}
+.dot{width:8px;height:8px;border-radius:50%;flex:none;display:inline-block}
+.div-track{position:relative;height:14px}
+.div-track::before{content:"";position:absolute;left:50%;top:-3px;bottom:-3px;width:1px;background:var(--axis)}
+.div-track i{position:absolute;top:0;bottom:0}
+.lrow{display:grid;grid-template-columns:minmax(0,1fr) auto 64px 74px;gap:10px;align-items:center;font-size:13px;padding:5px 0;border-bottom:1px solid var(--hair)}
+.lrow:last-child{border-bottom:0}
+.lrow .nm{display:flex;align-items:center;gap:7px;min-width:0}
+.lrow .nm span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.lrow .v{text-align:right;font-variant-numeric:tabular-nums;color:var(--ink-2);font-size:12.5px;white-space:nowrap}
+
+/* heatmap */
+.hm-tools{display:flex;gap:8px 16px;flex-wrap:wrap;align-items:center}
+.hm-scroll{overflow:auto;max-height:min(66vh,760px);border-radius:5px;box-shadow:inset 0 0 0 1px var(--hair);position:relative;overscroll-behavior:contain}
+.hm-grid{display:grid;grid-template-rows:30px auto;position:relative}
+.hm-corner{position:sticky;top:0;left:0;z-index:4;background:var(--surface);border-bottom:1px solid var(--hair);border-right:1px solid var(--hair);display:grid;grid-template-columns:1fr 70px 78px;align-items:center;padding:0 8px 0 10px;font-size:11.5px;color:var(--muted);gap:6px}
+.hm-corner span:not(:first-child){text-align:right}
+#hm-axis{position:sticky;top:0;z-index:3;background:var(--surface);border-bottom:1px solid var(--hair);display:block}
+#hm-rows{position:sticky;left:0;z-index:2;background:var(--surface);border-right:1px solid var(--hair)}
+#hm-cv{display:block}
+.hm-row{display:grid;grid-template-columns:1fr 70px 78px;gap:6px;align-items:center;height:22px;padding:0 8px 0 10px;border:0;background:none;width:100%;text-align:left;font-size:12.5px;color:var(--ink)}
+.hm-row:hover,.hm-row.hov{background:var(--surface-2)}
+.hm-row.sel{background:var(--accent-wash)}
+.hm-row .nm{display:flex;align-items:center;gap:6px;min-width:0}
+.hm-row .nm span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.hm-row .nm small{color:var(--muted);font-size:10.5px;white-space:nowrap;font-family:var(--font-ui);flex:0 100 auto;min-width:0;overflow:hidden;text-overflow:ellipsis}
+.hm-row .car{width:12px;flex:none;color:var(--muted);font-size:10px;text-align:center;transition:transform .12s}
+.hm-row.open .car{transform:rotate(90deg)}
+.hm-row .sz,.hm-row .dl{text-align:right;font-variant-numeric:tabular-nums;font-family:var(--font-mono);font-size:11.5px;color:var(--ink-2);white-space:nowrap;overflow:hidden}
+.hm-row.host .nm span{font-weight:600}
+.hm-row .nohist{font-size:10.5px;color:var(--muted);font-family:var(--font-ui)}
+.scale{display:flex;align-items:center;gap:10px;font-size:11.5px;color:var(--muted);flex-wrap:wrap}
+.scale .sw{display:flex;gap:1px}
+.scale .sw i{width:20px;height:10px;display:block}
+.scale .sw i:first-child{border-radius:3px 0 0 3px}.scale .sw i:last-child{border-radius:0 3px 3px 0}
+.drawer{display:grid;grid-template-columns:minmax(0,1.25fr) minmax(0,1.25fr) minmax(0,1fr);gap:12px}
+.drawer .panel{padding:12px 14px}
+.dr-title{display:flex;gap:12px;align-items:baseline;flex-wrap:wrap}
+.dr-title .p{font-family:var(--font-mono);font-size:13px;word-break:break-all}
+.dr-title .m{color:var(--muted);font-size:12px}
+.mini{display:grid;gap:0;margin-top:6px}
+.mini div{display:grid;grid-template-columns:62px minmax(0,1fr) auto;gap:8px;font-size:12px;padding:3px 0;border-bottom:1px solid var(--hair)}
+.mini div:last-child{border-bottom:0}
+.mini .tm{color:var(--muted);font-variant-numeric:tabular-nums}
+.mini .pa{font-family:var(--font-mono);font-size:11.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mini .dv{font-family:var(--font-mono);font-size:11.5px}
+
+/* charts */
+svg text{fill:var(--muted);font:11px var(--font-ui)}
+svg .grid{stroke:var(--hair);stroke-width:1}
+svg .base{stroke:var(--axis);stroke-width:1}
+svg .xh{stroke:var(--axis);stroke-width:1}
+svg .lbl{fill:var(--ink-2);font-size:11.5px}
+
+/* block map */
+.bm-layout{display:grid;grid-template-columns:minmax(0,1fr) 360px;gap:12px}
+.bm-main{display:grid;gap:8px;min-width:0}
+.crumbs{display:flex;flex-wrap:wrap;gap:2px;align-items:center;font-size:13px;min-height:28px}
+.crumbs button{border:0;background:none;padding:3px 6px;border-radius:4px;color:var(--accent-ink)}
+.crumbs button:hover{background:var(--surface-2)}
+.crumbs b{padding:3px 6px;font-weight:600}
+.crumbs .sep{color:var(--muted)}
+.crumbs .ld{color:var(--muted);font-size:12px;margin-left:8px}
+#bm-cv{width:100%;height:min(70vh,760px);min-height:420px;display:block;border-radius:5px;background:var(--surface);touch-action:manipulation;cursor:zoom-in}
+.bm-ctl{display:flex;gap:8px 12px;align-items:center;flex-wrap:wrap}
+.feed{display:grid;align-content:start;gap:0;max-height:min(70vh,760px);overflow:auto}
+.feed .ev{display:grid;grid-template-columns:58px 8px minmax(0,1fr) auto auto;gap:7px;align-items:center;font-size:12px;padding:4px 2px;border-bottom:1px solid var(--hair);background:none;border-left:0;border-right:0;border-top:0;text-align:left;width:100%}
+.feed .ev:hover{background:var(--surface-2)}
+.feed .ev.old{opacity:.6}
+.feed .ev .tm{color:var(--muted);font-variant-numeric:tabular-nums}
+.feed .ev .pa{font-family:var(--font-mono);font-size:11.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.feed .ev .dv{font-family:var(--font-mono);font-size:11.5px;font-variant-numeric:tabular-nums;text-align:right}
+.feed .ev.fresh{animation:fresh 1.2s ease-out}
+.src{font-size:10px;font-weight:600;letter-spacing:.03em;padding:1px 5px;border-radius:4px;background:var(--surface-2);color:var(--ink-2);text-transform:uppercase;box-shadow:inset 0 0 0 1px var(--hair)}
+.src.scan{background:color-mix(in srgb,var(--warn) 18%,transparent);color:var(--warn-ink);box-shadow:none}
+.src.btrfs{background:color-mix(in srgb,var(--s7) 16%,transparent);color:var(--s7);box-shadow:none}
+@keyframes fresh{from{background:var(--accent-wash)}to{background:transparent}}
+.side-note{font-size:12px;color:var(--muted);margin:0 0 8px}
+.conn{display:grid;gap:4px;margin-bottom:8px;font-size:12px}
+.conn div{display:flex;align-items:center;gap:7px;color:var(--ink-2)}
+.conn div b{font-weight:500;color:var(--ink)}
+.conn div span:last-child{margin-left:auto;color:var(--muted);font-variant-numeric:tabular-nums}
+
+/* sharing */
+.sh-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px}
+.sh-big{font-size:34px;font-weight:600;letter-spacing:-.02em;line-height:1.05}
+.sh-big small{font-size:14px;color:var(--ink-2);font-weight:500;margin-left:6px;letter-spacing:0}
+.twobar{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.6fr) 150px;gap:10px;align-items:center;font-size:13px}
+.twobar .track{height:14px;position:relative;background:none}
+.twobar .track i{position:absolute;top:0;bottom:0;left:0;border-radius:0 4px 4px 0}
+.twobar .track i.t{opacity:.28}
+.twobar .val{text-align:right;font-variant-numeric:tabular-nums;color:var(--ink-2);font-size:12px;white-space:nowrap}
+.twobar .lab{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:var(--font-mono);font-size:12px}
+.pairs{max-width:1100px}
+.pair{display:grid;grid-template-columns:minmax(0,1fr) 24px minmax(0,1fr) 90px;gap:8px;align-items:center;font-size:12px;padding:5px 0;border-bottom:1px solid var(--hair)}
+.pair:last-child{border-bottom:0}
+.pair span{font-family:var(--font-mono);font-size:11.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pair b{text-align:center;color:var(--muted);font-weight:400}
+.pair .v{text-align:right;font-variant-numeric:tabular-nums;color:var(--ink-2);font-family:var(--font-ui)}
+.nosh{display:grid;gap:0}
+.nosh>div{display:grid;grid-template-columns:minmax(220px,1fr) minmax(0,1.2fr) minmax(0,1.6fr);gap:4px 16px;padding:8px 0;border-bottom:1px solid var(--hair);font-size:12.5px;align-items:baseline}
+.nosh>div:last-child{border-bottom:0}
+.nosh .h{display:flex;gap:7px;align-items:center;flex-wrap:wrap}.nosh .h b{font-weight:500}.nosh .t{color:var(--ink-2);font-size:12px;overflow-wrap:anywhere}.nosh .w{color:var(--ink-2)}
+.explain{font-size:13px;color:var(--ink-2);margin:0;max-width:80ch}
+.explain+.explain{margin-top:8px}
+
+/* sources */
+.kv{display:grid;grid-template-columns:auto minmax(0,1fr);gap:4px 14px;font-size:12.5px;margin:0}
+.kv dt{color:var(--muted);white-space:nowrap}.kv dd{margin:0;font-variant-numeric:tabular-nums;min-width:0;overflow-wrap:anywhere}
+.src-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,1040px),1fr));gap:12px}
+.err{color:var(--crit-ink)}
+
+#tt{position:fixed;left:0;top:0;z-index:50;pointer-events:none;background:var(--surface);color:var(--ink);box-shadow:0 0 0 1px var(--ring),0 8px 24px rgba(0,0,0,.14);border-radius:6px;padding:8px 10px;font-size:12px;max-width:min(380px,calc(100vw - 16px));display:grid;gap:3px}
+#tt .tt-row{display:flex;gap:8px;align-items:baseline}
+#tt .tt-row b{font-weight:600;font-variant-numeric:tabular-nums;white-space:nowrap}
+#tt .tt-row span{color:var(--ink-2)}
+#tt .tt-row.h{font-family:var(--font-mono);font-size:11.5px;color:var(--ink);word-break:break-all}
+#tt .tt-row.h b{white-space:normal;font-weight:500}
+#tt .tt-row.m span{color:var(--muted)}
+#tt .tt-key{width:12px;height:2px;align-self:center;flex:none;border-radius:1px}
+#tt .tt-sw{width:9px;height:9px;border-radius:2px;flex:none;align-self:center}
+
+@media (max-width:1100px){
+  .ov-top{grid-template-columns:1fr}
+  .c8,.c6,.c4{grid-column:span 12}
+  .bm-layout{grid-template-columns:1fr}
+  .feed{max-height:340px}
+  .drawer{grid-template-columns:1fr}
+  .sh-grid{grid-template-columns:1fr}
+}
+@media (max-width:640px){
+  .hero .fig{font-size:44px}
+  .brand span{display:none}
+  .bar-in{gap:6px 10px}
+  .hm-corner,.hm-row{grid-template-columns:1fr 62px}
+  .hm-corner span:last-child,.hm-row .dl{display:none}
+  .lrow{grid-template-columns:minmax(0,1fr) 64px 74px}
+  .lrow .spark{display:none}
+  .twobar{grid-template-columns:minmax(0,1fr) auto}
+  .hs{display:none}
+  .nosh>div{grid-template-columns:1fr}
+  #hist-chip{display:none}
+  .tabs a{padding:6px 7px;font-size:13.5px}
+  .hm-row .nm small{display:none}
+  .twobar .track{grid-column:1/-1;order:3}
+  .brow{grid-template-columns:minmax(0,1fr) minmax(0,.8fr) 72px}
+  #bm-cv{height:62vh;min-height:360px}
+  .pair{grid-template-columns:minmax(0,1fr) 16px minmax(0,1fr);}
+  .pair .v{grid-column:1/-1;text-align:left}
+}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style>
+</head>
+<body>
+<header class="bar">
+  <div class="bar-in">
+    <div class="brand"><b>Storage Atlas</b><span id="brand-sub">connecting…</span></div>
+    <nav class="tabs" aria-label="Views">
+      <a href="#overview" data-view="overview">Overview</a>
+      <a href="#changes" data-view="changes">Changes</a>
+      <a href="#blockmap" data-view="blockmap">Block map</a>
+      <a href="#sharing" data-view="sharing">Sharing</a>
+      <a href="#sources" data-view="sources">Sources</a>
+    </nav>
+    <div class="spacer"></div>
+    <div class="ctl">
+      <div class="hosts" id="hosts" aria-label="Harvester connections"></div>
+      <div class="seg" role="group" aria-label="Time range" id="range"></div>
+      <span id="hist-chip"></span>
+      <label><input type="checkbox" id="hide-names"> Hide names</label>
+      <button class="btn sm" id="theme-btn" type="button" title="Theme: follow the system, light or dark">Theme: auto</button>
+    </div>
+  </div>
+</header>
+<main>
+  <section class="view" id="v-overview" hidden></section>
+  <section class="view" id="v-changes" hidden></section>
+  <section class="view" id="v-blockmap" hidden></section>
+  <section class="view" id="v-sharing" hidden></section>
+  <section class="view" id="v-sources" hidden></section>
+</main>
+<div id="tt" hidden></div>
+
+<script>
+'use strict';
+/* ======================================================================= utils */
+const KiB=1024,MiB=KiB*1024,GiB=MiB*1024,TiB=GiB*1024,PiB=TiB*1024,DAY=86400;
+const $=(s,r=document)=>r.querySelector(s);
+function el(tag,attrs,...kids){const e=document.createElement(tag);if(attrs)for(const k in attrs){const v=attrs[k];if(v==null||v===false)continue;if(k==='class')e.className=v;else if(k==='text')e.textContent=v;else if(k==='style')e.style.cssText=v;else if(k.startsWith('on'))e.addEventListener(k.slice(2),v);else e.setAttribute(k,v===true?'':v);}for(const c of kids){if(c==null||c===false)continue;e.append(c.nodeType?c:document.createTextNode(String(c)));}return e;}
+const NS_SVG='http://www.w3.org/2000/svg';
+function sv(tag,attrs,text){const e=document.createElementNS(NS_SVG,tag);if(attrs)for(const k in attrs)e.setAttribute(k,attrs[k]);if(text!=null)e.textContent=text;return e;}
+// All API strings reach the page through textContent / setAttribute / canvas fillText. esc() exists for any future innerHTML use.
+function esc(s){return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+function fmtB(b){if(b==null||!isFinite(b))return '–';const a=Math.abs(b),s=b<0?'−':'';for(const [u,v] of [['PiB',PiB],['TiB',TiB],['GiB',GiB],['MiB',MiB],['KiB',KiB]]){if(a>=v*0.9995){const x=a/v;return s+(x>=100?x.toFixed(0):x>=10?x.toFixed(1):x.toFixed(2))+' '+u;}}return s+Math.round(a)+' B';}
+function fmtAxis(b){return fmtB(b).replace(/\.0+ /,' ').replace(/(\.\d)0 /,'$1 ');}
+function fmtD(b){if(b==null||!isFinite(b))return '–';if(Math.abs(b)<1)return '±0';return (b>0?'+':'')+fmtB(b);}
+function fmtN(n){if(n==null||!isFinite(n))return '–';return n>=1e7?Math.round(n/1e6)+'M':n>=1e6?(n/1e6).toFixed(2)+'M':n>=1e4?Math.round(n/1e3)+'K':Math.round(n).toLocaleString('en-US');}
+function pct(x){if(x==null||!isFinite(x))return '–';return (x*100).toFixed(x<0.1&&x>0?1:0)+'%';}
+const fmtDate=t=>new Date(t*1000).toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'});
+const fmtHM=t=>new Date(t*1000).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'});
+const fmtHMS=t=>new Date(t*1000).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
+const fmtWhen=t=>new Date(t*1000).toLocaleString('en-GB',{weekday:'short',hour:'2-digit',minute:'2-digit'});
+function fmtSince(t){if(t==null||!isFinite(t))return '–';const d=new Date(t*1000),n=new Date();if(d.toDateString()===n.toDateString())return fmtHM(t)+' today';if(Date.now()/1000-t<6*DAY)return fmtWhen(t);return d.toLocaleDateString('en-GB',{day:'numeric',month:'short'})+' '+fmtHM(t);}
+function fmtSpan(s){if(s==null||!isFinite(s))return '–';s=Math.abs(s);return s<1?Math.round(s*1000)+' ms':s<60?(s<10?s.toFixed(1):Math.round(s))+' s':s<3600?Math.round(s/60)+' min':s<172800?(s/3600).toFixed(s<36000?1:0)+' h':Math.round(s/86400)+' days';}
+function fmtAgo(t){if(t==null||!isFinite(t))return 'never';const s=Date.now()/1000-t;return s<5?'just now':fmtSpan(s)+' ago';}
+function fmtEvery(s){if(!s)return '–';return s%3600===0?s/3600+' h':s%60===0?s/60+' min':s+' s';}
+function hash(s){let h=2166136261;for(let i=0;i<s.length;i++){h^=s.charCodeAt(i);h=Math.imul(h,16777619);}return h>>>0;}
+function errText(e){return e&&e.name==='AbortError'?'timed out':(e&&e.message)||String(e);}
+function throttle(fn,ms){let last=0,tm=0;return function(){const now=Date.now(),wait=ms-(now-last);if(wait<=0){clearTimeout(tm);tm=0;last=now;fn();}else if(!tm)tm=setTimeout(()=>{tm=0;last=Date.now();fn();},wait);};}
+function lastFinite(a){for(let i=a.length-1;i>=0;i--)if(isFinite(a[i]))return a[i];return NaN;}
+function firstFinite(a){for(let i=0;i<a.length;i++)if(isFinite(a[i]))return a[i];return NaN;}
+const store={get(k){try{return localStorage.getItem('atlas.'+k);}catch(e){return null;}},set(k,v){try{v==null?localStorage.removeItem('atlas.'+k):localStorage.setItem('atlas.'+k,v);}catch(e){}}};
+
+/* paths */
+function joinPath(p,n){return p==='/'?'/'+n:p+'/'+n;}
+function normFsPath(p){return !p?'/':p.length>1?p.replace(/\/+$/,''):p;}
+function inside(p,q){return q==='/'||p===q||p.startsWith(q+'/');}
+function relPath(p,base){if(p===base)return '';return base==='/'?p:p.slice(base.length);}
+function joinRel(base,rel){if(!rel)return base;return base==='/'?rel:base+rel;}
+function comps(rel){return rel.split('/').filter(Boolean);}
+function dirname(p){if(p==='/'||!p)return null;const i=p.lastIndexOf('/');return i<=0?'/':p.slice(0,i);}
+
+/* ======================================================================= colours (tokens → canvas) */
+let C={},RAMP_POS=[],RAMP_NEG=[],RAMP_SHARE=[],PAT={};
+function rgbOf(c){c=c.trim();if(c[0]==='#'){let h=c.slice(1);if(h.length===3)h=h.split('').map(x=>x+x).join('');const n=parseInt(h,16);return[(n>>16)&255,(n>>8)&255,n&255];}const m=c.match(/[\d.]+/g);return m?m.slice(0,3).map(Number):[128,128,128];}
+function mix(a,b,t){const A=rgbOf(a),B=rgbOf(b);return `rgb(${Math.round(A[0]+(B[0]-A[0])*t)},${Math.round(A[1]+(B[1]-A[1])*t)},${Math.round(A[2]+(B[2]-A[2])*t)})`;}
+function lum(c){const [r,g,b]=rgbOf(c).map(v=>{v/=255;return v<=0.03928?v/12.92:Math.pow((v+0.055)/1.055,2.4);});return 0.2126*r+0.7152*g+0.0722*b;}
+function inkOn(c){return lum(c)>0.36?'#0b0b0b':'#ffffff';}
+function buildRamp(mid,pole,deep){const out=[];for(let i=0;i<64;i++){const t=i/63;out.push(t<0.62?mix(mix(mid,pole,0.2),pole,t/0.62):mix(pole,deep,(t-0.62)/0.38));}return out;}
+function readColors(){
+  const cs=getComputedStyle(document.documentElement),g=n=>cs.getPropertyValue(n).trim();
+  C={bg:g('--bg'),surface:g('--surface'),s2:g('--surface-2'),s3:g('--surface-3'),ink:g('--ink'),ink2:g('--ink-2'),muted:g('--muted'),hair:g('--hair'),axis:g('--axis'),accent:g('--accent'),pos:g('--div-pos'),neg:g('--div-neg'),mid:g('--div-mid'),posDeep:g('--div-pos-deep'),negDeep:g('--div-neg-deep'),slots:[1,2,3,4,5,6,7,8].map(i=>g('--s'+i)),free:g('--free'),freeLine:g('--free-line'),dark:g('--dark-tile'),other:g('--other'),good:g('--good'),warn:g('--warn'),crit:g('--crit'),share:g('--share'),shareDeep:g('--share-deep')};
+  RAMP_POS=buildRamp(C.mid,C.pos,C.posDeep);RAMP_NEG=buildRamp(C.mid,C.neg,C.negDeep);RAMP_SHARE=buildRamp(C.mid,C.share,C.shareDeep);
+  PAT={};
+}
+function pattern(ctx,kind){
+  if(PAT[kind])return PAT[kind];
+  const c=document.createElement('canvas'),s=8;c.width=c.height=s;const x=c.getContext('2d');
+  if(kind==='free'){x.fillStyle=C.free;x.fillRect(0,0,s,s);x.strokeStyle=C.freeLine;x.lineWidth=1;x.beginPath();x.moveTo(0,s);x.lineTo(s,0);x.moveTo(-2,2);x.lineTo(2,-2);x.moveTo(s-2,s+2);x.lineTo(s+2,s-2);x.stroke();}
+  else if(kind==='reserved'||kind==='nohist'){x.fillStyle=kind==='nohist'?C.surface:C.s2;x.fillRect(0,0,s,s);x.strokeStyle=kind==='nohist'?C.hair:C.axis;x.lineWidth=1;x.beginPath();x.moveTo(0,0);x.lineTo(s,s);x.stroke();}
+  else if(kind==='pending'){x.fillStyle=C.s2;x.fillRect(0,0,s,s);x.fillStyle=C.axis;x.fillRect(3,3,1.5,1.5);}
+  else if(kind==='unknown'){x.fillStyle=C.mid;x.fillRect(0,0,s,s);x.fillStyle=C.axis;x.fillRect(1,1,1,1);x.fillRect(5,5,1,1);}
+  else{x.fillStyle=C.dark;x.fillRect(0,0,s,s);x.fillStyle='rgba(255,255,255,.22)';x.fillRect(1,1,1.5,1.5);x.fillRect(5,5,1.5,1.5);}
+  return PAT[kind]=ctx.createPattern(c,'repeat');
+}
+function divTr(v,lo,hi){const a=Math.abs(v);if(!isFinite(a)||a<lo*0.2)return 0;return Math.sign(v)*Math.min(1,Math.log(1+a/lo)/Math.log(1+hi/lo));}
+function divInvr(t,lo,hi){return lo*(Math.exp(Math.abs(t)*Math.log(1+hi/lo))-1);}
+function divColor(t){if(!t)return C.mid;const r=t>0?RAMP_POS:RAMP_NEG;return r[Math.min(63,Math.round(Math.abs(t)*63))];}
+function shareColor(shared){return RAMP_SHARE[Math.min(63,Math.round(Math.max(0,Math.min(1,shared))*63))];}
+function hostColor(H){return H?C.slots[H.slot%8]:C.other;}
+// an adaptive symlog scale: hi is a power of two near the 95th percentile of what is on screen
+function scaleFor(vals,minHi){const a=vals.map(Math.abs).filter(v=>v>0).sort((x,y)=>x-y);let hi=a.length?a[Math.min(a.length-1,Math.floor(a.length*0.95))]:minHi;hi=Math.max(minHi,Math.pow(2,Math.ceil(Math.log2(hi||1))));return {lo:hi/16384,hi};}
+
+/* ======================================================================= tooltip & chart kit */
+const TT=$('#tt');
+function tip(e,rows){TT.replaceChildren();for(const r of rows){if(!r)continue;const row=el('div',{class:'tt-row'+(r.c?' '+r.c:'')});if(r.key){const k=el('i',{class:r.sw?'tt-sw':'tt-key'});k.style.background=r.key;row.append(k);}if(r.v!=null)row.append(el('b',{text:r.v}));if(r.l!=null)row.append(el('span',{text:r.l}));TT.append(row);}TT.hidden=false;const w=TT.offsetWidth,h=TT.offsetHeight;let x=e.clientX+14,y=e.clientY+14;if(x+w>innerWidth-8)x=e.clientX-w-14;if(y+h>innerHeight-8)y=e.clientY-h-14;TT.style.transform=`translate(${Math.max(8,x)}px,${Math.max(8,y)}px)`;}
+function untip(){TT.hidden=true;}
+function hoverTip(node,rows){node.addEventListener('pointermove',e=>tip(e,typeof rows==='function'?rows():rows));node.addEventListener('pointerleave',untip);return node;}
+// axis ticks in the unit of the largest value, so labels stay short ("79.55 GiB", not "81,459 MiB")
+const UNITS=[[PiB,'PiB'],[TiB,'TiB'],[GiB,'GiB'],[MiB,'MiB'],[KiB,'KiB'],[1,'B']];
+function unitFor(mag){return UNITS.find(u=>mag>=u[0]*0.999)||UNITS[5];}
+function ticksFor(lo,hi,count=4){const U=unitFor(Math.max(Math.abs(lo),Math.abs(hi))),raw=((hi-lo)||1)/count/U[0],p=Math.pow(10,Math.floor(Math.log10(raw))),f=raw/p,st=(f<=1?1:f<=2?2:f<=5?5:10)*p*U[0];const a=Math.floor(lo/st)*st,out=[];for(let v=a;v<=hi+st*0.5;v+=st)out.push(v);out.step=st;out.unit=U;return out;}
+function stepFmt(tk,signed){const U=tk.unit,dec=Math.max(0,Math.min(3,-Math.floor(Math.log10(tk.step/U[0])+1e-9)));return v=>{if(Math.abs(v)<tk.step*1e-6)return '0';return (v<0?'−':signed?'+':'')+(Math.abs(v)/U[0]).toLocaleString('en-US',{minimumFractionDigits:dec,maximumFractionDigits:dec})+' '+U[1];};}
+const TICK_STEPS=[60,120,300,600,900,1800,3600,7200,10800,21600,43200,86400,172800,604800];
+function timeTicks(x0,x1,W){const span=x1-x0,max=Math.max(2,Math.floor((W||600)/74)),st=TICK_STEPS.find(s=>span/s<=max)||604800,off=new Date(x0*1000).getTimezoneOffset()*60,out=[];
+  for(let t=Math.ceil((x0-off)/st)*st+off;t<=x1;t+=st){const d=new Date(t*1000),mid=d.getHours()===0&&d.getMinutes()===0;out.push([t,st>=86400||mid?d.toLocaleDateString('en-GB',{weekday:'short',day:'numeric'}):fmtHM(t)]);}return out;}
+function lineChart(host,o){
+  host.replaceChildren();
+  const W=Math.max(260,host.clientWidth||600),H=o.height||170,m={l:o.ml||56,r:o.mr||12,t:10,b:22};
+  const svg=sv('svg',{viewBox:`0 0 ${W} ${H}`,width:'100%',height:H,role:'img','aria-label':o.label||'chart'});host.append(svg);
+  const t=o.t,n=t.length,x0=t[0],x1=o.xMax||t[n-1];
+  let lo=Infinity,hi=-Infinity;for(const s of o.series)for(const v of s.v){if(v==null||!isFinite(v))continue;if(v<lo)lo=v;if(v>hi)hi=v;}
+  if(!isFinite(lo)){lo=0;hi=1;}
+  if(o.zero){lo=Math.min(lo,0);hi=Math.max(hi,0);}
+  if(hi-lo<1){hi+=1;lo-=1;}
+  const pad=(hi-lo)*0.06;if(!o.zero||lo<0)lo-=pad;hi+=pad;
+  const tka=ticksFor(lo,hi,o.yTicks||4),tk=tka.filter(v=>v>=lo&&v<=hi);
+  const yf=typeof o.yFmt==='function'?o.yFmt:stepFmt(tka,o.yFmt==='signed');
+  if(!o.ml)m.l=Math.max(40,Math.round(Math.max(0,...tk.map(v=>yf(v).length))*6.3+14));
+  const X=v=>m.l+(v-x0)/((x1-x0)||1)*(W-m.l-m.r),Y=v=>H-m.b-(v-lo)/(hi-lo)*(H-m.t-m.b);
+  for(const v of tk){svg.append(sv('line',{x1:m.l,x2:W-m.r,y1:Y(v),y2:Y(v),class:Math.abs(v)<1e-9?'base':'grid'}));svg.append(sv('text',{x:m.l-8,y:Y(v)+4,'text-anchor':'end'},yf(v)));}
+  for(const [v,lab] of timeTicks(x0,x1,W-m.l-m.r)){const xx=X(v);if(xx<m.l-1||xx>W-m.r+1)continue;svg.append(sv('text',{x:xx,y:H-6,'text-anchor':'middle'},lab));}
+  for(const b of o.bands||[]){svg.append(sv('rect',{x:X(b[0]),y:m.t,width:Math.max(2,X(b[1])-X(b[0])),height:H-m.t-m.b,fill:C.accent,'fill-opacity':0.12}));}
+  for(const s of o.series){let d='',pen=false;s.v.forEach((v,i)=>{if(v==null||!isFinite(v)){pen=false;return;}d+=(pen?'L':'M')+X(t[i]).toFixed(1)+','+Y(v).toFixed(1);pen=true;});if(!d)continue;
+    if(s.area){const idx=s.v.map((v,i)=>isFinite(v)?i:-1).filter(i=>i>=0),b=Y(Math.max(lo,0));svg.append(sv('path',{d:d.replace(/M/g,'L').replace(/^L/,'M')+`L${X(t[idx[idx.length-1]]).toFixed(1)},${b}L${X(t[idx[0]]).toFixed(1)},${b}Z`,fill:s.color,'fill-opacity':0.1}));}
+    svg.append(sv('path',{d,fill:'none',stroke:s.color,'stroke-width':s.w||2,'stroke-linejoin':'round','stroke-linecap':'round','stroke-dasharray':s.dash?'5 4':'none'}));
+    if(s.end){let i=s.v.length-1;while(i>0&&!isFinite(s.v[i]))i--;svg.append(sv('circle',{cx:X(t[i]),cy:Y(s.v[i]),r:4,fill:s.color,stroke:C.surface,'stroke-width':2}));}}
+  const xh=sv('line',{y1:m.t,y2:H-m.b,class:'xh',visibility:'hidden'});svg.append(xh);
+  const hs=o.series.filter(s=>!s.noHover);
+  const dots=hs.map(s=>{const c=sv('circle',{r:4,fill:s.color,stroke:C.surface,'stroke-width':2,visibility:'hidden'});svg.append(c);return c;});
+  const hit=sv('rect',{x:m.l,y:0,width:W-m.l-m.r,height:H,fill:'transparent'});svg.append(hit);
+  hit.addEventListener('pointermove',e=>{const bb=svg.getBoundingClientRect(),px=(e.clientX-bb.left)*W/bb.width;const tv=x0+(px-m.l)/(W-m.l-m.r)*(x1-x0);let i=0,best=Infinity;for(let j=0;j<n;j++){const dd=Math.abs(t[j]-tv);if(dd<best){best=dd;i=j;}}
+    xh.setAttribute('x1',X(t[i]));xh.setAttribute('x2',X(t[i]));xh.setAttribute('visibility','visible');
+    const rows=[{v:(o.tFmt||fmtWhen)(t[i]),c:'m'}];hs.forEach((s,j)=>{const v=s.v[i];if(v==null||!isFinite(v)){dots[j].setAttribute('visibility','hidden');return;}dots[j].setAttribute('cx',X(t[i]));dots[j].setAttribute('cy',Y(v));dots[j].setAttribute('visibility','visible');rows.push({key:s.color,v:(o.vFmt||fmtB)(v),l:s.name});});tip(e,rows);});
+  hit.addEventListener('pointerleave',()=>{xh.setAttribute('visibility','hidden');dots.forEach(d=>d.setAttribute('visibility','hidden'));untip();});
+  return svg;
+}
+function sparkline(vals,color,w=120,h=28){const svg=sv('svg',{viewBox:`0 0 ${w} ${h}`,width:w,height:h,'aria-hidden':'true',class:'spark'});const v=vals.filter(isFinite);if(v.length<2)return svg;let lo=Math.min(...v),hi=Math.max(...v),r=hi-lo||1;let d='';v.forEach((x,i)=>{d+=(i?'L':'M')+(i/(v.length-1)*(w-6)+1).toFixed(1)+','+(h-3-(x-lo)/r*(h-8)).toFixed(1);});svg.append(sv('path',{d:d+`L${w-5},${h}L1,${h}Z`,fill:color,'fill-opacity':0.1}));svg.append(sv('path',{d,fill:'none',stroke:color,'stroke-width':1.6,'stroke-linejoin':'round'}));const lv=v[v.length-1];svg.append(sv('circle',{cx:w-5,cy:h-3-(lv-lo)/r*(h-8),r:2.6,fill:color}));return svg;}
+const ICON={crit:'<svg viewBox="0 0 12 12" aria-hidden="true"><path d="M6 1 11 10.5H1Z" fill="currentColor"/></svg>',good:'<svg viewBox="0 0 12 12" aria-hidden="true"><circle cx="6" cy="6" r="5" fill="currentColor"/></svg>',warn:'<svg viewBox="0 0 12 12" aria-hidden="true"><rect x="1.5" y="1.5" width="9" height="9" rx="1" transform="rotate(45 6 6)" fill="currentColor"/></svg>'};
+function chip(kind,text){const c=el('span',{class:'chip '+kind});if(ICON[kind])c.insertAdjacentHTML('afterbegin',ICON[kind]);c.append(text);return c;}
+function seg(label,opts,cur,on){const s=el('div',{class:'seg',role:'group','aria-label':label});for(const [k,l] of opts)s.append(el('button',{type:'button','aria-pressed':String(cur===k),text:l,onclick:e=>{for(const b of s.children)b.setAttribute('aria-pressed',String(b===e.currentTarget));on(k);}}));return s;}
+function check(label,on,cb){return el('label',{style:'display:inline-flex;gap:6px;align-items:center;font-size:13px;color:var(--ink-2)'},el('input',{type:'checkbox',checked:on?true:null,onchange:e=>cb(e.target.checked)}),label);}
+function panel(title,sub,...kids){return el('div',{class:'panel'},el('div',{class:'ph'},el('h2',{text:title}),sub==null?null:(sub.nodeType?sub:el('span',{class:'sub',text:sub}))),...kids);}
+
+/* ======================================================================= names (the Hide names toggle) */
+let HIDE=false;
+function mask(s,pre){return (pre||'dir')+'-'+(hash(String(s))%4096).toString(16).padStart(3,'0');}
+function maskPath(p){if(p==null)return '';if(!HIDE)return p;return p.split('/').map(c=>c?mask(c):c).join('/');}
+function tgName(name){return HIDE?mask(name,'target'):name;}
+function hostName(H){if(!H)return '?';if(H.info)return String(H.info.display_name||H.info.host);return HIDE?'harvester '+(H.idx+1):H.url;}
+function urlText(u,i){return HIDE?'harvester '+(i+1):u;}
+function maskText(s){s=s==null?'':String(s);if(!HIDE)return s;return s.replace(/https?:\/\/[^\s'"]+/g,'(url)').replace(/(^|[\s'"(=:])(\/[^\s'"),:]+)/g,(m,a,p)=>a+maskPath(p));}
+function hostLabel(h){return HIDE?mask(h,'host'):h;}
+function tail(p,k=3){const s=p.split('/').filter(Boolean);return (s.length>k?'…/':'/')+s.slice(-k).join('/');}
+function nameOf(n){
+  switch(n.kind){
+    case 'root':return 'Fleet';
+    case 'host':return hostName(n.H)+(n.offline?' · offline':'');
+    case 'fs':return maskPath(n.fs.mount)+' · '+n.fs.type;
+    case 'free':return 'free';case 'reserved':return 'reserved';case 'unacc':return 'unaccounted';
+    case 'here':return 'files here';case 'more':return n.name;
+    case 'dir':if(n.isRoot)return tgName(n.T.name);if(n.placeholder)return maskPath(n.name);return HIDE?mask(n.name):n.name;
+  }
+  return n.name||'';
+}
+function fsOf(n){let t=n;while(t&&t.kind!=='fs')t=t.p;return t;}
+function pathOf(n){
+  switch(n.kind){
+    case 'root':return 'Fleet';case 'host':return hostName(n.H);
+    case 'fs':return hostName(n.H)+' · '+maskPath(n.fs.mount);
+    case 'free':case 'reserved':case 'unacc':return hostName(n.H)+' · '+maskPath(n.p.fs.mount)+' · '+nameOf(n);
+    case 'here':return maskPath(n.p.path)+' · files here';
+    case 'more':return maskPath(n.p.path)+' · '+n.name;
+    case 'dir':return maskPath(n.path);
+  }
+  return '';
+}
+
+/* ======================================================================= kinds (name heuristics, no fleet-specific names) */
+const KINDS=[{k:'media',label:'Media'},{k:'downloads',label:'Downloads and seeding'},{k:'personal',label:'Personal files'},{k:'backups',label:'Backups and objects'},{k:'apps',label:'App data'},{k:'telemetry',label:'Logs and metrics'},{k:'system',label:'System'},{k:'other',label:'Other'}];
+const KIDX=Object.fromEntries(KINDS.map((k,i)=>[k.k,i]));
+const KIND_RX=[
+  ['downloads',/^(torrents?|downloads?|seeding|cross-?seeds?|usenet|incomplete|nzbs?|sabnzbd|qbittorrent|transmission|deluge|autobrr|radarr|sonarr|lidarr|readarr|prowlarr|whisparr)\b|^torrents?[_-]/i],
+  ['media',/^(media|movies?|films?|tv|series|shows|anime|music|audio|audiobooks?|podcasts?|videos?|plex|jellyfin|emby|manga|comics|books)\b/i],
+  ['personal',/^(homes?|users?|documents?|desktop|drive|photos?|pictures|camera|dcim|family|my family|personal|private|onedrive|dropbox|nextcloud|syncthing|phone)\b/i],
+  ['backups',/\b(backups?|time ?machine|vzdump|restic|borg|duplicati|snapshots?)\b|\.(hbk|sparsebundle|bak)$|^(pbs|garage|minio|objects|@snapshots)$/i],
+  ['telemetry',/^(logs?|journal|loki|prometheus|victoria-?metrics|vmstorage|vmdata|metrics|grafana|openobserve|vector|elasticsearch|influxdb|tempo|mimir|alloy)\b/i],
+  ['apps',/^(docker|appdata|volumes|overlay2|containerd|containers|compose|config|postgres(ql)?|mysql|mariadb|redis|mongo(db)?|apps?|srv|stacks)\b/i],
+  ['system',/^(usr|bin|sbin|lib(32|64)?|boot|etc|opt|snap|root|swap\S*|var|run|lost\+found|isos?)$/i],
+];
+const CLASS_RX=[['telemetry',/log|metric|loki|prom|victoria|trace/i],['apps',/docker|app|config|container/i],['media',/media/i],['backups',/backup|snapshot/i],['system',/root|system|os/i]];
+// The deepest of the first five path components that names a kind wins (deeper names inside a dataset are noise).
+// A target's labels.class breaks ties where the path only says "app data" or "system".
+function kindOfPath(path,cls){const cs=comps(path||'').slice(0,5);let k=null;for(let i=cs.length-1;i>=0&&!k;i--){for(const [kk,rx] of KIND_RX)if(rx.test(cs[i])){k=kk;break;}}
+  let ck=null;if(cls)for(const [kk,rx] of CLASS_RX)if(rx.test(cls)){ck=kk;break;}
+  if(!k||k==='apps'||k==='system')return ck&&ck!=='apps'&&ck!=='system'?ck:(k||ck||'other');return k;}
+function classFor(d){const H=d.H,O=d.T;let best=O,bl=-1;if(H&&H.info)for(const T of H.info.targets){if(T===O||H.outer.get(T.name)!==O)continue;const mp=mapPath(T,O,T.path);if(mp&&inside(d.path,mp)&&mp.length>bl){best=T;bl=mp.length;}}return best&&best.labels&&best.labels.class;}
+function kindOf(n){if(n.kd)return n.kd;const d=n.kind==='dir'?n:n.p&&n.p.kind==='dir'?n.p:null;if(!d)return null;return n.kd=kindOfPath(d.path,classFor(d));}
+function kindColor(k){return k==='other'?C.other:C.slots[KIDX[k]]||C.other;}
+
+/* ======================================================================= endpoints */
+const QS=new URLSearchParams(location.search);
+function normUrl(u){try{const x=new URL(u,location.href);if(!/^https?:$/.test(x.protocol))return null;return (x.origin+x.pathname).replace(/\/+$/,'');}catch(e){return null;}}
+function selfUrl(){const q=QS.get('self');if(q)return {url:normUrl(q),how:'?self='};if(!/^https?:$/.test(location.protocol))return {url:null,how:'none'};let p=location.pathname.replace(/\/atlas\/?$/,'').replace(/\/[^/]*\.html?$/,'').replace(/\/+$/,'');return {url:location.origin+p,how:'page origin'};}
+const RANGES={'1h':{label:'1 h',s:3600,w:'1h'},'6h':{label:'6 h',s:21600,w:'6h'},'24h':{label:'24 h',s:86400,w:'1d'},'7d':{label:'7 d',s:604800,w:'7d'}};
+let RANGE=RANGES[QS.get('range')]||RANGES[store.get('range')]||RANGES['24h'];
+const TREE_LIMIT=2500;
+
+/* ======================================================================= state */
+const HARV=[];                                 // harvesters, in colour-slot order
+const ROOT={id:'@',kind:'root',name:'Fleet',kids:[],t:0};
+const LIVE=new Map();                          // fleet id -> {ld: Δ since page load, lh: Δ since history end, n, abs, own}
+const EVLOG=[];                                // applied live events since page load (for re-basing on history refresh)
+const FEED=[];                                 // newest first
+const HOTS=new Map();                          // event path -> {H,O,path,n,net,abs}
+const PAGE_T0=Date.now()/1000;
+let METRICS=null,METRICS_HOW='none',PEERS_HOW='none',SELF_HOW='none';
+let HIST={status:'idle'},HIST_SEQ=0,HIST_FIRST=Infinity;   // earliest sample seen by any range query
+const CAP=new Map();                           // host|fsid -> capacity history
+let BOOTED=false,FATAL=null;
+
+function addHarvester(url,self){const u=normUrl(url);if(!u)return null;let H=HARV.find(h=>h.url===u);if(H)return H;
+  H={url:u,self:!!self,idx:HARV.length,slot:HARV.length,key:null,info:null,status:'loading',err:'',sse:'idle',es:null,hellos:0,ev:0,evLive:0,dup:0,lastEv:0,minutes:new Map(),roots:new Map(),pend:new Map(),tstate:new Map(),targets:new Map(),outer:new Map(),fsNodes:new Map(),node:null,infoAt:0,skew:0,recent:new Map(),maxT:0};
+  H.node={id:'h:'+u,kind:'host',H,kids:[],t:0,p:ROOT,offline:true};HARV.push(H);return H;}
+async function fetchT(url,ms=10000){const ac=new AbortController();const tm=setTimeout(()=>ac.abort(),ms);try{return await fetch(url,{signal:ac.signal,cache:'no-store'});}finally{clearTimeout(tm);}}
+async function getJSON(url,ms){const r=await fetchT(url,ms);let j=null;try{j=await r.json();}catch(e){}if(!r.ok){const e=new Error((j&&j.error)||('HTTP '+r.status));e.status=r.status;throw e;}return j;}
+function fsp(t){return normFsPath(t.fs_path);}
+function computeOuter(H){
+  const ts=H.info.targets||[];H.outer=new Map();
+  ts.forEach((t,i)=>{let best=t,bi=i;ts.forEach((o,j)=>{if(o===t||o.fs!==t.fs)return;if(!inside(fsp(t),fsp(o)))return;const lo=fsp(o).length,lb=fsp(best).length;if(lo<lb||(lo===lb&&j<bi)){best=o;bi=j;}});H.outer.set(t.name,best);});
+}
+function mapPath(T,O,path){if(!inside(path,T.path))return null;const fsrel=joinRel(fsp(T),relPath(path,T.path));if(!inside(fsrel,fsp(O)))return null;return joinRel(O.path,relPath(fsrel,fsp(O)));}
+function isOuter(H,T){return H.outer.get(T.name)===T;}
+
+async function loadInfo(H){
+  try{
+    const info=await getJSON(H.url+'/api/info',8000);
+    if(!info||typeof info!=='object'||!info.host)throw new Error('no host in /api/info (not a storage-harvester?)');
+    const dupe=HARV.find(o=>o!==H&&o.key===String(info.host)&&o.status!=='duplicate');
+    if(dupe){H.status='duplicate';H.err='same harvester as '+dupe.url;rebuildRoot();return;}
+    const was=H.status;
+    info.targets=Array.isArray(info.targets)?info.targets:[];info.filesystems=Array.isArray(info.filesystems)?info.filesystems:[];
+    H.info=info;H.key=String(info.host);H.status='ok';H.err='';H.infoAt=Date.now()/1000;H.skew=info.now?info.now-Date.now()/1000:0;
+    H.targets=new Map(info.targets.map(t=>[t.name,t]));computeOuter(H);
+    for(const [name,root] of H.roots){const T=H.targets.get(name);if(T&&isOuter(H,T)){root.T=T;}else H.roots.delete(name);}
+    rebuildHost(H);
+    if(was!=='ok'&&BOOTED){loadTrees(H);connect(H);}
+  }catch(e){H.status='offline';H.err=errText(e);rebuildHost(H);}
+  invalidate('info');FLEET_DIRTY=true;
+}
+
+/* ======================================================================= fleet tree: host → filesystem → outermost targets → folders */
+let FLEET_DIRTY=true;
+function rebuildRoot(){ROOT.kids=HARV.filter(h=>h.status!=='duplicate').map(h=>h.node);}
+function rebuildHost(H){
+  const hn=H.node;hn.id='h:'+(H.key||H.url);hn.offline=H.status!=='ok';hn.p=ROOT;
+  if(H.status!=='ok'){hn.kids=[];hn.t=0;rebuildRoot();return;}
+  const kids=[],seen=new Set();
+  const fss=[...H.info.filesystems];
+  for(const T of H.info.targets)if(!fss.some(f=>f.id===T.fs)&&!seen.has(T.fs)){seen.add(T.fs);fss.push({id:T.fs,type:'?',mount:'(filesystem '+T.fs+')',size:0,used:0,avail:0,reserved:0,synthetic:true});}
+  for(const fs of fss){let f=H.fsNodes.get(fs.id);if(!f){f={id:'f:'+H.key+'|'+fs.id,kind:'fs',H,kids:[],t:0};H.fsNodes.set(fs.id,f);}
+    f.fs=fs;f.p=hn;f.id='f:'+H.key+'|'+fs.id;
+    f.free=f.free||{kind:'free',H,p:f,t:0};f.res=f.res||{kind:'reserved',H,p:f,t:0};f.unacc=f.unacc||{kind:'unacc',H,p:f,t:0};
+    f.free.id=f.id+'|~free';f.res.id=f.id+'|~res';f.unacc.id=f.id+'|~unacc';
+    kids.push(f);}
+  hn.kids=kids;rollHost(H);rebuildRoot();
+}
+function pendingNode(H,T){let n=H.pend.get(T.name);if(!n){n={kind:'dir',isRoot:true,pending:true,H,depth:0,c:[],kids:[],k:0,r:0,o:0,t:0,a:0,f:0,d:0,l:0};H.pend.set(T.name,n);}
+  n.T=T;n.name=T.name;n.path=T.path;n.id=H.key+'|'+T.name+'|'+T.path;const tot=T.total||{};n.t=+tot.blocks||0;n.a=+tot.apparent||0;n.f=+tot.files||0;n.d=+tot.dirs||0;n.l=+tot.symlinks||0;return n;}
+function rollHost(H){
+  if(H.status!=='ok')return;let ht=0;
+  for(const f of H.node.kids){
+    const fs=f.fs,roots=[];let sum=0;
+    for(const T of H.info.targets){if(T.fs!==fs.id||!isOuter(H,T))continue;const r=H.roots.get(T.name)||pendingNode(H,T);r.p=f;roots.push(r);sum+=r.t;}
+    const used=+fs.used||0,avail=+fs.avail||0,size=+fs.size||0,res=fs.reserved!=null?+fs.reserved:Math.max(0,size-used-avail);
+    f.unacc.t=Math.max(0,used-sum);f.free.t=avail;f.res.t=Math.max(0,res);f.over=Math.max(0,sum-used);f.scanned=sum;
+    f.kids=[...roots,f.unacc,f.free,f.res].filter(k=>k.t>0||roots.includes(k));
+    let t=0;for(const k of f.kids)t+=k.t;f.t=t;ht+=t;
+  }
+  H.node.t=ht;
+}
+function rollFleet(){if(!FLEET_DIRTY)return;for(const H of HARV)rollHost(H);let t=0;for(const h of ROOT.kids)t+=h.t;ROOT.t=t;FLEET_DIRTY=false;}
+
+function buildDir(raw,parent,H,T,path,depth){
+  const n={id:H.key+'|'+T.name+'|'+path,kind:'dir',name:String(raw.n),path,p:parent,H,T,depth,t:+raw.t||0,a:+raw.a||0,f:+raw.f||0,d:+raw.d||0,l:+raw.l||0,o:+raw.o||0,x:raw.x==null?null:+raw.x,k:+raw.k||0,r:+raw.r||0,c:[],ph:null,byName:null};
+  if(Array.isArray(raw.c))for(const rc of raw.c){if(!rc||rc.n==null)continue;n.c.push(buildDir(rc,n,H,T,joinPath(path,String(rc.n)),depth+1));}
+  n.byName=new Map(n.c.map(c=>[c.name,c]));
+  n.full=n.r<=0&&n.c.every(c=>c.full)&&(n.k<=n.c.length);
+  syncDir(n);return n;
+}
+function syncDir(n){
+  let s=0;for(const c of n.c)s+=c.t;if(n.ph)for(const c of n.ph.values())s+=c.t;
+  const has=n.c.length>0||(n.ph&&n.ph.size>0);
+  if(has){const here=n.t-n.r-s;if(here>0){n.here=n.here||{kind:'here',p:n,H:n.H,T:n.T,id:n.id+'|~here'};n.here.t=here;}else n.here=null;
+    if(n.r>0){n.more=n.more||{kind:'more',p:n,H:n.H,T:n.T,id:n.id+'|~more'};n.more.t=n.r;const m=Math.max(0,n.k-n.c.length);n.more.name=m?m+' more folder'+(m===1?'':'s'):'more folders';}else n.more=null;
+    n.kids=[...n.c];if(n.ph)n.kids.push(...n.ph.values());if(n.here)n.kids.push(n.here);if(n.more)n.kids.push(n.more);}
+  else{n.here=null;n.more=null;n.kids=[];}
+}
+function treeTs(j){return Math.max(+j.scanned_at||0,+j.live_at||0);}
+function tsOf(n){for(let t=n;t;t=t.p)if(t.ts)return t.ts;return 0;}
+function countNodes(n){let c=1;for(const k of n.c)c+=countNodes(k);return c;}
+function findDir(H,O,path){
+  const root=H.roots.get(O.name);if(!root||!inside(path,root.path))return null;
+  const cs=comps(relPath(path,root.path));let n=root,i=0;
+  for(;i<cs.length;i++){const c=n.byName&&n.byName.get(cs[i]);if(!c)break;n=c;}
+  return {node:n,rest:cs.slice(i)};
+}
+function findById(id){
+  if(id==='@')return ROOT;
+  if(id.startsWith('h:')){const H=HARV.find(h=>'h:'+(h.key||h.url)===id);return H?H.node:null;}
+  if(id.startsWith('f:')){for(const H of HARV)for(const f of H.fsNodes.values())if(f.id===id)return f;return null;}
+  const m=/^(.*?)\|(.*)\|(\/.*?)(\|~\w+)?$/.exec(id);if(!m)return null;
+  const H=HARV.find(h=>h.key===m[1]);if(!H)return null;const T=H.targets.get(m[2]);if(!T)return null;
+  const r=findDir(H,T,m[3]);if(!r)return H.pend.get(T.name)||null;let n=r.node;
+  if(!r.rest.length&&m[4]){const s=m[4]==='|~here'?n.here:n.more;if(s)return s;}
+  return n;
+}
+async function loadTrees(H){if(H.status!=='ok')return;await Promise.all(H.info.targets.filter(T=>isOuter(H,T)).map(T=>loadTree(H,T)));}
+async function loadTree(H,T){
+  const st=H.tstate.get(T.name)||{};H.tstate.set(T.name,st);if(st.loading)return;st.loading=true;
+  try{
+    const j=await getJSON(H.url+'/api/tree?target='+encodeURIComponent(T.name)+'&limit='+TREE_LIMIT,30000);
+    T=H.targets.get(T.name)||T;
+    const root=buildDir(j.node,null,H,T,String(j.path||T.path),0);root.isRoot=true;root.ts=treeTs(j);
+    root.p=(H.roots.get(T.name)||{}).p||null;H.roots.set(T.name,root);
+    Object.assign(st,{status:'ok',err:'',at:Date.now()/1000,nodes:countNodes(root),scanned_at:j.scanned_at,live_at:j.live_at,sharing_at:j.sharing_at});
+    reresolve();
+  }catch(e){
+    if(e.status===503){st.status='pending';st.err='waiting for the first scan';}else{st.status='error';st.err=errText(e);}
+    setTimeout(()=>{const t=H.targets.get(T.name);if(t&&isOuter(H,t))loadTree(H,t);},e.status===503?15000:30000);
+  }finally{st.loading=false;FLEET_DIRTY=true;BM.needLayout=true;invalidate('tree');}
+}
+// After a tree is replaced, nodes held elsewhere (zoom focus, selections) point at detached objects: find them again by id.
+function reresolve(){
+  if(BM.focus&&BM.focus!==ROOT){const n=findById(BM.focus.id);BM.focus=n||ROOT;}
+  if(BM.hov){BM.hov=findById(BM.hov.id);}
+}
+// Lazy deepening: zooming into a folder whose subtree was pruned fetches that folder's own best-first tree and grafts it.
+async function deepen(n){
+  if(!n||n.kind!=='dir'||n.pending||n.placeholder||n.full)return;
+  if(n.deepAt&&Date.now()-n.deepAt<60000)return;
+  n.deepAt=Date.now();n.loading=true;renderCrumbs();
+  const H=n.H,T=n.T;
+  try{
+    const j=await getJSON(H.url+'/api/tree?target='+encodeURIComponent(T.name)+'&path='+encodeURIComponent(n.path)+'&limit='+TREE_LIMIT,30000);
+    graft(n,j.node,treeTs(j));
+  }catch(e){n.deepErr=errText(e);}
+  finally{n.loading=false;FLEET_DIRTY=true;BM.needLayout=true;invalidate('tree');renderCrumbs();}
+}
+function graft(n,raw,ts){
+  if(!raw)return;const old=n.t;
+  n.t=+raw.t||0;n.a=+raw.a||0;n.f=+raw.f||0;n.d=+raw.d||0;n.l=+raw.l||0;n.o=+raw.o||0;n.x=raw.x==null?null:+raw.x;n.k=+raw.k||0;n.r=+raw.r||0;
+  n.c=[];n.ph=null;if(Array.isArray(raw.c))for(const rc of raw.c)n.c.push(buildDir(rc,n,n.H,n.T,joinPath(n.path,String(rc.n)),n.depth+1));
+  n.byName=new Map(n.c.map(c=>[c.name,c]));n.full=n.r<=0&&n.c.every(c=>c.full)&&n.k<=n.c.length;n.ts=ts;syncDir(n);
+  const diff=n.t-old;if(diff)for(let a=n.p;a&&a.kind==='dir';a=a.p){a.t+=diff;}
+  if(n.p&&n.p.kind==='dir')syncDir(n.p);
+  const st=n.H.tstate.get(n.T.name);if(st&&st.nodes!=null){const r=n.H.roots.get(n.T.name);if(r)st.nodes=countNodes(r);}
+}
+
+/* ======================================================================= live events */
+function liveIds(H,O,path){
+  const ids=['@','h:'+H.key];const f=H.fsNodes.get(O.fs);if(f)ids.push(f.id);
+  const base=O.path;ids.push(H.key+'|'+O.name+'|'+base);let p=base;for(const c of comps(relPath(path,base))){p=joinPath(p,c);ids.push(H.key+'|'+O.name+'|'+p);}
+  return ids;
+}
+function liveAdd(ids,db,tsec,own){
+  const afterHist=!(HIST.status==='ok'&&tsec<=HIST.t1);
+  for(const id of ids){let L=LIVE.get(id);if(!L){L={ld:0,lh:0,n:0,abs:0,own:0};LIVE.set(id,L);}L.ld+=db;L.n++;L.abs+=Math.abs(db);if(afterHist)L.lh+=db;}
+  if(own){const L=LIVE.get(ids[ids.length-1]);L.own+=db;}
+}
+function rebaseLive(){for(const L of LIVE.values())L.lh=0;if(HIST.status!=='ok'){for(const L of LIVE.values())L.lh=L.ld;return;}for(const e of EVLOG){if(e.t/1000<=HIST.t1)continue;for(const id of e.ids){const L=LIVE.get(id);if(L)L.lh+=e.db;}}}
+function onChange(H,ev){
+  H.ev++;H.lastEv=Date.now()/1000;
+  const replay=ev.replay===true;
+  const T=H.targets.get(ev.target);
+  if(!T||typeof ev.path!=='string'){if(!replay)H.evLive++;return;}
+  const O=H.outer.get(T.name)||T;
+  const path=O===T?ev.path:mapPath(T,O,ev.path);if(!path)return;
+  const db=+ev.db||0,tms=+ev.t||Date.now();
+  // after a reconnect the server replays events we already applied
+  if(replay&&tms<=(H.seenBefore||0))return;
+  if(tms>(H.maxT||0))H.maxT=tms;
+  // a change inside a nested target may arrive twice (once per target that contains it): same folder, same delta,
+  // different target, within a moment. Keep the first. Events from one target are never merged.
+  const dk=O.name+'|'+path+'|'+db,prev=H.recent.get(dk);
+  if(prev&&prev.target!==ev.target&&Math.abs(prev.t-tms)<1500){H.dup++;return;}
+  H.recent.set(dk,{target:ev.target,t:tms});if(H.recent.size>4000){let i=0;for(const k of H.recent.keys()){H.recent.delete(k);if(++i>=1000)break;}}
+  feedPush({H,O,path,db,src:ev.src||'',t:tms/1000,replay,kind:'change'});
+  if(!replay){
+    H.evLive++;const mi=Math.floor(tms/60000);H.minutes.set(mi,(H.minutes.get(mi)||0)+1);
+    const ids=liveIds(H,O,path);liveAdd(ids,db,tms/1000,true);
+    EVLOG.push({H,O,path,db,t:tms,ids,src:ev.src});if(EVLOG.length>120000)EVLOG.splice(0,20000);
+    const hk=H.key+'|'+O.name+'|'+path;let h=HOTS.get(hk);if(!h){h={H,O,path,n:0,net:0,abs:0,last:0};HOTS.set(hk,h);}h.n++;h.net+=db;h.abs+=Math.abs(db);h.last=tms/1000;
+    if(HOTS.size>6000){const arr=[...HOTS.entries()].sort((a,b)=>a[1].abs-b[1].abs).slice(0,2000);for(const [k] of arr)HOTS.delete(k);}
+    const dot=document.querySelector(`#hosts [data-h="${H.idx}"] .cdot`);if(dot){dot.classList.remove('pulse');void dot.offsetWidth;dot.classList.add('pulse');}
+  }
+  applyToTree(H,O,path,ev,db,tms);
+  invalidate('live');
+}
+function applyToTree(H,O,path,ev,db,tms){
+  const r=findDir(H,O,path);if(!r)return;
+  const {node,rest}=r;if(tms/1000<=tsOf(node))return;     // the tree we hold already includes this change
+  let target=node,diff;
+  if(!rest.length){
+    diff=ev.b!=null&&isFinite(+ev.b)?(+ev.b)-node.t:db;
+    node.t+=diff;node.o=Math.max(0,node.o+diff);node.a+=+ev.da||0;node.f+=+ev.df||0;if(node.x!=null)node.x=Math.max(0,node.x+diff);
+    if(node.placeholder)node.o=node.t;
+    syncDir(node);
+  }else{
+    // deeper than what we hold: attach a placeholder to the deepest known ancestor
+    const key=rest.join('/');node.ph=node.ph||new Map();let ph=null;
+    for(const [k,v] of node.ph)if(key===k||key.startsWith(k+'/')){ph=v;break;}
+    diff=db;
+    if(ph){ph.t=Math.max(0,ph.t+db);ph.o=ph.t;}
+    else{
+      const size=ev.b!=null&&isFinite(+ev.b)?Math.max(0,+ev.b):Math.max(0,db);
+      ph={id:H.key+'|'+O.name+'|'+path,kind:'dir',placeholder:true,name:key,path,p:node,H,T:O,depth:node.depth+rest.length,t:size,a:size,o:size,f:0,d:0,l:0,x:null,k:0,r:0,c:[],kids:[],byName:new Map(),full:true};
+      node.ph.set(key,ph);node.r=Math.max(0,node.r-(size-db));
+    }
+    node.t+=diff;target=ph;syncDir(node);
+  }
+  if(diff)for(let a=node.p;a&&a.kind==='dir';a=a.p)a.t+=diff;
+  FLEET_DIRTY=true;BM.sizesDirty=true;
+  if(BM.on&&!REDUCED){BM.pulses.push({node:target,d:db,t0:performance.now()});if(BM.pulses.length>240)BM.pulses.splice(0,BM.pulses.length-240);}
+}
+function onScan(H,ev){
+  const T=H.targets.get(ev.target);if(!T)return;
+  T.last_scan=(+ev.t||Date.now())/1000;if(ev.duration_s!=null)T.scan_duration_s=+ev.duration_s;
+  feedPush({H,O:T,path:T.path,db:null,src:'scan',t:T.last_scan,replay:false,kind:'scan',dur:ev.duration_s});
+  if(isOuter(H,T)){clearTimeout(T._rt);T._rt=setTimeout(()=>loadTree(H,H.targets.get(T.name)||T),800);}
+  invalidate('info');
+}
+function connect(H){
+  if(H.es){try{H.es.close();}catch(e){}H.es=null;}
+  if(!window.EventSource){H.sse='unsupported';return;}
+  let es;try{es=new EventSource(H.url+'/api/events');}catch(e){H.sse='error';H.sseErr=errText(e);return;}
+  H.es=es;H.sse='connecting';H.hellos=0;
+  const parse=s=>{try{return JSON.parse(s);}catch(e){return null;}};
+  es.addEventListener('open',()=>{H.sse='open';invalidate('conn');});
+  es.addEventListener('error',()=>{if(H.es!==es)return;H.sse=es.readyState===2?'closed':'reconnecting';invalidate('conn');if(es.readyState===2)setTimeout(()=>{if(H.es===es&&H.status==='ok')connect(H);},15000);});
+  es.addEventListener('hello',e=>{const d=parse(e.data);H.sse='open';H.hellos++;H.seenBefore=H.maxT||0;if(d&&d.live&&H.info)H.info.live=d.live;if(H.hellos>1||H.reconnected){loadTrees(H);}H.reconnected=true;invalidate('conn');});
+  es.addEventListener('change',e=>{const d=parse(e.data);if(d)onChange(H,d);});
+  es.addEventListener('scan',e=>{const d=parse(e.data);if(d)onScan(H,d);});
+}
+function feedPush(e){FEED.unshift(e);if(FEED.length>400)FEED.length=400;FEEDQ.push(e);invalidate('feed');}
+function liveRate(H,mins=5){const now=Math.floor(Date.now()/60000);let s=0;for(let m=now-mins+1;m<=now;m++)s+=H.minutes.get(m)||0;const up=Math.min(mins,Math.max(1/6,(Date.now()/1000-PAGE_T0)/60));return s/up;}
+
+/* ======================================================================= history (VictoriaMetrics) */
+const STEPS=[30,60,120,180,300,600,900,1200,1800,3600,5400,7200,10800,21600,43200,86400];
+function pickStep(span,cols=120){for(const s of STEPS)if(span/s<=cols*1.25)return s;return 86400;}
+async function vmQuery(path,params,ms=25000){const u=new URL(METRICS.replace(/\/+$/,'')+path,location.href);for(const k in params)u.searchParams.set(k,params[k]);const j=await getJSON(u.href,ms);if(!j||j.status!=='success')throw new Error((j&&j.error)||'query failed');return j.data;}
+function pq(s){return String(s).replace(/\\/g,'\\\\').replace(/"/g,'\\"');}
+const Q_SIZE='max by (host,target,path,depth) (storage_harvester_own_size_bytes{size_mode="blocks"}) + max by (host,target,path,depth) (storage_harvester_children_size_bytes{size_mode="blocks"})';
+async function loadHistory(){
+  if(!METRICS){HIST={status:'none'};rebaseLive();invalidate('hist');return;}
+  const seq=++HIST_SEQ;const prev=HIST;HIST=Object.assign({},prev,{status:prev.status==='ok'?'ok':'loading',refreshing:true});invalidate('hist');
+  try{
+    const now=Date.now()/1000,span=RANGE.s;
+    const starts=new Map(),counts=new Map();
+    try{const d=await vmQuery('/api/v1/query',{query:`min by (host) (tfirst_over_time(storage_harvester_own_size_bytes{size_mode="blocks"}[${RANGE.w}]))`,time:now.toFixed(0)});for(const r of d.result)starts.set(r.metric.host,+r.value[1]);}
+    catch(e){const st=pickStep(span,300);const d=await vmQuery('/api/v1/query_range',{query:'count by (host) (storage_harvester_own_size_bytes{size_mode="blocks"})',start:(now-span).toFixed(0),end:now.toFixed(0),step:st});for(const r of d.result){const v=r.values.find(x=>+x[1]>0);if(v)starts.set(r.metric.host,+v[0]);}}
+    const keys=new Set(HARV.filter(h=>h.key).map(h=>h.key));
+    let first=Infinity;for(const [h,t] of starts)if(keys.has(h)&&isFinite(t))first=Math.min(first,t);
+    if(!isFinite(first)){if(seq!==HIST_SEQ)return;HIST={status:'empty',starts,fetchedAt:now};rebaseLive();invalidate('hist');return;}
+    if(first>now-span+600)HIST_FIRST=Math.min(HIST_FIRST,first);
+    const eff=Math.max(now-span,first),step=pickStep(now-eff),t1=Math.floor(now/step)*step,n=Math.max(2,Math.ceil((t1-eff)/step)),t0=t1-n*step;
+    const d=await vmQuery('/api/v1/query_range',{query:Q_SIZE,start:t0,end:t1,step});
+    if(seq!==HIST_SEQ)return;
+    const rows=new Map(),unmatched=new Map();
+    for(const s of d.result){
+      const m=s.metric,H=HARV.find(h=>h.key===m.host);if(!H){unmatched.set(m.host,(unmatched.get(m.host)||0)+1);continue;}
+      counts.set(m.host,(counts.get(m.host)||0)+1);
+      const S=new Float64Array(n+1).fill(NaN);for(const [ts,v] of s.values){const i=Math.round((+ts-t0)/step);if(i>=0&&i<=n)S[i]=+v;}
+      let last=NaN;for(let i=0;i<=n;i++){if(isFinite(S[i]))last=S[i];else if(isFinite(last))S[i]=last;}
+      const depth=+m.depth||0,key=m.host+'|'+m.target+'|'+m.path;
+      rows.set(key,{key,kind:depth===0?'target':'dir',H,tname:m.target,path:m.path,depth,S,kids:[],parent:null});
+    }
+    // link each reported folder to its parent (same target, nearest reported ancestor)
+    for(const r of rows.values()){if(r.depth===0)continue;let pp=dirname(r.path),par=null;while(pp){par=rows.get(r.H.key+'|'+r.tname+'|'+pp);if(par)break;pp=dirname(pp);}
+      if(!par){const tr=[...rows.values()].find(x=>x.H===r.H&&x.tname===r.tname&&x.depth===0);par=tr||null;}
+      if(par){par.kids.push(r);r.parent=par;}else{r.kind='target';r.orphan=true;}}
+    const byHost=new Map(),histD=new Map();
+    for(const r of rows.values()){
+      const T=r.H.targets.get(r.tname);
+      if(T){const O=r.H.outer.get(T.name)||T;r.nested=O!==T;r.outerName=O.name;const p=mapPath(T,O,r.path);r.id=p?r.H.key+'|'+O.name+'|'+p:null;}
+      else{r.id=null;r.unknownTarget=true;}
+      r.net=lastFinite(r.S)-firstFinite(r.S);let a=0;for(let i=1;i<=n;i++){const x=r.S[i]-r.S[i-1];if(isFinite(x))a+=Math.abs(x);}r.act=a;r.size=lastFinite(r.S);
+      if(r.id&&isFinite(r.net)&&(!histD.has(r.id)||!r.nested))histD.set(r.id,r.net);
+      if(r.kind==='target'&&!r.parent){let hh=byHost.get(r.H.key);if(!hh){hh={H:r.H,targets:[],start:starts.get(r.H.key)};byHost.set(r.H.key,hh);}hh.targets.push(r);}
+    }
+    for(const hh of byHost.values()){
+      const S=new Float64Array(n+1).fill(NaN);
+      for(const r of hh.targets){if(r.nested||r.unknownTarget)continue;const f0=firstFinite(r.S);if(!isFinite(f0))continue;for(let i=0;i<=n;i++){const x=isFinite(r.S[i])?r.S[i]:f0;S[i]=(isFinite(S[i])?S[i]:0)+x;}}
+      hh.row={key:'h:'+hh.H.key,id:'h:'+hh.H.key,kind:'host',H:hh.H,S,kids:hh.targets,depth:-1};
+      const hr=hh.row;hr.net=lastFinite(S)-firstFinite(S);let a=0;for(let i=1;i<=n;i++){const x=S[i]-S[i-1];if(isFinite(x))a+=Math.abs(x);}hr.act=a;hr.size=lastFinite(S);
+      histD.set(hr.id,hr.net);
+    }
+    HIST={status:'ok',t0,t1,step,n,first,starts,counts,rows,byHost,histD,unmatched,clipped:eff>now-span+step,fetchedAt:now,range:RANGE};
+  }catch(e){if(seq!==HIST_SEQ)return;HIST={status:'error',err:errText(e),fetchedAt:Date.now()/1000};}
+  rebaseLive();invalidate('hist');BM.needBase=true;
+}
+async function loadCapacity(){
+  if(!METRICS)return;
+  const now=Date.now()/1000,start=now-90*DAY,step=21600;
+  const jobs=[];
+  for(const H of HARV){if(H.status!=='ok')continue;
+    for(const fs of H.info.filesystems){
+      const key=H.key+'|'+fs.id,cq=(H.info.capacity_queries||[]).find(q=>q&&q.fs===fs.id&&q.used);
+      let expr,src;
+      if(cq){expr=cq.used;src='capacity query';}
+      else{const outs=H.info.targets.filter(t=>t.fs===fs.id&&isOuter(H,t));if(!outs.length)continue;expr=`max(storage_harvester_filesystem_used_bytes{host="${pq(H.key)}",target="${pq(outs[0].name)}"})`;src='harvester';}
+      jobs.push(vmQuery('/api/v1/query_range',{query:expr,start:start.toFixed(0),end:now.toFixed(0),step}).then(d=>{
+        const r=d.result&&d.result[0];if(!r){CAP.set(key,{status:'empty',src,expr});return;}
+        const pts=r.values.map(([t,v])=>[+t,+v]).filter(p=>isFinite(p[1]));if(pts.length<2){CAP.set(key,{status:'empty',src,expr});return;}
+        // least-squares slope over what we have (≤ 30 days)
+        const fit30=pts.filter(p=>p[0]>=now-30*DAY);const use=fit30.length>=2?fit30:pts;let n=use.length,sx=0,sy=0,sxx=0,sxy=0;const tx=use[0][0];for(const [t,v] of use){const x=t-tx;sx+=x;sy+=v;sxx+=x*x;sxy+=x*v;}
+        const slope=(n*sxy-sx*sy)/((n*sxx-sx*sx)||1)*DAY;
+        CAP.set(key,{status:'ok',src,expr,t:pts.map(p=>p[0]),v:pts.map(p=>p[1]),slope,span:use[use.length-1][0]-use[0][0],start:pts[0][0]});
+      }).catch(e=>CAP.set(key,{status:'error',src,expr,err:errText(e)})));
+    }}
+  await Promise.all(jobs);invalidate('hist');
+}
+
+/* ======================================================================= scheduling */
+const DIRTY={};let flushRaf=0;const FEEDQ=[];
+function invalidate(k){DIRTY[k]=true;if(!flushRaf)flushRaf=requestAnimationFrame(flush);}
+const ovFull=throttle(()=>{if(current()==='overview')renderOverview();},4000);
+const ovLive=throttle(()=>{if(current()==='overview')renderOvLive();},1500);
+const hmNow=throttle(()=>{if(current()==='changes'){hmDraw();hmRefreshRowsNow();hmLiveDrawer();}},500);
+const shareLater=throttle(()=>{if(current()==='sharing')renderSharing();},5000);
+const srcLater=throttle(()=>{if(current()==='sources')renderSources();},2000);
+const headerLater=throttle(renderHeader,1000);
+function flush(){
+  flushRaf=0;const D=Object.assign({},DIRTY);for(const k in DIRTY)delete DIRTY[k];const cur=current();
+  if(D.info||D.conn||D.hist||D.tree)headerLater();
+  if(D.feed)flushFeed();
+  if(cur==='blockmap'){if(D.tree)BM.needLayout=true;if(D.hist)BM.needBase=true;if(D.info)FLEET_DIRTY=true;bmSchedule();if(D.hist||D.info)bmLegend();}
+  else if(cur==='changes'){if(D.hist||(D.tree&&!HM.built))renderChanges();else if(D.live)hmNow();}
+  else if(cur==='overview'){if(D.hist||D.info||D.tree)ovFull();else if(D.live)ovLive();}
+  else if(cur==='sharing'){if(D.tree||D.info)shareLater();}
+  else if(cur==='sources'){if(D.info||D.conn||D.tree||D.hist)srcLater();}
+}
+
+/* ======================================================================= header */
+function renderHeader(){
+  const ok=HARV.filter(h=>h.status==='ok'),fsN=ok.reduce((a,h)=>a+h.info.filesystems.length,0);
+  const live=ok.filter(h=>h.sse==='open').length;
+  $('#brand-sub').textContent=HARV.length?`${ok.length} of ${HARV.filter(h=>h.status!=='duplicate').length} harvesters · ${fsN} filesystems · ${live} live`:'no harvester';
+  const hs=$('#hosts');hs.replaceChildren();
+  for(const H of HARV){if(H.status==='duplicate')continue;const st=H.status!=='ok'?'down':H.sse==='open'?'open':'wait';
+    const s=el('span',{'data-h':H.idx},el('i',{class:'cdot '+st}),hostName(H));
+    hoverTip(s,()=>[{v:hostName(H),l:H.status==='ok'?(H.sse==='open'?'live stream connected':'live stream '+H.sse):H.status+(H.err?': '+maskText(H.err):'')},{l:urlText(H.url,H.idx),c:'m'},H.status==='ok'?{v:liveRate(H).toFixed(1)+'/min',l:'changes, last 5 min'}:null]);
+    hs.append(s);}
+  const r=$('#range');if(!r.children.length){for(const k in RANGES)r.append(el('button',{type:'button','data-k':k,text:RANGES[k].label,onclick:()=>{RANGE=RANGES[k];store.set('range',k);for(const b of r.children)b.setAttribute('aria-pressed',String(b.dataset.k===k));HIST.status==='ok'&&(HIST.status='loading');loadHistory();show();}}));}
+  for(const b of r.children)b.setAttribute('aria-pressed',String(RANGES[b.dataset.k]===RANGE));
+  const c=$('#hist-chip');c.replaceChildren(histChip());
+  for(const x of document.querySelectorAll('.vh-chip'))x.replaceChildren(histChip());
+}
+function histChip(){
+  if(FATAL)return '';
+  if(HIST.status==='none')return chip('need','No history: metrics_url not set');
+  if(HIST.status==='error')return chip('crit','History unavailable');
+  if(HIST.status==='loading'||HIST.status==='idle')return chip('need','Loading history…');
+  if(HIST.status==='empty')return chip('need','No history in range');
+  if(HIST.clipped||HIST_FIRST<HIST.first-60)return chip('real','History since '+fmtSince(HIST.clipped?HIST.first:HIST_FIRST));
+  return chip('real','History · full '+HIST.range.label);
+}
+
+/* ======================================================================= OVERVIEW */
+function fsRows(){const out=[];for(const H of HARV){if(H.status!=='ok')continue;for(const f of H.node.kids)if(!f.fs.synthetic)out.push({H,f,fs:f.fs,cap:CAP.get(H.key+'|'+f.fs.id)});}return out;}
+function fsStats(r){const fs=r.fs,u=fs.size?fs.used/fs.size:0,cap=r.cap;let slope=null,eta=null,why='';
+  if(cap&&cap.status==='ok'){if(cap.span>=12*3600){slope=cap.slope;if(slope>0)eta=fs.avail/slope;}else why='collecting since '+fmtSince(cap.start);}
+  else if(!METRICS)why='no metrics_url';else if(cap&&cap.status==='error')why='query failed';else if(cap)why='no history yet';else why='loading';
+  return {u,slope,eta,why};}
+function sev(u){return u>=0.9?'crit':u>=0.8?'warn':'';}
+function etaText(st){if(st.slope==null)return st.why||'–';if(st.slope<=0)return 'shrinking';if(st.eta>5*365)return 'over 5 years';if(st.eta>365)return (st.eta/365).toFixed(1)+' years';return Math.max(0,Math.round(st.eta))+' days';}
+function fleetLeaves(){const out=[];(function w(n){const ks=n.kids;if(!ks||!ks.length){out.push(n);return;}for(const k of ks)w(k);})(ROOT);return out;}
+function renderOverview(){
+  const v=$('#v-overview');untip();v.replaceChildren();
+  if(FATAL){v.append(FATAL());return;}
+  rollFleet();
+  const ok=HARV.filter(h=>h.status==='ok');
+  const rows=fsRows();
+  const used=rows.reduce((a,r)=>a+(+r.fs.used||0),0),size=rows.reduce((a,r)=>a+(+r.fs.size||0),0),avail=rows.reduce((a,r)=>a+(+r.fs.avail||0),0);
+  v.append(el('div',{class:'view-head'},el('div',null,el('h1',{text:'Everything stored, on every machine'}),
+    el('p',{text:ok.length?`${ok.length} harvester${ok.length===1?'':'s'} report ${rows.length} filesystem${rows.length===1?'':'s'}. Sizes are allocated blocks from the latest scans plus live changes; history comes from VictoriaMetrics.`:'Waiting for a harvester to answer.'})),el('span',{class:'vh-chip'},histChip())));
+  // hero: the filesystem that fills first, or the fullest
+  let hero=null;for(const r of rows){const st=fsStats(r);r.st=st;if(st.eta!=null&&(!hero||hero.st.eta==null||st.eta<hero.st.eta))hero=r;}
+  if(!hero||hero.st.eta==null||hero.st.eta>5*365){hero=rows.slice().sort((a,b)=>b.st.u-a.st.u)[0]||null;}
+  const heroP=el('div',{class:'panel hero'});
+  if(hero){const st=hero.st,fs=hero.fs;const s=sev(st.u);
+    heroP.append(el('div',{class:'ph'},el('span',{class:'eyebrow',text:hostName(hero.H)+' · '+maskPath(fs.mount)}),chip(s||'good',pct(st.u)+' used')));
+    if(st.eta!=null&&st.eta<=5*365){heroP.append(el('div',{class:'fig'},String(Math.max(0,Math.round(st.eta))),el('small',{text:'days left'})),el('p',{text:`${fmtB(fs.avail)} free of ${fmtB(fs.size)}. It grew ${fmtB(st.slope)} a day over the last ${fmtSpan(hero.cap.span)}, so at that pace it fills around ${fmtDate(Date.now()/1000+st.eta*DAY)}.`}));}
+    else{heroP.append(el('div',{class:'fig'},pct(st.u),el('small',{text:'used'})),el('p',{text:`${fmtB(fs.avail)} free of ${fmtB(fs.size)} on the fullest filesystem. `+(st.slope!=null?(st.slope<=0?'It is not growing.':`It grows ${fmtB(st.slope)} a day, so it lasts ${etaText(st)}.`):`No forecast yet: ${st.why}.`)}));}
+  }else heroP.append(el('p',{class:'empty',text:'No filesystem reported yet.'}));
+  const kpi=(l,val,d)=>el('div',{class:'kpi'},el('span',{class:'l',text:l}),el('span',{class:'v',text:val}),el('span',{class:'d',text:d}));
+  const allT=ok.flatMap(H=>H.info.targets.map(T=>({H,T})));const bad=allT.filter(x=>x.T.last_error).length;
+  const rate=ok.reduce((a,H)=>a+liveRate(H),0),evs=ok.reduce((a,H)=>a+H.evLive,0);
+  v.append(el('div',{class:'ov-top'},heroP,el('div',{class:'kpis'},
+    kpi('Stored',fmtB(used),`${pct(size?used/size:0)} of ${fmtB(size)} on ${rows.length} filesystems`),
+    kpi('Free',fmtB(avail),rows.length?`most on ${hostName((rows.slice().sort((a,b)=>b.fs.avail-a.fs.avail)[0]||{}).H)}`:''),
+    kpi('Machines',`${ok.length} of ${HARV.filter(h=>h.status!=='duplicate').length}`,ok.length===HARV.length?'every harvester answers':HARV.filter(h=>h.status==='offline').map(hostName).join(', ')+' offline'),
+    kpi('Live changes',rate.toFixed(rate<10?1:0)+' / min',`${fmtN(evs)} since ${fmtHM(PAGE_T0)}`),
+    kpi('Scans',`${allT.length-bad} of ${allT.length} OK`,bad?`${bad} with errors, see Sources`:'no scan errors'))));
+  const grid=el('div',{class:'ov-grid'});v.append(grid);
+  grid.append(capacityPanel(rows));
+  grid.append(fillsPanel());
+  for(const H of ok)grid.append(largestPanel(H));
+  grid.append(moversPanel());
+  const lp=el('div',{class:'panel c6',id:'ov-live'});grid.append(lp);renderOvLive();
+  grid.append(scanPanel());
+}
+function capacityPanel(rows){
+  const tb=el('tbody');
+  for(const r of rows){const st=r.st||fsStats(r),s=sev(st.u),fs=r.fs;
+    const meter=el('div',{class:'meter '+s,role:'meter','aria-valuenow':Math.round(st.u*100),'aria-valuemin':0,'aria-valuemax':100,'aria-label':'used'},el('i',{style:`width:${(Math.min(1,st.u)*100).toFixed(1)}%`}));
+    const sp=r.cap&&r.cap.status==='ok'&&r.cap.v.length>2?sparkline(r.cap.v,s==='crit'?C.crit:C.accent):el('span',{style:'color:var(--muted);font-size:12px',text:st.why||'–'});
+    const tr=el('tr',null,
+      el('td',{class:'pool-name'},el('b',null,el('i',{class:'dot',style:`background:${hostColor(r.H)}`}),hostName(r.H)+' · ',el('span',{class:'mono',style:'font-size:12.5px;color:var(--ink)',text:maskPath(fs.mount)})),el('span',{text:`${fs.type}`+(r.f.over>0?' · files share blocks':'')+(r.f.unacc.t>0?` · ${fmtB(r.f.unacc.t)} not in any target`:'')})),
+      el('td',null,s==='crit'?chip('crit','Critical'):s==='warn'?chip('warn','Watch'):chip('good','OK')),
+      el('td',{class:'hs',style:'width:20%'},meter),
+      el('td',{class:'r num'},`${fmtB(fs.used)} / ${fmtB(fs.size)}`),
+      el('td',{class:'r num hs'},fmtB(fs.avail)),
+      el('td',{class:'hs'},sp),
+      el('td',{class:'r num hs'},st.slope==null?'–':fmtD(st.slope)),
+      el('td',{class:'r num'},etaText(st)));
+    hoverTip(tr,()=>[{v:hostName(r.H)+' · '+maskPath(fs.mount),c:'h'},{v:pct(st.u),l:'used'},r.cap&&r.cap.status==='ok'?{l:`history from ${r.cap.src}, since ${fmtSince(r.cap.start)}`,c:'m'}:{l:st.why,c:'m'},st.eta!=null?{l:'full around '+fmtDate(Date.now()/1000+st.eta*DAY),c:'m'}:null]);
+    tb.append(tr);}
+  return el('div',{class:'panel c12'},el('div',{class:'ph'},el('h2',{text:'Capacity'}),el('span',{class:'sub',text:'df from each harvester · trend from up to 90 days of VictoriaMetrics, growth per day from the last 30, independent of the range above'})),
+    rows.length?el('div',{class:'tbl-wrap'},el('table',null,el('thead',null,el('tr',null,...['Filesystem','Status','','Used','Free','90 days','Per day','Full in'].map((h,i)=>el('th',{class:([3,4,6,7].includes(i)?'r ':'')+([2,4,5,6].includes(i)?'hs':''),text:h})))),tb)):el('p',{class:'empty',text:'No filesystems yet.'}));
+}
+function fillsPanel(){
+  const byK={};let free=0,unacc=0,res=0,shared=false;
+  for(const n of fleetLeaves()){if(n.kind==='free'){free+=n.t;continue;}if(n.kind==='reserved'){res+=n.t;continue;}if(n.kind==='unacc'){unacc+=n.t;continue;}if(n.kind==='host'||n.kind==='root'||n.kind==='fs')continue;const k=kindOf(n)||'other';byK[k]=(byK[k]||0)+n.t;}
+  for(const H of HARV)if(H.status==='ok')for(const f of H.node.kids)if(f.over>0)shared=true;
+  const parts=KINDS.map(k=>({label:k.label,v:byK[k.k]||0,c:kindColor(k.k)})).filter(p=>p.v>0);
+  if(unacc>0)parts.push({label:'Not in any target',v:unacc,c:C.dark});if(res>0)parts.push({label:'Reserved',v:res,c:C.axis});
+  parts.push({label:'Free',v:free,c:C.free,free:true});
+  const tot=parts.reduce((a,p)=>a+p.v,0)||1;
+  const sb=el('div',{class:'segbar',role:'img','aria-label':'What fills the fleet, by kind'});
+  for(const p of parts){const w=p.v/tot;if(w<=0)continue;const d=el('div',{style:`flex:${w} 1 0;background:${p.c};color:${inkOn(p.c)}`+(p.free?`;background-image:repeating-linear-gradient(135deg,transparent 0 5px,${C.freeLine} 5px 6px);color:${C.ink2}`:'')});if(w>0.07)d.textContent=pct(w);hoverTip(d,[{key:p.c,sw:1,v:fmtB(p.v),l:p.label},{v:pct(w),l:'of all space',c:'m'}]);sb.append(d);}
+  const lg=el('div',{class:'legend'},...parts.map(p=>el('span',null,el('i',{style:`background:${p.c}`+(p.free?`;box-shadow:inset 0 0 0 1px ${C.freeLine}`:'')}),`${p.label} · ${fmtB(p.v)}`)));
+  return el('div',{class:'panel c12'},el('div',{class:'ph'},el('h2',{text:'What fills the fleet'}),el('span',{class:'sub',text:'Guessed from folder names. '+(shared?'Logical sizes: blocks shared between folders count once per folder, see Sharing.':'Allocated blocks per folder.')})),sb,lg);
+}
+// largest folders: expand the biggest node until the top of the list is made of folders that are not mostly one child
+function largestOf(H,k=8){
+  let list=[];for(const f of H.node.kids)for(const r of f.kids)if(r.kind==='dir')list.push(r);
+  for(let it=0;it<60;it++){list.sort((a,b)=>b.t-a.t);const kth=list[Math.min(k,list.length)-1]?list[Math.min(k,list.length)-1].t:0;
+    const i=list.findIndex(n=>n.kind==='dir'&&n.c.length&&n.t>2*kth);if(i<0)break;const n=list[i];list.splice(i,1,...n.c);}
+  return list.filter(n=>n.kind==='dir').sort((a,b)=>b.t-a.t).slice(0,k);
+}
+function largestPanel(H){
+  const list=largestOf(H),mx=list[0]?list[0].t:1;
+  const bars=el('div',{class:'bars'},...list.map(n=>{const k=kindOf(n);return hoverTip(el('div',{class:'brow'},el('div',{class:'lab'},el('i',{class:'dot',style:`background:${kindColor(k)}`}),el('span',{class:'mono',style:'font-size:12px',text:pathOf(n)})),el('div',{class:'track'},el('i',{style:`left:0;width:${(n.t/mx*100).toFixed(1)}%;background:${C.accent}`})),el('div',{class:'val',text:fmtB(n.t)})),
+    ()=>[{v:pathOf(n),c:'h'},{v:fmtB(n.t),l:(KINDS[KIDX[k]]||{}).label},n.x!=null?{v:fmtB(n.x),l:'freed if deleted'}:null,{l:`${fmtN(n.f)} files · ${fmtN(n.d)} folders · target ${tgName(n.T.name)}`,c:'m'}]);}));
+  return el('div',{class:'panel c6'},el('div',{class:'ph'},el('h2',{text:'Largest folders · '+hostName(H)}),el('span',{class:'sub',text:'From the live tree. Dot shows the kind.'})),list.length?bars:el('p',{class:'empty',text:'Trees are still loading.'}));
+}
+function moversPanel(){
+  const p=el('div',{class:'panel c6'});
+  const head=el('div',{class:'ph'},el('h2',{text:'Biggest changes · '+RANGE.label}),HIST.status==='ok'?el('span',{class:'sub',text:HIST.clipped?`history since ${fmtSince(HIST.first)}`:'VictoriaMetrics'}):histChip());p.append(head);
+  if(HIST.status!=='ok'){p.append(el('p',{class:'empty',text:HIST.status==='none'?'This harvester has no metrics_url, so there is no history. Live changes are under Live activity.':HIST.status==='error'?'VictoriaMetrics did not answer: '+maskText(HIST.err):HIST.status==='empty'?'No storage-harvester series in this range yet.':'Loading…'}));return p;}
+  const seenId=new Set(),leaves=[...HIST.rows.values()].filter(r=>!r.kids.length&&r.kind==='dir'&&isFinite(r.net)&&Math.abs(r.net)>=1).sort((a,b)=>((!!a.nested)-(!!b.nested))||Math.abs(b.net)-Math.abs(a.net)).filter(r=>{if(!r.id)return true;if(seenId.has(r.id))return false;seenId.add(r.id);return true;}).sort((a,b)=>Math.abs(b.net)-Math.abs(a.net)).slice(0,10);
+  const mx=Math.max(1,...leaves.map(x=>Math.abs(x.net)));
+  if(!leaves.length){p.append(el('p',{class:'empty',text:'No reported folder changed in this range.'}));return p;}
+  p.append(el('div',{class:'bars'},...leaves.map(r=>{const d=r.net,w=Math.abs(d)/mx*50;return hoverTip(el('div',{class:'brow'},el('div',{class:'lab'},el('i',{class:'dot',style:`background:${hostColor(r.H)}`}),el('span',{class:'mono',style:'font-size:12px',text:maskPath(r.path)})),el('div',{class:'div-track'},el('i',{style:d>0?`left:50%;width:${w}%;background:${C.pos};border-radius:0 3px 3px 0`:`right:50%;width:${w}%;background:${C.neg};border-radius:3px 0 0 3px`})),el('div',{class:'val',text:fmtD(d)})),
+    [{v:maskPath(r.path),c:'h'},{v:fmtD(d),l:`over ${fmtSpan(HIST.t1-HIST.t0)} to ${fmtHM(HIST.t1)}`},{v:fmtB(r.size),l:'now'},{l:hostName(r.H)+' · target '+tgName(r.tname),c:'m'}]);})));
+  p.append(el('div',{class:'legend',style:'margin-top:10px'},el('span',null,el('i',{style:`background:${C.pos}`}),'grew'),el('span',null,el('i',{style:`background:${C.neg}`}),'shrank'),...HARV.filter(h=>h.status==='ok').map(h=>el('span',null,el('i',{class:'dot',style:`background:${hostColor(h)}`}),hostName(h)))));
+  return p;
+}
+function renderOvLive(){
+  const p=$('#ov-live');if(!p)return;p.replaceChildren();
+  p.append(el('div',{class:'ph'},el('h2',{text:'Live activity'}),el('span',{class:'sub',text:'since this page opened at '+fmtHM(PAGE_T0)})));
+  const box=el('div');
+  const nowM=Math.floor(Date.now()/60000);
+  for(const H of HARV){if(H.status==='duplicate')continue;
+    const L=LIVE.get('h:'+H.key)||{ld:0};const ser=[];for(let m=nowM-29;m<=nowM;m++)ser.push(H.minutes.get(m)||0);
+    const st=H.status!=='ok'?chip('crit','offline'):H.sse==='open'?chip('good',(H.info.live&&H.info.live.source)||'live'):chip('warn',H.sse);
+    const on=H.status==='ok';
+    box.append(el('div',{class:'lrow'},el('div',{class:'nm'},el('i',{class:'dot',style:`background:${hostColor(H)}`}),el('span',{text:hostName(H)}),st),on?sparkline(ser,hostColor(H),110,24):el('span'),el('div',{class:'v',text:on?liveRate(H).toFixed(1)+'/min':'–'}),el('div',{class:'v',text:on?fmtD(L.ld):'–'})));}
+  p.append(box);
+  const hot=[...HOTS.values()].sort((a,b)=>b.abs-a.abs).slice(0,8);
+  p.append(el('div',{class:'ph',style:'margin:14px 0 6px'},el('h2',{text:'Hottest folders'}),el('span',{class:'sub',text:'by bytes written or deleted'})));
+  if(!hot.length)p.append(el('p',{class:'empty',text:'No live changes yet.'}));
+  else{const mx=hot[0].abs||1;p.append(el('div',{class:'bars'},...hot.map(h=>hoverTip(el('div',{class:'brow'},el('div',{class:'lab'},el('i',{class:'dot',style:`background:${hostColor(h.H)}`}),el('span',{class:'mono',style:'font-size:12px',text:tail(maskPath(h.path),3)})),el('div',{class:'track'},el('i',{style:`left:0;width:${(h.abs/mx*100).toFixed(1)}%;background:${h.net>=0?C.pos:C.neg}`})),el('div',{class:'val',text:fmtD(h.net)})),
+    ()=>[{v:maskPath(h.path),c:'h'},{v:fmtD(h.net),l:'net'},{v:fmtB(h.abs),l:'moved in '+h.n+' change'+(h.n===1?'':'s')},{l:'last '+fmtAgo(h.last),c:'m'}]))));}
+}
+function scanPanel(){
+  const tb=el('tbody');const now=Date.now()/1000;
+  for(const H of HARV){if(H.status!=='ok')continue;for(const T of H.info.targets){
+    const stale=T.last_scan&&T.interval_s&&now-T.last_scan>3*T.interval_s+120;
+    const status=T.last_error?chip('crit','Error'):T.scan_running?chip('warn','Scanning'):!T.last_scan?chip('need','No scan yet'):stale?chip('warn','Late'):chip('good','OK');
+    const tr=el('tr',null,el('td',null,el('i',{class:'dot',style:`background:${hostColor(H)};margin-right:7px`}),el('span',{class:'mono',style:'font-size:12.5px',text:tgName(T.name)})),el('td',null,status),
+      el('td',{class:'r num',text:fmtAgo(T.last_scan)}),el('td',{class:'r num',text:fmtSpan(T.scan_duration_s)}),el('td',{class:'r num',text:fmtEvery(T.interval_s)}),
+      el('td',null,T.live?el('span',{class:'num',style:'font-size:12.5px',text:'live · '+(T.live_at?fmtAgo(T.live_at):'no change yet')}):el('span',{class:'muted',style:'font-size:12.5px',text:'scans only'})),
+      el('td',{class:'wrap',style:'font-size:12px;color:var(--crit-ink);max-width:340px'},T.last_error?maskText(T.last_error):''));
+    hoverTip(tr,()=>[{v:maskPath(T.path),c:'h'},{l:hostName(H)+' · '+(isOuter(H,T)?'outermost target':'inside '+tgName(H.outer.get(T.name).name)),c:'m'}]);tb.append(tr);}}
+  return el('div',{class:'panel c12'},el('div',{class:'ph'},el('h2',{text:'Scan health'}),el('span',{class:'sub',text:'last pass per target, from /api/info'})),
+    el('div',{class:'tbl-wrap'},el('table',null,el('thead',null,el('tr',null,el('th',{text:'Target'}),el('th',{text:'Status'}),el('th',{class:'r',text:'Last scan'}),el('th',{class:'r',text:'Took'}),el('th',{class:'r',text:'Every'}),el('th',{text:'Live'}),el('th',{text:'Error'}))),tb)));
+}
+
+/* ======================================================================= CHANGES (heatmap) */
+const HM={open:new Set(),sel:null,selB:null,sort:'activity',rel:false,hideFlat:true,rows:[],hov:null,cw:6,built:false,opened:false};
+const ROWH=22;
+function treeRow(n,depth){return {key:n.id,id:n.id,kind:'dir',node:n,H:n.H,depth,nohist:true,get kids(){return depth<2?n.c.map(c=>treeRow(c,depth+1)):[];},get size(){return n.t;}};}
+function hmRoots(){
+  const out=[];
+  for(const H of HARV){if(H.status!=='ok')continue;
+    const hh=HIST.status==='ok'&&HIST.byHost.get(H.key);
+    if(hh)out.push(hh.row);
+    else{const kids=[];for(const T of H.info.targets){if(!isOuter(H,T))continue;const r=H.roots.get(T.name);if(r){const tr=treeRow(r,0);tr.kind='target';kids.push(tr);}}
+      out.push({key:'h:'+H.key,id:'h:'+H.key,kind:'host',H,depth:-1,nohist:true,kids,size:H.node.t});}}
+  return out;
+}
+function rowSize(r){return r.S?r.size:r.size!=null?r.size:0;}
+function rowNow(r){const L=r.id&&LIVE.get(r.id);return L?L.lh:0;}
+function rowAct(r){return (r.act||0)+Math.abs(rowNow(r));}
+function rowNet(r){return r.S?r.net:null;}
+function rowDelta(r,b){return r.S?r.S[b+1]-r.S[b]:NaN;}
+function rowName(r){if(r.kind==='host')return hostName(r.H);if(r.kind==='target')return tgName(r.tname||(r.node&&r.node.T.name));const p=r.path||(r.node&&r.node.path)||'';const nm=p.split('/').filter(Boolean).pop()||'/';return HIDE?mask(nm):nm;}
+function rowPath(r){if(r.kind==='host')return hostName(r.H);return maskPath(r.path||(r.node&&r.node.path)||'');}
+function hmSortKey(r){return HM.sort==='size'?rowSize(r):HM.sort==='growth'?((rowNet(r)||0)+rowNow(r)):rowAct(r);}
+function hmBuildRows(){
+  const rows=[];
+  (function walk(list,d){const arr=list.map(r=>({r,v:hmSortKey(r)})).sort((a,b)=>b.v-a.v).map(x=>x.r);
+    for(const r of arr){const keep=r.kind==='host'||(r.kind==='target'&&!r.nested);if(HM.hideFlat&&!keep&&rowAct(r)<1)continue;rows.push({r,d});const ks=r.kids;if(HM.open.has(r.key)&&ks&&ks.length)walk(ks,d+1);}})(hmRoots(),0);
+  HM.rows=rows;
+}
+function hmDefaultOpen(){HM.seen=HM.seen||new Set();for(const r of hmRoots()){const mode=r.S?'h':'t';if(HM.seen.has(r.key+mode))continue;HM.seen.add(r.key+mode);HM.open.add(r.key);const outer=r.kids.filter(x=>!x.nested);for(const k of outer)if(outer.length<=3)HM.open.add(k.key);}}
+function hmScale(){
+  if(HM.rel)return {lo:2e-5,hi:0.05};
+  const vals=[];for(const {r} of HM.rows){if(!r.S)continue;for(let b=0;b<HIST.n;b++){const d=rowDelta(r,b);if(isFinite(d)&&d)vals.push(d);}const nw=rowNow(r);if(nw)vals.push(nw);}
+  if(!vals.length)for(const {r} of HM.rows){const nw=rowNow(r);if(nw)vals.push(nw);}
+  return scaleFor(vals,MiB);
+}
+function cellT(d,size){if(!isFinite(d))return 0;return HM.rel?divTr(size>0?d/size:0,HM.sc.lo,HM.sc.hi):divTr(d,HM.sc.lo,HM.sc.hi);}
+function renderChanges(){
+  HM.scrolled=false;
+  const v=$('#v-changes');untip();v.replaceChildren();
+  if(FATAL){v.append(FATAL());return;}
+  HM.built=HARV.some(h=>h.status==='ok');hmDefaultOpen();
+  const hasH=HIST.status==='ok';
+  let sub='Each row is a reported folder and each cell one time slot: red grew, blue shrank, grey did not change. Expand a row to see which subfolder did it, and click for its history. The last column is live changes since the newest slot.';
+  v.append(el('div',{class:'view-head'},el('div',null,el('h1',{text:'What changed, where, and when'}),el('p',{text:sub})),el('span',{class:'vh-chip'},histChip())));
+  if(!hasH){v.append(el('div',{class:'panel'},el('p',{class:'empty',style:'padding:4px 0',text:HIST.status==='none'?'No metrics_url is configured, so only the live column below has data. Set atlas.metrics_url on the harvester (or ?metrics= on this page) to see history.':HIST.status==='error'?'VictoriaMetrics did not answer ('+maskText(HIST.err)+'). Only live changes are shown.':HIST.status==='empty'?'VictoriaMetrics has no storage-harvester series for these machines in this range yet. Only live changes are shown.':'Loading history…'})));}
+  else if(HIST.clipped)v.append(el('p',{class:'note',style:'margin:-4px 0 0',text:`History starts ${fmtSince(HIST.first)}, so the ${RANGE.label} range shows the ${fmtSpan(HIST.t1-HIST.t0)} that exist, in ${HIST.n} slots of ${fmtSpan(HIST.step)}.`}));
+  const tools=el('div',{class:'hm-tools'},
+    el('span',{class:'eyebrow',text:'Colour by'}),seg('Colour by',[['abs','Bytes changed'],['rel','% of folder']],HM.rel?'rel':'abs',k=>{HM.rel=k==='rel';renderChanges();}),
+    el('span',{class:'eyebrow',text:'Sort'}),seg('Sort',[['activity','Most active'],['growth','Net growth'],['size','Size']],HM.sort,k=>{HM.sort=k;renderChanges();}),
+    check('Hide folders that did not change',HM.hideFlat,c=>{HM.hideFlat=c;renderChanges();}));
+  hmBuildRows();HM.sc=hmScale();
+  const scale=el('div',{class:'scale'});const sw=el('div',{class:'sw'});for(const t of [-1,-0.75,-0.5,-0.25,0,0.25,0.5,0.75,1])sw.append(el('i',{style:`background:${divColor(t)}`}));
+  const lab=t=>t===0?'0':(t<0?'−':'+')+(HM.rel?(divInvr(t,HM.sc.lo,HM.sc.hi)*100).toPrecision(1)+'%':fmtAxis(divInvr(t,HM.sc.lo,HM.sc.hi)));
+  scale.append(el('span',{text:lab(-1)}),sw,el('span',{text:lab(1)}),el('span',{text:(hasH?'per '+fmtSpan(HIST.step)+' slot':'since the page opened')+' · log scale'}));
+  const pnl=el('div',{class:'panel'},el('div',{class:'ph'},tools,scale));
+  const scroll=el('div',{class:'hm-scroll',id:'hm-scroll'});const grid=el('div',{class:'hm-grid'});
+  grid.append(el('div',{class:'hm-corner'},el('span',{text:'Folder'}),el('span',{text:'Size'}),el('span',{text:'Net'})),el('canvas',{id:'hm-axis'}),el('div',{id:'hm-rows',role:'tree','aria-label':'Folders'}),el('canvas',{id:'hm-cv','aria-label':'Change heatmap',role:'img'}));
+  scroll.append(grid);pnl.append(scroll);v.append(pnl);
+  if(!HM.rows.length)pnl.append(el('p',{class:'empty',text:'Nothing to show yet.'}));
+  v.append(el('div',{class:'drawer',id:'hm-drawer'}));
+  hmRenderRows();requestAnimationFrame(()=>{hmLayout();hmDraw();hmDrawer();});
+  const cv=$('#hm-cv');
+  const hit=e=>{const bb=cv.getBoundingClientRect();const r=Math.floor((e.clientY-bb.top)/ROWH),x=e.clientX-bb.left;if(r<0||r>=HM.rows.length)return null;const nb=hmNb();let b=Math.floor(x/HM.cw);if(x>=HM.nowX)b='now';else if(b>=nb||b<0)return null;return {r,b};};
+  cv.addEventListener('pointermove',e=>{const h=hit(e);if(!h){untip();return;}const {r,b}=h;if(!HM.hov||HM.hov.r!==r||HM.hov.b!==b){HM.hov={r,b};hmDraw();hmMarkRow(r);}
+    const row=HM.rows[r].r,rows=[{v:rowPath(row),c:'h'}];
+    if(b==='now'){const nw=rowNow(row);rows.push({v:'Live since '+fmtHM(hasH?HIST.t1:PAGE_T0),c:'m'},{key:divColor(cellT(nw,rowSize(row))),sw:1,v:fmtD(nw),l:'from live events'});const L=row.id&&LIVE.get(row.id);if(L&&L.n)rows.push({l:`${L.n} change${L.n===1?'':'s'} since the page opened`,c:'m'});}
+    else if(!row.S)rows.push({l:row.kind==='host'?'No history for this machine yet.':'No history for this folder yet.',c:'m'});
+    else{const t0=HIST.t0+b*HIST.step,d=rowDelta(row,b),end=row.S[b+1];rows.push({v:`${fmtWhen(t0)} – ${fmtHM(t0+HIST.step)}`,c:'m'});
+      if(!isFinite(d))rows.push({l:'Before this folder’s history starts',c:'m'});
+      else{rows.push({key:divColor(cellT(d,end)),sw:1,v:fmtD(d),l:end>0?`${(d/end*100).toFixed(Math.abs(d/end)>0.01?1:3)}% of the folder`:''},{v:fmtB(end),l:'size at the end of the slot'});
+        if(row.kids&&row.kids.length&&Math.abs(d)>=1){const top=row.kids.map(c=>({c,d:rowDelta(c,b)})).filter(x=>isFinite(x.d)&&Math.abs(x.d)>=1).sort((a,b)=>Math.abs(b.d)-Math.abs(a.d)).slice(0,3);for(const x of top)rows.push({v:fmtD(x.d),l:rowName(x.c),c:'m'});}}}
+    tip(e,rows);});
+  cv.addEventListener('pointerleave',()=>{HM.hov=null;hmDraw();hmMarkRow(-1);untip();});
+  cv.addEventListener('click',e=>{const h=hit(e);if(!h)return;HM.sel=HM.rows[h.r].r.key;HM.selAuto=false;HM.selB=h.b==='now'?null:h.b;hmRenderRows();hmDraw();hmDrawer();});
+}
+function hmNb(){return HIST.status==='ok'?HIST.n:0;}
+function hmMarkRow(r){const rows=$('#hm-rows');if(!rows)return;[...rows.children].forEach((b,i)=>b.classList.toggle('hov',i===r));}
+function hmRenderRows(){
+  const box=$('#hm-rows');if(!box)return;box.replaceChildren();
+  for(const {r,d} of HM.rows){const open=HM.open.has(r.key),ks=r.kids,has=!!(ks&&ks.length);const net=rowNet(r);
+    const dot=r.kind==='host'?hostColor(r.H):kindColor(r.node?kindOf(r.node):kindOfPath(r.path||'',((r.H.targets.get(r.tname)||{}).labels||{}).class));
+    const nm=el('span',{class:'nm',style:`padding-left:${d*14}px`},el('span',{class:'car',text:has?'▶':''}),el('i',{class:'dot',style:`background:${dot}`}),el('span',{class:r.kind==='host'?'':'mono',style:r.kind==='host'?'':'font-size:12px',text:rowName(r)}));
+    if(r.nested)nm.append(el('small',{text:'in '+tgName(r.outerName)}));
+    const b=el('button',{type:'button',class:'hm-row'+(open?' open':'')+(HM.sel===r.key?' sel':'')+(r.kind==='host'?' host':''),role:'treeitem','aria-expanded':has?String(open):null,'aria-level':d+1,'data-key':r.key,
+      onclick:()=>{if(has){open?HM.open.delete(r.key):HM.open.add(r.key);}HM.sel=r.key;HM.selAuto=false;HM.selB=null;hmBuildRows();hmRenderRows();hmLayout();hmDraw();hmDrawer();}},
+      nm,el('span',{class:'sz',text:fmtB(rowSize(r))}),net==null?el('span',{class:'dl nohist',text:'no history'}):el('span',{class:'dl',text:fmtD(net)}));
+    box.append(b);}
+}
+function hmRefreshRowsNow(){const box=$('#hm-rows');if(!box)return;const kids=box.children;HM.rows.forEach(({r},i)=>{const b=kids[i];if(!b)return;if(!r.S){const s=b.querySelector('.sz');if(s)s.textContent=fmtB(rowSize(r));}});}
+function hmLayout(){
+  const scroll=$('#hm-scroll'),cv=$('#hm-cv'),ax=$('#hm-axis');if(!scroll||!cv)return;
+  const leftW=Math.min(440,Math.max(innerWidth<640?200:250,Math.round(scroll.clientWidth*0.28)));
+  const nb=hmNb(),avail=scroll.clientWidth-leftW-2,gap=nb?8:0;
+  const nowW=nb?Math.max(30,Math.min(44,avail/(nb+3)*2)):Math.max(60,Math.min(260,avail));
+  const cw=nb?Math.max(4,(avail-gap-nowW)/nb):0;HM.cw=cw;HM.nowX=Math.floor(cw*nb)+gap;HM.nowW=nowW;
+  const W=Math.floor(HM.nowX+nowW),H=Math.max(1,HM.rows.length*ROWH),dpr=devicePixelRatio||1;
+  $('.hm-grid').style.gridTemplateColumns=`${leftW}px ${W}px`;
+  if(!HM.scrolled&&leftW+W>scroll.clientWidth){HM.scrolled=true;requestAnimationFrame(()=>{scroll.scrollLeft=scroll.scrollWidth;});}
+  for(const [c,h] of [[cv,H],[ax,30]]){c.style.width=W+'px';c.style.height=h+'px';c.width=Math.round(W*dpr);c.height=Math.round(h*dpr);}
+}
+function hmDraw(){
+  const cv=$('#hm-cv'),ax=$('#hm-axis');if(!cv)return;const dpr=devicePixelRatio||1,ctx=cv.getContext('2d'),W=cv.width/dpr,H=cv.height/dpr,nb=hmNb(),cw=HM.cw;
+  ctx.setTransform(dpr,0,0,dpr,0,0);ctx.fillStyle=C.surface;ctx.fillRect(0,0,W,H);
+  const gap=cw>=5?1:0;
+  for(const [i,{r}] of HM.rows.entries()){const y=i*ROWH+1;
+    if(nb){if(!r.S){ctx.fillStyle=pattern(ctx,'nohist');ctx.fillRect(0,y,nb*cw,ROWH-2);}
+      else for(let b=0;b<nb;b++){const d=rowDelta(r,b);if(!isFinite(d)){ctx.fillStyle=pattern(ctx,'nohist');}else ctx.fillStyle=divColor(cellT(d,r.S[b+1]));ctx.fillRect(b*cw,y,cw-gap,ROWH-2);}}
+    const nw=rowNow(r);ctx.fillStyle=divColor(cellT(nw,rowSize(r)));ctx.fillRect(HM.nowX,y,HM.nowW,ROWH-2);
+  }
+  // day separators
+  if(nb&&HIST.step<86400){ctx.fillStyle=C.surface;for(let b=1;b<nb;b++){const t=HIST.t0+b*HIST.step,d=new Date(t*1000);if(d.getHours()===0&&d.getMinutes()*60<HIST.step)ctx.fillRect(b*cw-1,0,2,H);}}
+  if(HM.sel){const i=HM.rows.findIndex(x=>x.r.key===HM.sel);if(i>=0){ctx.strokeStyle=C.ink;ctx.lineWidth=1.5;ctx.strokeRect(0.75,i*ROWH+0.75,W-1.5,ROWH-1.5);if(HM.selB!=null&&nb){ctx.strokeStyle=C.accent;ctx.lineWidth=2;ctx.strokeRect(HM.selB*cw,i*ROWH,cw,ROWH);}}}
+  if(HM.hov){const {r,b}=HM.hov;const x=b==='now'?HM.nowX:b*cw,w=b==='now'?HM.nowW:cw;ctx.strokeStyle=C.ink2;ctx.lineWidth=1;ctx.strokeRect(x+0.5,0.5,w-1,H-1);ctx.strokeStyle=C.ink;ctx.lineWidth=2;ctx.strokeRect(x,r*ROWH,w,ROWH);}
+  const a=ax.getContext('2d');a.setTransform(dpr,0,0,dpr,0,0);a.fillStyle=C.surface;a.fillRect(0,0,W,30);a.font='11px '+getComputedStyle(document.body).fontFamily;a.textBaseline='middle';
+  if(nb){const t0=HIST.t0,t1=HIST.t1,X=t=>(t-t0)/(t1-t0)*nb*cw;
+    for(const [t,lab] of timeTicks(t0,t1,nb*cw)){const x=X(t);a.fillStyle=C.axis;a.fillRect(Math.round(x),22,1,8);a.fillStyle=C.muted;a.fillText(lab,Math.max(0,Math.min(nb*cw-a.measureText(lab).width-2,x+4)),14);}
+    if(HM.hov&&HM.hov.b!=='now'){a.fillStyle=C.accent;a.fillRect(HM.hov.b*cw,27,Math.max(2,cw),3);}}
+  a.fillStyle=C.ink2;const lab=nb?'now':'live since '+fmtHM(PAGE_T0);a.fillText(lab,HM.nowX+Math.max(0,(HM.nowW-a.measureText(lab).width)/2),14);
+}
+function hmFind(key){let found=null;(function w(list){for(const r of list){if(found)return;if(r.key===key){found=r;return;}if(HM.open.has(r.key)||key.startsWith(r.key.replace(/^h:/,'')))w(r.kids||[]);}})(hmRoots());if(!found)found=(HM.rows.find(x=>x.r.key===key)||{}).r;return found;}
+function hmDrawer(){
+  const box=$('#hm-drawer');if(!box)return;box.replaceChildren();
+  let r=!HM.selAuto&&HM.sel&&(HM.rows.find(x=>x.r.key===HM.sel)||{}).r;
+  if(!r){const cand=HM.rows.filter(x=>x.r.kind!=='host'&&x.r.S).sort((a,b)=>rowAct(b.r)-rowAct(a.r))[0]||HM.rows.filter(x=>x.r.kind!=='host').sort((a,b)=>rowAct(b.r)-rowAct(a.r))[0]||HM.rows[0];if(!cand)return;r=cand.r;if(HM.sel!==r.key){HM.sel=r.key;hmRenderRows();hmDraw();}HM.selAuto=true;}
+  HM.drawerRow=r;
+  const hasH=HIST.status==='ok'&&r.S;
+  const p1=el('div',{class:'panel'},el('div',{class:'dr-title'},el('span',{class:'p',text:rowPath(r)})),
+    el('div',{class:'dr-title',style:'margin:2px 0 6px'},el('span',{class:'m',text:`${fmtB(rowSize(r))} now`+(hasH?` · ${fmtD(r.net)} over ${fmtSpan(HIST.t1-HIST.t0)}`:'')+(r.kind==='host'?'':` · ${hostName(r.H)}`)+(r.kind!=='host'&&(r.tname||r.node)?' · target '+tgName(r.tname||r.node.T.name):'')})),el('div',{id:'dr-size'}));
+  const p2=el('div',{class:'panel'},el('h2',{text:'Which subfolders moved'}),el('div',{id:'dr-kids',style:'margin-top:6px'}));
+  const p3=el('div',{class:'panel',id:'dr-live'});
+  box.append(p1,p2,p3);
+  const t=hasH?Array.from({length:HIST.n+1},(_,i)=>HIST.t0+i*HIST.step):null;
+  if(!hasH){$('#dr-size').append(el('p',{class:'empty',text:HIST.status!=='ok'?'History is not available, see the note above.':`VictoriaMetrics has no series for ${r.kind==='host'?'this machine':'this folder'} yet. Its harvester's metrics need to be scraped first; folders deeper than the report depth never have series.`}));}
+  else{const bands=HM.selB!=null?[[HIST.t0+HM.selB*HIST.step,HIST.t0+(HM.selB+1)*HIST.step]]:[];lineChart($('#dr-size'),{t,series:[{name:'size',color:C.accent,v:[...r.S],area:true,end:true}],bands,height:170,label:'Folder size over time'});}
+  const kids=(r.kids||[]).filter(k=>k.S).map(k=>({k,a:k.act||0})).filter(x=>x.a>0).sort((a,b)=>b.a-a.a);
+  if(!hasH||!kids.length){$('#dr-kids').append(el('p',{class:'empty',text:!hasH?'Needs history.':(r.kids&&r.kids.length?'None of its reported subfolders changed in this range.':'No reported subfolders: scans report folders down to their report depth. The Block map shows deeper folders live.')}));}
+  else{const top=kids.slice(0,4),rest=kids.slice(4);const cum=S=>{const b=firstFinite(S);return [...S].map(v=>isFinite(v)&&isFinite(b)?v-b:null);};
+    const series=top.map((x,i)=>({name:rowName(x.k),color:C.slots[i],v:cum(x.k.S)}));
+    if(rest.length){const v=new Array(HIST.n+1).fill(0);for(const x of rest){const c=cum(x.k.S);for(let i=0;i<v.length;i++)v[i]+=c[i]||0;}series.push({name:`${rest.length} others`,color:C.muted,v});}
+    lineChart($('#dr-kids'),{t,series,zero:true,height:150,yFmt:'signed',vFmt:fmtD,label:'Change since the start of the range per subfolder'});
+    $('#dr-kids').append(el('div',{class:'legend',style:'margin-top:6px'},...series.map(s=>el('span',null,el('i',{style:`background:${s.color};height:2px;width:12px`}),s.name))));}
+  hmLiveDrawer();
+}
+function hmLiveDrawer(){
+  const p=$('#dr-live'),r=HM.drawerRow;if(!p||!r)return;p.replaceChildren();
+  const L=r.id&&LIVE.get(r.id);
+  p.append(el('h2',{text:'Live since the page opened'}));
+  p.append(el('dl',{class:'kv',style:'margin-top:8px'},el('dt',{text:'Changes'}),el('dd',{text:L?fmtN(L.n):'0'}),el('dt',{text:'Net'}),el('dd',{text:fmtD(L?L.ld:0)}),el('dt',{text:'Moved'}),el('dd',{text:fmtB(L?L.abs:0)})));
+  // newest events inside this row's subtree
+  let H=r.H,pre=null,O=null;if(r.kind!=='host'&&r.id){const m=/^(.*?)\|(.*)\|(\/.*)$/.exec(r.id);if(m){O=m[2];pre=m[3];}}
+  const evs=[];for(let i=EVLOG.length-1;i>=0&&evs.length<8;i--){const e=EVLOG[i];if(e.H!==H)continue;if(pre&&(e.O.name!==O||!inside(e.path,pre)))continue;evs.push(e);}
+  if(!evs.length)p.append(el('p',{class:'empty',text:'No live changes here yet.'}));
+  else p.append(el('div',{class:'mini'},...evs.map(e=>el('div',null,el('span',{class:'tm',text:fmtHMS(e.t/1000)}),el('span',{class:'pa',text:tail(maskPath(e.path),3)}),el('span',{class:'dv',style:`color:${e.db>=0?'var(--crit-ink)':'var(--accent-ink)'}`,text:fmtD(e.db)})))));
+}
+
+/* ======================================================================= BLOCK MAP */
+const BM={on:false,focus:ROOT,mode:'change',cushion:true,free:true,equal:false,rects:[],byNode:new Map(),pulses:[],hov:null,anim:null,needLayout:true,needBase:true,sizesDirty:false,lastLayout:0,base:null,sc:{lo:16*KiB,hi:256*MiB}};
+const REDUCED=matchMedia('(prefers-reduced-motion: reduce)').matches;
+function bmKids(n){if(n.kind==='fs'&&!BM.free)return n.kids.filter(k=>k.kind!=='free'&&k.kind!=='reserved');if(n.kind==='root')return n.kids.filter(h=>BM.equal||h.t>0);return n.kids||[];}
+function squarify(items,x,y,w,h,out){
+  const total=items.reduce((a,b)=>a+b.v,0);if(total<=0||w<=0||h<=0)return;const sc=w*h/total;let row=[],i=0;
+  const worst=(r,side)=>{let s=0,mx=0,mn=Infinity;for(const it of r){const a=it.v*sc;s+=a;if(a>mx)mx=a;if(a<mn)mn=a;}const s2=s*s,w2=side*side;return Math.max(w2*mx/s2,s2/(w2*mn));};
+  const lay=r=>{const s=r.reduce((a,it)=>a+it.v*sc,0);if(w>=h){const cw=s/h;let cy=y;for(const it of r){const rh=it.v*sc/cw;out.push({n:it.n,x,y:cy,w:cw,h:rh});cy+=rh;}x+=cw;w-=cw;}else{const rh=s/w;let cx=x;for(const it of r){const cw=it.v*sc/rh;out.push({n:it.n,x:cx,y,w:cw,h:rh});cx+=cw;}y+=rh;h-=rh;}};
+  while(i<items.length){const side=Math.min(w,h),it=items[i];if(!row.length||worst([...row,it],side)<=worst(row,side)){row.push(it);i++;}else{lay(row);row=[];}}
+  if(row.length)lay(row);
+}
+function bmLayout(W,H){
+  const out=[];
+  (function rec(n,x,y,w,h,d){const r={n,x,y,w,h,d};out.push(r);
+    const ks=bmKids(n);if(!ks.length||w<12||h<12){r.leaf=true;return;}
+    const head=d===0?0:(w>=64&&h>=40?18:0),pad=d===0?0:2;
+    const ix=x+pad,iy=y+(head||pad),iw=w-2*pad,ih=h-(head||pad)-pad;
+    if(iw<6||ih<6){r.leaf=true;return;}
+    const items=[];for(const c of ks){const v=(BM.equal&&n.kind==='root')?1:Math.max(0,c.t);if(v>0)items.push({n:c,v});}
+    if(!items.length){r.leaf=true;return;}
+    r.head=head;r.box=true;items.sort((a,b)=>b.v-a.v);
+    const sub=[];squarify(items,ix,iy,iw,ih,sub);
+    for(const s of sub){if(s.w<1.5||s.h<1.5)continue;rec(s.n,s.x,s.y,s.w,s.h,d+1);}
+  })(BM.focus,0,0,W,H,0);
+  return out;
+}
+// Δ for colouring: VictoriaMetrics over the range where a folder has a series, plus live changes after the newest sample;
+// live changes since the page opened everywhere else.
+function bmDelta(n){
+  switch(n.kind){
+    case 'free':case 'reserved':case 'unacc':return null;
+    case 'here':{const L=LIVE.get(n.p.id);return L?L.own:0;}
+    case 'more':return 0;
+  }
+  const L=LIVE.get(n.id),hd=HIST.status==='ok'?HIST.histD.get(n.id):undefined;
+  if(hd!=null)return hd+(L?L.lh:0);
+  if(n.kind==='dir')return L?L.ld:0;
+  let s=0;for(const k of n.kids||[]){const d=bmDelta(k);if(d)s+=d;}return s;
+}
+function bmBasis(n){const hd=HIST.status==='ok'&&HIST.histD.get(n.id)!=null;return hd?`over ${fmtSpan(HIST.t1-HIST.t0)} (history) and live since ${fmtHM(HIST.t1)}`:`live since the page opened at ${fmtHM(PAGE_T0)}`;}
+function fillFor(ctx,n){
+  if(n.kind==='free')return pattern(ctx,'free');if(n.kind==='reserved')return pattern(ctx,'reserved');if(n.kind==='unacc')return pattern(ctx,'dark');
+  if(n.kind==='host'&&n.offline)return pattern(ctx,'reserved');if(n.pending)return pattern(ctx,'pending');
+  if(BM.mode==='kind')return kindColor(kindOf(n)||'other');
+  if(BM.mode==='host')return hostColor(n.H);
+  if(BM.mode==='share'){if(n.kind==='dir'&&n.x!=null&&n.t>0)return shareColor(1-Math.min(1,n.x/n.t));return pattern(ctx,'unknown');}
+  const d=bmDelta(n);return divColor(d==null?0:divTr(d,BM.sc.lo,BM.sc.hi));
+}
+function baseColor(n,f){if(typeof f==='string')return f;if(n.kind==='free')return C.free;if(n.kind==='reserved'||n.pending||n.offline)return C.s2;if(BM.mode==='share')return C.mid;return C.dark;}
+function fit(ctx,s,max){if(max<=0)return '';if(ctx.measureText(s).width<=max)return s;let lo=0,hi=s.length;while(lo<hi){const m=(lo+hi+1)>>1;if(ctx.measureText(s.slice(0,m)+'…').width<=max)lo=m;else hi=m-1;}return lo>0?s.slice(0,lo)+'…':'';}
+function bmRelayout(){
+  const cv=$('#bm-cv');if(!cv)return;rollFleet();
+  const W=cv.clientWidth,H=cv.clientHeight;if(!W||!H)return;
+  BM.rects=bmLayout(W,H);BM.byNode=new Map(BM.rects.map(r=>[r.n,r]));
+  if(BM.mode==='change'){const vals=[];for(const r of BM.rects)if(!r.box){const d=bmDelta(r.n);if(d)vals.push(d);}BM.sc=scaleFor(vals,64*MiB);}
+  BM.lastLayout=performance.now();BM.needLayout=false;BM.sizesDirty=false;BM.needBase=true;renderCrumbs();bmLegend();
+}
+function bmPaintBase(){
+  const cv=$('#bm-cv');if(!cv)return;const dpr=devicePixelRatio||1,W=cv.clientWidth,H=cv.clientHeight;
+  if(!BM.base)BM.base=document.createElement('canvas');const b=BM.base;
+  if(b.width!==Math.round(W*dpr)||b.height!==Math.round(H*dpr)){b.width=Math.round(W*dpr);b.height=Math.round(H*dpr);}
+  const ctx=b.getContext('2d');ctx.setTransform(dpr,0,0,dpr,0,0);ctx.fillStyle=C.surface;ctx.fillRect(0,0,W,H);
+  const font=getComputedStyle(document.body).fontFamily;
+  for(const r of BM.rects){const {n,x,y,w,h}=r;if(r.d===0&&r.box)continue;
+    if(r.box){ctx.fillStyle=C.s3;ctx.fillRect(x+1,y+1,w-2,h-2);
+      if(r.head){ctx.fillStyle=C.ink;ctx.font=`600 11.5px ${font}`;ctx.textBaseline='middle';const sz=fmtB(n.t);const nm=fit(ctx,nameOf(n),w-16-ctx.measureText(sz).width-8);ctx.fillText(nm,x+7,y+10);ctx.fillStyle=C.ink2;ctx.font=`11px ${font}`;ctx.fillText(sz,x+w-7-ctx.measureText(sz).width,y+10);}
+      continue;}
+    const f=fillFor(ctx,n);ctx.fillStyle=f;ctx.fillRect(x+1,y+1,Math.max(0,w-2),Math.max(0,h-2));
+    if(BM.cushion&&w>6&&h>6&&n.kind!=='free'&&n.kind!=='reserved'){const g=ctx.createLinearGradient(x,y,x+w,y+h);g.addColorStop(0,'rgba(255,255,255,0.20)');g.addColorStop(0.55,'rgba(255,255,255,0)');g.addColorStop(1,'rgba(0,0,0,0.13)');ctx.fillStyle=g;ctx.fillRect(x+1,y+1,w-2,h-2);}
+    if(w>46&&h>22){ctx.fillStyle=inkOn(baseColor(n,f));ctx.font=`500 11.5px ${font}`;ctx.textBaseline='top';const nm=fit(ctx,nameOf(n),w-12);if(nm)ctx.fillText(nm,x+6,y+5);
+      if(h>38){ctx.font=`11px ${font}`;ctx.globalAlpha=0.85;let s=fmtB(n.t);if(BM.mode==='change'){const d=bmDelta(n);if(d&&Math.abs(d)>=1)s+='  '+fmtD(d);}else if(BM.mode==='share'&&n.x!=null)s+='  frees '+fmtB(n.x);else if(n.pending)s+='  loading…';ctx.fillText(fit(ctx,s,w-12),x+6,y+20);ctx.globalAlpha=1;}}
+    if(n.kind==='dir'&&!n.full&&!n.pending&&w>14&&h>14&&n===BM.focus){} // (focus is never a leaf rect)
+  }
+  BM.needBase=false;
+}
+function bmCompose(){
+  const cv=$('#bm-cv');if(!cv||!BM.base)return;const dpr=devicePixelRatio||1,W=cv.clientWidth,H=cv.clientHeight;
+  if(cv.width!==Math.round(W*dpr)||cv.height!==Math.round(H*dpr)){cv.width=Math.round(W*dpr);cv.height=Math.round(H*dpr);}
+  const ctx=cv.getContext('2d');ctx.setTransform(1,0,0,1,0,0);ctx.fillStyle=C.surface;ctx.fillRect(0,0,cv.width,cv.height);
+  const now=performance.now();
+  if(BM.anim){const k=Math.min(1,(now-BM.anim.t0)/320),e=1-Math.pow(1-k,3),a=BM.anim.from;const cx=a.x*(1-e),cy=a.y*(1-e),cw=a.w+(W-a.w)*e,ch=a.h+(H-a.h)*e;ctx.globalAlpha=0.35+0.65*e;ctx.drawImage(BM.base,cx*dpr,cy*dpr,cw*dpr,ch*dpr);ctx.globalAlpha=1;if(k>=1)BM.anim=null;}
+  else ctx.drawImage(BM.base,0,0);
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+  if(!BM.anim){
+    BM.pulses=BM.pulses.filter(p=>now-p.t0<1700);
+    const seen=new Map();
+    for(const p of BM.pulses){let t=p.node,r=null;while(t&&!(r=BM.byNode.get(t)))t=t.p;if(!r||r.d===0)continue;seen.set(r,p);}
+    for(const [r,p] of seen){const q=(now-p.t0)/1700,col=p.d>=0?C.pos:C.neg;
+      if(r.box){ctx.globalAlpha=(1-q)*0.8;ctx.strokeStyle=col;ctx.lineWidth=1.5;ctx.strokeRect(r.x+1.5,r.y+1.5,r.w-3,r.h-3);ctx.globalAlpha=1;continue;}
+      ctx.globalAlpha=(1-q)*0.45;ctx.fillStyle=col;ctx.fillRect(r.x+1,r.y+1,r.w-2,r.h-2);ctx.globalAlpha=1-q;ctx.strokeStyle=col;ctx.lineWidth=2;const o=q*6;ctx.strokeRect(r.x+1-o,r.y+1-o,r.w-2+2*o,r.h-2+2*o);ctx.globalAlpha=1;}
+    if(BM.hov){const r=BM.byNode.get(BM.hov);if(r){ctx.strokeStyle=C.ink;ctx.lineWidth=2;ctx.strokeRect(r.x+1,r.y+1,r.w-2,r.h-2);}}
+  }
+}
+let bmRaf=0;function bmSchedule(){if(!bmRaf)bmRaf=requestAnimationFrame(bmFrame);}
+function bmFrame(){bmRaf=0;if(current()!=='blockmap'||!$('#bm-cv'))return;const now=performance.now();
+  if(BM.needLayout||(BM.sizesDirty&&now-BM.lastLayout>600))bmRelayout();
+  if(BM.needBase)bmPaintBase();
+  bmCompose();
+  if(BM.pulses.length||BM.anim||BM.sizesDirty)bmSchedule();}
+function bmHit(e){const cv=$('#bm-cv'),bb=cv.getBoundingClientRect(),x=e.clientX-bb.left,y=e.clientY-bb.top;let best=null;for(const r of BM.rects){if(x>=r.x&&x<r.x+r.w&&y>=r.y&&y<r.y+r.h)best=r;}return best;}
+function zoomTo(n,fromRect){if(!n)return;BM.focus=n;BM.anim=fromRect&&!REDUCED?{from:fromRect,t0:performance.now()}:null;BM.needLayout=true;BM.hov=null;bmSchedule();renderCrumbs();if(n.kind==='dir')deepen(n);}
+function renderCrumbs(){const c=$('#bm-crumbs');if(!c)return;c.replaceChildren();const chain=[];let t=BM.focus;while(t){chain.unshift(t);t=t.p;}
+  chain.forEach((n,i)=>{if(i)c.append(el('span',{class:'sep',text:'›'}));if(i===chain.length-1)c.append(el('b',{text:`${nameOf(n)} · ${fmtB(n.t)}`}));else c.append(el('button',{type:'button',text:nameOf(n),onclick:()=>zoomTo(n)}));});
+  if(BM.focus.loading)c.append(el('span',{class:'ld',text:'loading deeper folders…'}));else if(BM.focus.deepErr)c.append(el('span',{class:'ld err',text:'could not load deeper: '+maskText(BM.focus.deepErr)}));}
+function feedRow(e,fresh){
+  const p=e.kind==='scan'?tgName(e.O.name)+' · scan':tail(maskPath(e.path),2);
+  const b=el('button',{type:'button',class:'ev'+(fresh?' fresh':'')+(e.replay?' old':''),title:e.kind==='scan'?'':maskPath(e.path),onclick:()=>{const r=findDir(e.H,e.O,e.path);let n=r?r.node:null;if(n&&n.p&&n.p.kind==='dir'&&r.rest.length===0&&!(n.kids&&n.kids.length))n=n.p;if(n){if(current()!=='blockmap')location.hash='#blockmap';zoomTo(n);}}},
+    el('span',{class:'tm',text:fmtHMS(e.t)}),el('i',{class:'dot',style:`background:${hostColor(e.H)}`}),el('span',{class:'pa',text:p}),
+    el('span',{class:'dv',style:e.db==null?'':`color:${e.db>=0?'var(--crit-ink)':'var(--accent-ink)'}`,text:e.kind==='scan'?fmtSpan(e.dur):fmtD(e.db)}),
+    el('span',{class:'src '+(e.src==='scan'?'scan':e.src==='btrfs'?'btrfs':''),text:e.src==='fanotify'?'fan':e.src||'?'}));
+  return b;
+}
+let FEED_PAUSE=false;
+function flushFeed(){const f=$('#bm-feed');if(!f||FEED_PAUSE){if(!f)FEEDQ.length=0;return;}if(!FEEDQ.length)return;
+  const take=FEEDQ.splice(0,FEEDQ.length).slice(-80);const frag=document.createDocumentFragment();for(let i=take.length-1;i>=0;i--)frag.append(feedRow(take[i],!take[i].replay&&take.length<20));
+  f.prepend(frag);while(f.children.length>150)f.lastChild.remove();renderConn();}
+function renderConn(){const c=$('#bm-conn');if(!c)return;c.replaceChildren();for(const H of HARV){if(H.status==='duplicate')continue;const st=H.status!=='ok'?'down':H.sse==='open'?'open':'wait';c.append(el('div',null,el('i',{class:'cdot '+st}),el('b',{text:hostName(H)}),el('span',{text:H.status!=='ok'?'offline':H.sse==='open'?(H.info.live&&H.info.live.source||'live'):H.sse}),el('span',{text:liveRate(H).toFixed(1)+'/min'})));}}
+function renderBlockmap(){
+  const v=$('#v-blockmap');untip();v.replaceChildren();
+  if(FATAL){v.append(FATAL());return;}
+  v.append(el('div',{class:'view-head'},el('div',null,el('h1',{text:'Block map of every disk'}),el('p',{text:'Every block is a folder, sized by the blocks it holds, nested machine › filesystem › target › folder. Click a block to zoom in and load its deeper folders. Esc, right-click or the trail above the map zoom out. Blocks flash as live changes arrive.'})),el('span',{class:'vh-chip'},histChip())));
+  const legend=el('div',{class:'legend',id:'bm-legend'});
+  const ctl=el('div',{class:'bm-ctl'},
+    el('span',{class:'eyebrow',text:'Colour'}),seg('Colour',[['change','Change'],['kind','Kind'],['host','Machine'],['share','Sharing']],BM.mode,k=>{BM.mode=k;BM.needLayout=true;bmSchedule();bmLegend();}),
+    el('span',{class:'eyebrow',text:'Size'}),seg('Size',[['true','True size'],['equal','Equal machines']],BM.equal?'equal':'true',k=>{BM.equal=k==='equal';BM.needLayout=true;bmSchedule();}),
+    check('Free space',BM.free,c=>{BM.free=c;BM.needLayout=true;bmSchedule();}),
+    check('Cushions',BM.cushion,c=>{BM.cushion=c;BM.needBase=true;bmSchedule();}));
+  const cv=el('canvas',{id:'bm-cv',role:'img','aria-label':'Treemap of all storage. Use the trail above to navigate.'});
+  const main=el('div',{class:'panel bm-main'},el('nav',{class:'crumbs',id:'bm-crumbs','aria-label':'Zoom trail'}),cv,ctl,legend);
+  const feed=el('div',{class:'feed',id:'bm-feed','aria-live':'off',onpointerenter:()=>{FEED_PAUSE=true;},onpointerleave:()=>{FEED_PAUSE=false;flushFeed();}});
+  const side=el('div',{class:'panel'},el('div',{class:'ph'},el('h2',{text:'Change stream'}),el('span',{class:'sub',text:'hover to pause'})),el('div',{class:'conn',id:'bm-conn'}),
+    el('p',{class:'side-note',text:'Folders whose size changed, newest first, from every harvester’s event stream. Dimmed rows were replayed from before this page opened. Click a row to zoom to it.'}),feed);
+  v.append(el('div',{class:'bm-layout'},main,side));
+  FEEDQ.length=0;const frag=document.createDocumentFragment();for(const e of FEED.slice(0,150))frag.append(feedRow(e,false));feed.append(frag);renderConn();
+  BM.on=true;BM.needLayout=true;BM.base=null;if(!BM.focus||(BM.focus!==ROOT&&!findById(BM.focus.id)))BM.focus=ROOT;
+  renderCrumbs();bmLegend();bmSchedule();
+  cv.addEventListener('pointermove',e=>{const r=bmHit(e);if(!r){untip();return;}if(BM.hov!==r.n){BM.hov=r.n;bmSchedule();}tip(e,bmTip(r.n));});
+  cv.addEventListener('pointerleave',()=>{BM.hov=null;bmSchedule();untip();});
+  cv.addEventListener('click',e=>{const r=bmHit(e);if(!r)return;let t=r.n;while(t.p&&t.p!==BM.focus)t=t.p;if(t===BM.focus)return;untip();
+    if(t.kind==='more'||t.kind==='here'){const rr=BM.byNode.get(t.p)||BM.byNode.get(t);if(t.p!==BM.focus)zoomTo(t.p,rr&&rr.n===t.p?rr:null);else deepen(Object.assign(t.p,{deepAt:0}));return;}
+    const canZoom=(t.kids&&t.kids.length)||(t.kind==='dir'&&!t.full&&!t.pending);if(!canZoom)return;const rr=BM.byNode.get(t);zoomTo(t,rr?{x:rr.x,y:rr.y,w:rr.w,h:rr.h}:null);});
+  cv.addEventListener('contextmenu',e=>{if(BM.focus.p){e.preventDefault();zoomTo(BM.focus.p);}});
+}
+function bmTip(n){
+  const rows=[{v:pathOf(n),c:'h'}];const par=n.p;
+  rows.push({v:fmtB(n.t),l:par&&par.t?pct(n.t/par.t)+' of '+nameOf(par):''});
+  if(n.kind==='host'&&n.offline){rows.push({l:'offline: '+(maskText(n.H.err)||'no answer'),c:'m'});return rows;}
+  if(n.kind==='fs'){const fs=n.fs;rows.push({v:fmtB(fs.used),l:`used of ${fmtB(fs.size)} (df) · ${fmtB(fs.avail)} free`});if(n.over>0)rows.push({l:`Files add up to ${fmtB(n.over)} more than df used: they share blocks (see Sharing).`,c:'m'});if(n.unacc.t>0)rows.push({v:fmtB(n.unacc.t),l:'used but in no target'});}
+  if(n.kind==='unacc')rows.push({l:'df used minus every target on this filesystem: excluded paths, other users of the disk, metadata, files deleted while open.',c:'m'});
+  if(n.kind==='free')rows.push({l:'available to unprivileged users (df avail)',c:'m'});
+  if(n.kind==='reserved')rows.push({l:'neither used nor available: kept back for root by the filesystem',c:'m'});
+  if(n.kind==='more')rows.push({l:'smaller folders the tree API pruned. Click to load them.',c:'m'});
+  if(n.kind==='here')rows.push({l:'files directly in this folder',c:'m'});
+  if(n.pending){const st=n.H.tstate.get(n.T.name);rows.push({l:'tree '+(st&&st.status==='pending'?'waits for the first scan':st&&st.status==='error'?'failed: '+maskText(st.err):'is loading')+'. Size from /api/info.',c:'m'});}
+  if(n.kind!=='free'&&n.kind!=='reserved'&&n.kind!=='unacc'&&!n.pending){const d=bmDelta(n);if(d!=null)rows.push({key:divColor(divTr(d,BM.sc.lo,BM.sc.hi)),sw:1,v:fmtD(d),l:n.kind==='here'?'live since the page opened':bmBasis(n)});}
+  if(n.kind==='dir'){if(n.x!=null)rows.push({v:fmtB(n.x),l:`freed if deleted (${pct(n.t?n.x/n.t:0)})`});
+    rows.push({l:`${fmtN(n.f)} files · ${fmtN(n.d)} folders`+(n.placeholder?' · known from live changes only':''),c:'m'});
+    if(!n.full&&!n.pending&&!n.placeholder)rows.push({l:n.c.length?'some subfolders pruned: zoom in to load them':'subfolders not loaded: zoom in to load them',c:'m'});
+    rows.push({l:hostName(n.H)+' · target '+tgName(n.T.name),c:'m'});}
+  return rows;
+}
+function bmLegend(){const l=$('#bm-legend');if(!l)return;l.replaceChildren();
+  const sw=(c,t,extra)=>el('span',null,el('i',{style:`background:${c};${extra||''}`}),t);
+  if(BM.mode==='kind')KINDS.forEach(k=>l.append(sw(kindColor(k.k),k.label)));
+  else if(BM.mode==='host')HARV.filter(h=>h.status==='ok').forEach(h=>l.append(sw(hostColor(h),hostName(h))));
+  else if(BM.mode==='share'){for(const [f,lab] of [[1,'frees all of it'],[0.75,'frees 75%'],[0.5,'50%'],[0.25,'25%'],[0,'frees nothing']])l.append(sw(shareColor(1-f),lab));l.append(sw(C.mid,'unknown (no sharing pass)',`background-image:radial-gradient(${C.axis} 1px,transparent 1px);background-size:4px 4px`));}
+  else{const s=BM.sc;l.append(sw(divColor(-0.6),'shrank'),sw(C.mid,'no change'),sw(divColor(0.3),'grew ~'+fmtAxis(divInvr(0.3,s.lo,s.hi))),sw(divColor(0.6),'~'+fmtAxis(divInvr(0.6,s.lo,s.hi))),sw(divColor(0.9),'~'+fmtAxis(divInvr(0.9,s.lo,s.hi))),el('span',{class:'muted',text:HIST.status==='ok'?`folders with history: last ${fmtSpan(HIST.t1-HIST.t0)}; others: since ${fmtHM(PAGE_T0)}`:`since ${fmtHM(PAGE_T0)}`}));}
+  l.append(sw(C.free,'free',`background-image:repeating-linear-gradient(135deg,transparent 0 3px,${C.freeLine} 3px 4px)`),sw(C.dark,'not in any target'));}
+document.addEventListener('keydown',e=>{if(e.key==='Escape'&&current()==='blockmap'&&BM.focus.p){zoomTo(BM.focus.p);}});
+
+/* ======================================================================= SHARING */
+const SH={sort:'shared'};
+function renderSharing(){
+  const v=$('#v-sharing');untip();v.replaceChildren();
+  if(FATAL){v.append(FATAL());return;}
+  v.append(el('div',{class:'view-head'},el('div',null,el('h1',{text:'What deleting a folder would really free'}),el('p',{text:'On btrfs, files can share blocks: reflinked copies, hard links and deduplicated data. A folder’s size counts every block its files use, even blocks another folder also uses, so deleting it frees less than its size. The sharing pass works out how much each folder holds on its own. Snapshots are not counted: blocks a snapshot keeps stay on disk until it expires.'}))));
+  const withS=[],without=[];
+  for(const H of HARV){if(H.status!=='ok')continue;for(const T of H.info.targets){if(T.sharing&&typeof T.sharing==='object')withS.push({H,T});else without.push({H,T});}}
+  if(!withS.length)v.append(el('div',{class:'panel'},el('p',{class:'explain',text:'No target has sharing data yet. Sharing is measured on btrfs targets with the sharing pass enabled; everywhere else a folder’s size is what deleting it frees (hardlinks aside).'})));
+  for(const {H,T} of withS)v.append(sharingTarget(H,T));
+  if(without.length){
+    const groups=new Map();for(const {H,T} of without){const k=H.idx+'|'+T.fs;let g=groups.get(k);if(!g){g={H,fs:H.info.filesystems.find(f=>f.id===T.fs)||{type:'?',mount:String(T.fs)},ts:[]};groups.set(k,g);}g.ts.push(T);}
+    const list=el('div',{class:'nosh'});for(const g of groups.values()){const bt=g.fs.type==='btrfs';
+      list.append(el('div',null,el('div',{class:'h'},el('i',{class:'dot',style:`background:${hostColor(g.H)}`}),el('b',{text:hostName(g.H)}),el('span',{class:'mono',text:maskPath(g.fs.mount)}),el('span',{class:'muted',text:g.fs.type})),
+        el('div',{class:'t mono',text:g.ts.map(t=>tgName(t.name)).join(', ')}),
+        el('div',{class:'w',text:bt?'btrfs, but the sharing pass has not run for '+(g.ts.length===1?'this target':'these targets')+' yet, or it is turned off.':'Not btrfs: files do not share blocks here, so a folder’s size is what deleting it frees. Hardlinks are the exception.'})));}
+    v.append(el('div',{class:'panel'},el('div',{class:'ph'},el('h2',{text:'Targets without sharing data'}),el('span',{class:'sub',text:without.length+' target'+(without.length===1?'':'s')})),list));}
+}
+function sharingTarget(H,T){
+  const s=T.sharing,logical=+s.logical||0,disk=+s.disk||0,saved=Math.max(0,logical-disk),outside=+s.outside||0;
+  const p=el('div',{class:'panel'});
+  p.append(el('div',{class:'ph'},el('h2',null,el('i',{class:'dot',style:`background:${hostColor(H)};margin-right:7px`}),hostName(H)+' · ',el('span',{class:'mono',text:tgName(T.name)}),el('span',{class:'muted',style:'font-weight:400',text:'  '+maskPath(T.path)})),
+    el('span',{class:'sub',text:`sharing pass ${fmtAgo(s.at)}, took ${fmtSpan(s.duration_s)}`})));
+  const g=el('div',{class:'sh-grid'});p.append(g);
+  const left=el('div',{style:'display:grid;gap:12px;align-content:start'});
+  left.append(el('div',{class:'sh-big'},fmtB(saved),el('small',{text:'stored once, referenced from more than one place'})));
+  const mx=Math.max(logical,disk,1);
+  const bar=(lab,val,col,note)=>hoverTip(el('div',{class:'twobar'},el('span',{style:'font-size:13px',text:lab}),el('div',{class:'track'},el('i',{style:`width:${(val/mx*100).toFixed(1)}%;background:${col}`})),el('span',{class:'val',text:fmtB(val)})),[{key:col,sw:1,v:fmtB(val),l:lab},{l:note,c:'m'}]);
+  left.append(el('div',{class:'bars'},bar('Files add up to',logical,C.slots[0],'what du reports: every file counted in full'),bar('Unique on disk',disk,C.slots[2],'distinct blocks the files reference')));
+  left.append(el('p',{class:'explain',text:`The files in this target add up to ${fmtB(logical)}, but they reference ${fmtB(disk)} of distinct blocks. ${fmtB(saved)} (${pct(logical?saved/logical:0)}) is data held by more than one file: the same blocks counted twice or more by a plain size.`}),
+    el('p',{class:'explain',text:'So a folder’s size overstates what deleting it gets back. “Frees” below is the part only that folder references: delete the folder and those blocks go. The rest stays on disk until every folder that shares it is gone too.'}));
+  if(outside>0)left.append(el('p',{class:'explain',text:`${fmtB(outside)} of the unique blocks are referenced only from paths the target excludes.`}));
+  g.append(left);
+  // per-folder: total vs freed-if-deleted
+  const right=el('div');const root=findTargetNode(H,T);
+  const cand=[];if(root)for(const c of root.c){if(c.x!=null)cand.push(c);for(const g2 of c.c)if(g2.x!=null)cand.push(g2);}
+  const key=SH.sort==='size'?(n=>n.t):(n=>n.t-n.x);const list=cand.filter(n=>n.t>0).sort((a,b)=>key(b)-key(a)).slice(0,12);
+  right.append(el('div',{class:'ph'},el('h2',{text:'Size vs. freed if deleted'}),seg('Sort folders',[['shared','Most shared'],['size','Largest']],SH.sort,k=>{SH.sort=k;renderSharing();})));
+  if(!list.length)right.append(el('p',{class:'empty',text:root?'The tree has no per-folder “freed if deleted” values yet.':'Tree still loading.'}));
+  else{const m2=Math.max(...list.map(n=>n.t));right.append(el('div',{class:'bars'},...list.map(n=>hoverTip(el('div',{class:'twobar'},el('span',{class:'lab',text:relName(root,n)}),el('div',{class:'track'},el('i',{class:'t',style:`width:${(n.t/m2*100).toFixed(1)}%;background:${C.share}`}),el('i',{style:`width:${(n.x/m2*100).toFixed(1)}%;background:${C.share}`})),el('span',{class:'val',text:`${fmtB(n.t)} · frees ${fmtB(n.x)}`})),
+      [{v:pathOf(n),c:'h'},{key:C.share,sw:1,v:fmtB(n.x),l:`freed if deleted (${pct(n.t?n.x/n.t:0)})`},{v:fmtB(n.t-n.x),l:'shared with other folders'},{v:fmtB(n.t),l:'size'}]))));
+    right.append(el('div',{class:'legend',style:'margin-top:8px'},el('span',null,el('i',{style:`background:${C.share}`}),'freed if deleted'),el('span',null,el('i',{style:`background:${C.share};opacity:.28`}),'size (shared part is the pale remainder)')));}
+  g.append(right);
+  // pairs
+  const pairs=Array.isArray(s.pairs)?s.pairs.filter(x=>x&&x.a!=null&&x.b!=null):[];
+  const pp=el('div',{style:'margin-top:16px'});p.append(pp);
+  pp.append(el('div',{class:'ph'},el('h2',{text:'Folders that share blocks'}),el('span',{class:'sub',text:pairs.length?`${pairs.length} pair${pairs.length===1?'':'s'}, largest first`:''})));
+  if(!pairs.length)pp.append(el('p',{class:'empty',text:'No folder pairs share blocks in this target.'}));
+  else{const top=pairs.slice(0,SH.allPairs?50:10),mb=Math.max(...pairs.map(x=>+x.bytes||0),1);
+    const box=el('div',{class:'pairs'});for(const x of top){box.append(hoverTip(el('div',{class:'pair'},el('span',{text:rel(T,x.a)}),el('b',{text:'⇄'}),el('span',{text:rel(T,x.b)}),el('span',{class:'v',text:fmtB(+x.bytes)})),[{v:maskPath(x.a),c:'h'},{v:maskPath(x.b),c:'h'},{v:fmtB(+x.bytes),l:'referenced by both. Deleting one alone frees none of it.'},{v:pct((+x.bytes)/mb),l:'of the largest pair',c:'m'}]));}
+    pp.append(box);if(pairs.length>10)pp.append(el('button',{type:'button',class:'btn sm',style:'margin-top:8px',text:SH.allPairs?'Show fewer':`Show all ${pairs.length}`,onclick:()=>{SH.allPairs=!SH.allPairs;renderSharing();}}));}
+  return p;
+}
+function findTargetNode(H,T){const O=H.outer.get(T.name)||T;const p=mapPath(T,O,T.path);if(!p)return null;const r=findDir(H,O,p);return r&&!r.rest.length?r.node:null;}
+function rel(T,p){const r=inside(p,T.path)?relPath(p,T.path):p;return maskPath(r||'/').replace(/^\//,'')||'/';}
+function relName(root,n){return maskPath(relPath(n.path,root.path)).replace(/^\//,'');}
+
+/* ======================================================================= SOURCES */
+function renderSources(){
+  const v=$('#v-sources');untip();v.replaceChildren();
+  v.append(el('div',{class:'view-head'},el('div',null,el('h1',{text:'Where the numbers come from'}),el('p',{text:'Every harvester this page talks to, what it watches, how fresh each target is, and the history store.'}))));
+  const res=el('div',{class:'panel'},el('div',{class:'ph'},el('h2',{text:'Endpoints'}),el('span',{class:'sub',text:'override with ?self= ?peers= ?metrics='})),
+    el('dl',{class:'kv'},el('dt',{text:'This page'}),el('dd',{text:HARV[0]?`${urlText(HARV[0].url,0)} (from ${SELF_HOW})`:'none: open the page from a harvester at /atlas or pass ?self='}),
+      el('dt',{text:'Peers'}),el('dd',{text:HARV.length>1?HARV.slice(1).map(h=>urlText(h.url,h.idx)+' · '+(h.status==='ok'?'reachable':h.status)).join('  ·  ')+` (from ${PEERS_HOW})`:`none (from ${PEERS_HOW})`}),
+      el('dt',{text:'History'}),el('dd',null,METRICS?(HIDE?'VictoriaMetrics':METRICS)+` (from ${METRICS_HOW}) · `:'not configured',HIST.status==='ok'?chip('good','answering'):HIST.status==='error'?chip('crit',maskText(HIST.err)):HIST.status==='empty'?chip('warn','no series in range'):HIST.status==='none'?chip('need','off'):chip('need','loading')),
+      HIST.status==='ok'?el('dt',{text:'Series'}):null,HIST.status==='ok'?el('dd',{text:[...HIST.counts].map(([h,c])=>`${HARV.find(x=>x.key===h)?hostName(HARV.find(x=>x.key===h)):hostLabel(h)}: ${c} folders since ${fmtSince(HIST.starts.get(h))}`).join(' · ')+(HIST.unmatched.size?` · ignored ${[...HIST.unmatched.values()].reduce((a,b)=>a+b,0)} series from ${HIST.unmatched.size} host(s) not in this fleet`:'')}):null,
+      el('dt',{text:'Page opened'}),el('dd',{text:fmtWhen(PAGE_T0)+' · '+fmtN(HARV.reduce((a,h)=>a+h.evLive,0))+' live changes since'})));
+  v.append(res);
+  const grid=el('div',{class:'src-grid'});v.append(grid);
+  for(const H of HARV){
+    const p=el('div',{class:'panel'});grid.append(p);
+    const st=H.status==='ok'?chip('good','online'):H.status==='loading'?chip('need','connecting'):H.status==='duplicate'?chip('need','duplicate'):chip('crit','offline');
+    p.append(el('div',{class:'ph'},el('h2',null,el('i',{class:'dot',style:`background:${hostColor(H)};margin-right:7px`}),hostName(H)),st));
+    if(H.status!=='ok'){p.append(el('dl',{class:'kv'},el('dt',{text:'URL'}),el('dd',{text:urlText(H.url,H.idx)}),el('dt',{text:'Error'}),el('dd',{class:'err',text:maskText(H.err)||'–'})));continue;}
+    const I=H.info,live=I.live||{};
+    p.append(el('dl',{class:'kv'},el('dt',{text:'URL'}),el('dd',{text:urlText(H.url,H.idx)}),el('dt',{text:'Host label'}),el('dd',{class:'mono',text:hostLabel(H.key)}),el('dt',{text:'Version'}),el('dd',{text:String(I.version||'?')}),
+      el('dt',{text:'Clock'}),el('dd',{text:Math.abs(H.skew)<2?'in sync with this browser':`${H.skew>0?'ahead':'behind'} by ${fmtSpan(H.skew)}`}),
+      el('dt',{text:'Live source'}),el('dd',null,String(live.source||'?')+(live.active?' · active':' · inactive'),live.error?el('span',{class:'err',text:' · '+maskText(live.error)}):null),
+      el('dt',{text:'Event stream'}),el('dd',{text:`${H.sse} · ${fmtN(H.evLive)} changes since the page opened · last ${H.lastEv?fmtAgo(H.lastEv):'none'}`+(H.dup?` · ${fmtN(H.dup)} duplicate reports from nested targets merged`:'')}),
+      el('dt',{text:'Info'}),el('dd',{text:'fetched '+fmtAgo(H.infoAt)})));
+    const tb=el('tbody');
+    for(const T of I.targets){const O=H.outer.get(T.name),ts=H.tstate.get(T.name),fs=I.filesystems.find(f=>f.id===T.fs);
+      const tree=O!==T?el('span',{class:'muted',text:'in '+tgName(O.name)}):!ts?el('span',{class:'muted',text:'–'}):ts.status==='ok'?el('span',{text:fmtN(ts.nodes)+' nodes'}):ts.status==='pending'?chip('need','no scan yet'):ts.status==='error'?chip('crit','error'):el('span',{class:'muted',text:'loading'});
+      const tr=el('tr',null,el('td',null,el('span',{class:'mono',style:'font-size:12.5px',text:tgName(T.name)})),el('td',{class:'mono',style:'font-size:12px;color:var(--ink-2)',text:fs?maskPath(fs.mount):String(T.fs)}),
+        el('td',{text:T.live?(T.live_at?'live · '+fmtAgo(T.live_at):'live'):'scans'}),el('td',{class:'r num',text:fmtAgo(T.last_scan)}),el('td',{class:'r num',text:fmtSpan(T.scan_duration_s)}),el('td',{class:'r num',text:fmtEvery(T.interval_s)}),
+        el('td',{text:T.sharing?fmtAgo(T.sharing.at):'–'}),el('td',null,tree),el('td',{class:'wrap err',style:'font-size:12px',text:maskText(T.last_error?T.last_error:(ts&&ts.status==='error'?ts.err:''))}));
+      hoverTip(tr,[{v:maskPath(T.path),c:'h'},{l:`${fs?fs.type:'?'} · ${maskPath(T.fs_path||'/')} inside the filesystem`,c:'m'},T.scan_running?{l:'scanning now',c:'m'}:null]);tb.append(tr);}
+    p.append(el('div',{class:'tbl-wrap',style:'margin-top:10px'},el('table',null,el('thead',null,el('tr',null,...['Target','On','Live','Last scan','Took','Every','Sharing pass','Tree','Error'].map((h,i)=>el('th',{class:[3,4,5].includes(i)?'r':'',text:h})))),tb)));
+    const caps=I.filesystems.map(fs=>({fs,c:CAP.get(H.key+'|'+fs.id)}));
+    p.append(el('dl',{class:'kv',style:'margin-top:10px'},...caps.flatMap(({fs,c})=>[el('dt',{text:'Capacity '+maskPath(fs.mount)}),el('dd',{text:!METRICS?'no history store':!c?'loading':c.status==='ok'?`${c.src}, since ${fmtSince(c.start)}`:c.status==='empty'?`${c.src}: no samples yet`:`${c.src}: ${maskText(c.err)}`})])));
+  }
+}
+
+/* ======================================================================= shell */
+const VIEWS={overview:renderOverview,changes:renderChanges,blockmap:renderBlockmap,sharing:renderSharing,sources:renderSources};
+function current(){const h=location.hash.slice(1);return VIEWS[h]?h:'overview';}
+function show(){const cur=current();for(const k in VIEWS)$('#v-'+k).hidden=k!==cur;for(const a of document.querySelectorAll('.tabs a'))a.setAttribute('aria-current',a.dataset.view===cur?'page':'false');untip();BM.on=cur==='blockmap';if(!BM.on){BM.pulses.length=0;}VIEWS[cur]();}
+const hideBox=$('#hide-names');
+HIDE=QS.get('hide')==='1'||(QS.get('hide')==null&&store.get('hide')==='1');hideBox.checked=HIDE;
+hideBox.addEventListener('change',e=>{HIDE=e.target.checked;store.set('hide',HIDE?'1':null);renderHeader();BM.needBase=true;show();});
+addEventListener('hashchange',show);
+let rz=0;addEventListener('resize',()=>{clearTimeout(rz);rz=setTimeout(()=>{const cur=current();if(cur==='changes'){hmLayout();hmDraw();hmDrawer();}else if(cur==='blockmap'){BM.needLayout=true;bmSchedule();}else VIEWS[cur]();},150);});
+const THEMES=['auto','light','dark'];let THEME=QS.get('theme')||store.get('theme')||'auto';if(!THEMES.includes(THEME))THEME='auto';
+function applyTheme(){if(THEME==='auto')document.documentElement.removeAttribute('data-theme');else document.documentElement.setAttribute('data-theme',THEME);$('#theme-btn').textContent='Theme: '+THEME;}
+$('#theme-btn').addEventListener('click',()=>{THEME=THEMES[(THEMES.indexOf(THEME)+1)%3];store.set('theme',THEME==='auto'?null:THEME);applyTheme();});
+function retheme(){readColors();BM.base=null;BM.needBase=true;show();}
+matchMedia('(prefers-color-scheme: dark)').addEventListener('change',retheme);
+new MutationObserver(retheme).observe(document.documentElement,{attributes:true,attributeFilter:['data-theme']});
+applyTheme();readColors();
+
+async function boot(){
+  const s=selfUrl();SELF_HOW=s.how;
+  if(!s.url){FATAL=()=>el('div',{class:'panel fatal'},el('h2',{text:'No harvester to talk to'}),el('p',{class:'explain',style:'margin-top:6px'},'Open this page from a storage-harvester at ',el('code',{text:'/atlas'}),', or pass ',el('code',{text:'?self=http://host:port'}),' (and optionally ',el('code',{text:'?peers=url1,url2'}),' and ',el('code',{text:'?metrics=url'}),').'));renderHeader();show();return;}
+  const self=addHarvester(s.url,true);renderHeader();show();
+  await loadInfo(self);
+  const qp=QS.get('peers');
+  const peers=qp!=null?qp.split(',').map(x=>x.trim()).filter(Boolean):(self.info&&self.info.atlas&&Array.isArray(self.info.atlas.peers)?self.info.atlas.peers:[]);
+  PEERS_HOW=qp!=null?'?peers=':self.info?'atlas.peers':'none (this harvester is offline)';
+  const qm=QS.get('metrics');METRICS=qm!=null?(qm||null):(self.info&&self.info.atlas&&self.info.atlas.metrics_url)||null;
+  if(METRICS&&!/^https?:\/\//.test(METRICS))METRICS=normUrl(METRICS);
+  METRICS_HOW=qm!=null?'?metrics=':'atlas.metrics_url';
+  const ps=peers.map(p=>addHarvester(p,false)).filter(Boolean);
+  renderHeader();
+  await Promise.all(ps.map(loadInfo));
+  HARV.filter(h=>h.key).sort((a,b)=>a.key<b.key?-1:a.key>b.key?1:0).forEach((h,i)=>{h.slot=i;});let nx=HARV.filter(h=>h.key).length;for(const h of HARV)if(!h.key)h.slot=nx++;
+  BOOTED=true;
+  for(const H of HARV)if(H.status==='ok'){loadTrees(H);connect(H);}
+  loadHistory();loadCapacity();
+  invalidate('info');show();
+  setInterval(()=>{for(const H of HARV)if(H.status!=='duplicate')loadInfo(H);},30000);
+  setInterval(()=>{if(METRICS&&document.visibilityState!=='hidden'&&(!HIST.fetchedAt||Date.now()/1000-HIST.fetchedAt>Math.max(60,Math.min(600,HIST.step||60))))loadHistory();},20000);
+  setInterval(()=>{if(METRICS)loadCapacity();},600000);
+  setInterval(()=>{if(current()==='overview')renderOvLive();if(current()==='blockmap')renderConn();},5000);
+}
+boot();
+</script>
+</body>
+</html>
