@@ -104,8 +104,10 @@ pub struct TreeState {
     /// The scan's [`DirTree::plain`], and what re-reads found since: which directory each
     /// singly linked file was in.
     plain: Vec<(u32, u32)>,
-    /// `(key, node)`, like `plain`; a set, so files sharing a key keep every holder.
+    /// `(key, node)`, like `plain`; a set, so files sharing a key keep every holder. A
+    /// re-read replaces its directory's entries (`plain_by_node`).
     plain_live: BTreeSet<(u32, u32)>,
+    plain_by_node: HashMap<u32, Vec<u32>>,
 }
 
 impl TreeState {
@@ -130,6 +132,7 @@ impl TreeState {
             inos,
             plain,
             plain_live: BTreeSet::new(),
+            plain_by_node: HashMap::new(),
         }
     }
 
@@ -141,7 +144,21 @@ impl TreeState {
         for index in from..self.tree.nodes.len() {
             self.inos.insert(self.tree.nodes[index].ino, index as u32);
         }
-        self.plain_live.extend(self.tree.plain.drain(..));
+        for (key, node) in self.tree.plain.drain(..) {
+            self.plain_live.insert((key, node));
+            self.plain_by_node.entry(node).or_default().push(key);
+        }
+    }
+
+    /// What a re-read of `node` found singly linked in it, in place of what it had.
+    fn set_plain(&mut self, node: u32, keys: Vec<u32>) {
+        for key in self.plain_by_node.remove(&node).unwrap_or_default() {
+            self.plain_live.remove(&(key, node));
+        }
+        self.plain_live.extend(keys.iter().map(|&key| (key, node)));
+        if !keys.is_empty() {
+            self.plain_by_node.insert(node, keys);
+        }
     }
 
     /// Directories that held a singly linked file with this inode, at the scan or since. Some
@@ -532,6 +549,10 @@ impl LiveStore {
     }
 }
 
+/// `plain_live` may hold this many entries, or as many as the scan's index, before a scan is
+/// asked for to rebuild it.
+const PLAIN_LIVE_FLOOR: usize = 100_000;
+
 /// Re-reads one directory and applies what changed to it and its ancestors.
 fn relist(lt: &LiveTarget, state: &mut TreeState, node: u32) -> Outcome {
     let mut out = Outcome::default();
@@ -572,9 +593,7 @@ fn relist(lt: &LiveTarget, state: &mut TreeState, node: u32) -> Outcome {
         here,
         mut adopted,
     } = settle_links(&mut state.tree, node, &listing.links, &mut direct);
-    state
-        .plain_live
-        .extend(listing.plain.iter().map(|&key| (key, node)));
+    state.set_plain(node, listing.plain);
 
     // Subdirectories that came or went. A directory replaced under the same name is a new one.
     let mut moved = Delta::default();
@@ -616,18 +635,21 @@ fn relist(lt: &LiveTarget, state: &mut TreeState, node: u32) -> Outcome {
                 {
                     moved = moved.plus(Delta::from(&sub.nodes[0].sub));
                     let from = state.tree.nodes.len();
-                    if from + sub.nodes.len() > lt.target.tree_max_directories {
-                        // Past the cap: counted, but without nodes, as a scan would. Its new
-                        // links cannot be settled against the tree, so if one of them may be
-                        // counted elsewhere as a plain file, a scan has to settle it.
+                    let fits = from + sub.nodes.len() <= lt.target.tree_max_directories;
+                    // Links counted without a node (in the subtree's untracked part, or all of
+                    // them past the cap) cannot be settled against the tree: if one may be
+                    // counted elsewhere as a plain file, a scan has to settle it.
+                    let unsettled = sub
+                        .untracked_links
+                        .iter()
+                        .chain(sub.links.keys().filter(|_| !fits))
+                        .any(|&inode| !state.plain_holders(inode).is_empty());
+                    if unsettled {
+                        lt.request_rescan();
+                    }
+                    if !fits {
+                        // Past the cap: counted, but without nodes, as a scan would.
                         state.tree.nodes[node as usize].sealed = true;
-                        if sub
-                            .links
-                            .keys()
-                            .any(|&inode| !state.plain_holders(inode).is_empty())
-                        {
-                            lt.request_rescan();
-                        }
                         j += 1;
                         continue;
                     }
@@ -655,15 +677,19 @@ fn relist(lt: &LiveTarget, state: &mut TreeState, node: u32) -> Outcome {
     for inode in adopted {
         for holder in state.plain_holders(inode) {
             let held = &state.tree.nodes[holder as usize];
-            if !held.alive || holder == node || out.requeue.contains(&holder) {
+            if !held.alive || holder == node {
                 continue;
             }
             if held.sealed {
                 lt.request_rescan();
-            } else {
+            } else if !out.requeue.contains(&holder) {
                 out.requeue.push(holder);
             }
         }
+    }
+    // Entries of directories that died since the scan linger; past this, a scan rebuilds it.
+    if state.plain_live.len() > state.plain.len().max(PLAIN_LIVE_FLOOR) {
+        lt.request_rescan();
     }
 
     let tree = &mut state.tree;
@@ -1407,46 +1433,104 @@ mod tests {
         assert_eq!(holders, [a.min(c), a.max(c)]);
     }
 
-    /// Where the tree is already approximate (a sealed directory, a new subtree past the
-    /// directory cap), a new link that may be counted twice asks for a scan instead.
-    #[test]
-    fn links_the_tree_cannot_settle_ask_for_a_scan() {
-        let temp = tempfile::tempdir().unwrap();
-        let root = temp.path();
+    /// A tree of the root and `a`, `b`, `c` (depth 1, always tracked) and at most `cap`
+    /// directories. With `sealed`, `a/deep/er` is past the cap so `a` is sealed. `a/file.bin`
+    /// and `c/other.bin` are singly linked.
+    fn capped(root: &Path, cap: usize, sealed: bool) -> Arc<LiveStore> {
         write(&root.join("a/file.bin"), 300_000);
-        // Past the cap, so `a` is sealed.
-        fs::create_dir_all(root.join("a/deep/er")).unwrap();
+        if sealed {
+            fs::create_dir_all(root.join("a/deep/er")).unwrap();
+        }
         write(&root.join("c/other.bin"), 300_000);
         fs::create_dir_all(root.join("b")).unwrap();
         let mut target = target(root);
         target.collect_handles = true;
-        // The root and the three depth-1 directories.
-        target.tree_max_directories = 4;
+        target.tree_max_directories = cap;
         let store = started(&target);
         *lock(&store.targets[0].source) = Some("fanotify");
-        let lt = &store.targets[0];
-        {
-            let guard = lt.state.read().unwrap();
-            let tree = &guard.as_ref().unwrap().tree;
-            assert!(tree.nodes[tree.find("/data/a").unwrap() as usize].sealed);
-        }
+        let guard = store.targets[0].state.read().unwrap();
+        let tree = &guard.as_ref().unwrap().tree;
+        assert_eq!(
+            tree.nodes[tree.find("/data/a").unwrap() as usize].sealed,
+            sealed
+        );
+        drop(guard);
+        store
+    }
 
+    fn rescans(store: &LiveStore) -> u64 {
+        store.targets[0].rescans_requested.load(Ordering::Relaxed)
+    }
+
+    /// Where the tree is already approximate, a new link that may be counted twice asks for a
+    /// scan instead: a sealed holder (never re-read), whether or not something else queued it.
+    #[test]
+    fn a_link_to_a_file_in_a_sealed_directory_asks_for_a_scan() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let store = capped(root, 4, true);
         fs::hard_link(root.join("a/file.bin"), root.join("b/file.bin")).unwrap();
         settle(&store, &["/data/b"]);
-        assert_eq!(
-            lt.rescans_requested.load(Ordering::Relaxed),
-            1,
-            "sealed holder"
-        );
+        assert_eq!(rescans(&store), 1);
 
-        fs::create_dir_all(root.join("b/new")).unwrap();
-        fs::hard_link(root.join("c/other.bin"), root.join("b/new/other.bin")).unwrap();
-        settle(&store, &["/data/b"]);
-        assert_eq!(
-            lt.rescans_requested.load(Ordering::Relaxed),
-            2,
-            "subtree past the cap"
-        );
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let store = capped(root, 4, true);
+        // The parent's re-read queues `a` (its entries changed) and adopts the new link.
+        write(&root.join("a/touched.bin"), 10);
+        fs::hard_link(root.join("a/file.bin"), root.join("file.bin")).unwrap();
+        settle(&store, &["/data"]);
+        assert_eq!(rescans(&store), 1, "already queued, still asks");
+    }
+
+    /// ...and links a new subtree counts without a node: past the cap, or in its untracked
+    /// part, whether the subtree itself is grafted or not.
+    #[test]
+    fn links_a_new_subtree_counts_without_a_node_ask_for_a_scan() {
+        // At 4 nothing new fits; at 5 (without `a/deep`) `new` does, but `deep` does not.
+        for (cap, sealed, link, case) in [
+            (4, true, "b/new/other.bin", "past the cap"),
+            (
+                4,
+                true,
+                "b/new/deep/other.bin",
+                "past the cap, untracked part",
+            ),
+            (5, false, "b/new/deep/other.bin", "grafted, untracked part"),
+        ] {
+            let temp = tempfile::tempdir().unwrap();
+            let root = temp.path();
+            let store = capped(root, cap, sealed);
+            let at = root.join(link);
+            fs::create_dir_all(at.parent().unwrap()).unwrap();
+            fs::hard_link(root.join("c/other.bin"), &at).unwrap();
+            settle(&store, &["/data/b"]);
+            assert_eq!(rescans(&store), 1, "{case}");
+            let guard = store.targets[0].state.read().unwrap();
+            let grafted = guard.as_ref().unwrap().tree.find("/data/b/new").is_some();
+            assert_eq!(grafted, !sealed, "{case}");
+        }
+    }
+
+    /// A re-read replaces its directory's entries in the live index.
+    #[test]
+    fn re_reads_replace_their_directory_in_the_live_index() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        fs::create_dir_all(root.join("spool")).unwrap();
+        let mut target = target(root);
+        target.collect_handles = true;
+        let store = started(&target);
+        *lock(&store.targets[0].source) = Some("fanotify");
+        for round in 0..5 {
+            write(&root.join(format!("spool/{round}.tmp")), 10);
+            if round > 0 {
+                fs::remove_file(root.join(format!("spool/{}.tmp", round - 1))).unwrap();
+            }
+            settle(&store, &["/data/spool"]);
+        }
+        let guard = store.targets[0].state.read().unwrap();
+        assert_eq!(guard.as_ref().unwrap().plain_live.len(), 1);
     }
 
     fn tree_totals(store: &LiveStore) -> BTreeMap<String, (u64, u64, u64)> {

@@ -175,6 +175,9 @@ pub struct DirTree {
     /// when the walk recorded them (fanotify). fanotify reports a new hard link only to the new
     /// link's directory; this finds the directory that counted the file while it had one link.
     pub plain: Vec<(u32, u32)>,
+    /// Multiply-linked files counted in an untracked directory (no node, so not in `links`),
+    /// when the walk recorded them (fanotify).
+    pub untracked_links: Vec<(u64, u64)>,
 }
 
 /// A singly linked file's key in [`DirTree::plain`]: its inode folded to 32 bits (exact for
@@ -568,6 +571,7 @@ mod tests {
             links: HashMap::new(),
             handles: Vec::new(),
             plain: Vec::new(),
+            untracked_links: Vec::new(),
         }
     }
 
