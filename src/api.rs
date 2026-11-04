@@ -6,22 +6,40 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::Router;
 use std::fmt::Write;
+use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::net::TcpListener;
+use tokio::sync::watch;
 use tracing::{error, info};
 
+use crate::atlas::{self, AtlasState};
 use crate::cache::{SnapshotStore, TargetSnapshot};
 use crate::config::{Config, SizeMode};
 use crate::exporter::prometheus;
+use crate::live::LiveStore;
 use crate::scanner::{EntryObservation, NodeObservation};
 
 #[derive(Clone)]
 pub struct ApiState {
     store: SnapshotStore,
+    live: Arc<LiveStore>,
 }
 
-pub async fn serve(config: &Config, store: SnapshotStore) -> Result<()> {
-    let state = ApiState { store };
+pub async fn serve(
+    config: &Config,
+    store: SnapshotStore,
+    live: Arc<LiveStore>,
+    info: atlas::Static,
+) -> Result<()> {
+    // Event streams never end on their own; this ends them, so shutdown does not wait on them.
+    let (stop_sender, stop) = watch::channel(false);
+    let atlas = atlas::routes(AtlasState {
+        live: Arc::clone(&live),
+        store: store.clone(),
+        info: Arc::new(info),
+        stop,
+    });
+    let state = ApiState { store, live };
     let metrics_path = config.metrics_path.clone();
     let app = Router::new()
         .route("/", get(status_page_handler))
@@ -30,7 +48,8 @@ pub async fn serve(config: &Config, store: SnapshotStore) -> Result<()> {
         .route(&metrics_path, get(metrics_handler))
         .route("/-/health", get(health_handler))
         .route("/-/ready", get(ready_handler))
-        .with_state(state);
+        .with_state(state)
+        .merge(atlas);
 
     let listener = TcpListener::bind(config.listen_address)
         .await
@@ -38,7 +57,10 @@ pub async fn serve(config: &Config, store: SnapshotStore) -> Result<()> {
     info!(address = %config.listen_address, metrics_path = %metrics_path, "storage harvester listening");
 
     axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
+        .with_graceful_shutdown(async move {
+            shutdown_signal().await;
+            let _ = stop_sender.send(true);
+        })
         .await
         .context("HTTP server failed")?;
 
@@ -47,7 +69,7 @@ pub async fn serve(config: &Config, store: SnapshotStore) -> Result<()> {
 
 async fn metrics_handler(State(state): State<ApiState>) -> Response {
     let snapshots = state.store.snapshots().await;
-    let body = prometheus::render(&snapshots);
+    let body = prometheus::render(&snapshots, Some(&state.live));
     let mut response = Response::new(Body::from(body));
     response.headers_mut().insert(
         header::CONTENT_TYPE,
@@ -125,7 +147,7 @@ fn render_status_content(snapshots: &[TargetSnapshot]) -> String {
     .unwrap();
     out.push_str(&escape_html(&format_age(SystemTime::now())));
     out.push_str("</p>");
-    out.push_str("</div><nav><a href=\"/metrics\">Metrics</a><a href=\"/-/ready\">Readiness</a></nav></header>");
+    out.push_str("</div><nav><a href=\"/atlas\">Atlas</a><a href=\"/metrics\">Metrics</a><a href=\"/-/ready\">Readiness</a></nav></header>");
 
     write!(
         out,

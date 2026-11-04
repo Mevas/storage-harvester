@@ -1,18 +1,26 @@
 mod api;
+mod atlas;
+#[cfg(target_os = "linux")]
+mod btrfs;
 mod cache;
 mod collector;
 mod config;
 mod exporter;
+mod fsinfo;
+mod live;
 mod registry;
 mod scanner;
 mod scheduler;
+mod tree;
 
 use anyhow::Result;
 use clap::Parser;
 use std::path::PathBuf;
+use std::sync::Arc;
 use tracing_subscriber::EnvFilter;
 
 use crate::config::Config;
+use crate::live::LiveStore;
 use crate::registry::TargetRegistry;
 use crate::scheduler::Scheduler;
 
@@ -43,8 +51,26 @@ async fn main() -> Result<()> {
 
     let registry = TargetRegistry::from_config(&config)?;
     let store = registry.snapshot_store();
-    let _scan_tasks = Scheduler::new(registry.targets().to_vec(), store.clone()).start();
-    api::serve(&config, store).await?;
+    let host = config.host_name();
+    let mut targets = registry.targets().to_vec();
+    if !config.live.enabled {
+        for target in &mut targets {
+            target.live = false;
+        }
+    }
+    let live = LiveStore::new(
+        host.clone(),
+        &targets,
+        &config.host_root,
+        config.live.min_relist_interval,
+    )?;
+    // fanotify names directories by file handle, so those targets' walks record handles.
+    for index in live::start_sources(&live, config.live.btrfs_poll_interval) {
+        targets[index].collect_handles = true;
+    }
+    let _scan_tasks = Scheduler::new(targets, store.clone(), Arc::clone(&live)).start();
+    let info = atlas::Static::new(&config, host);
+    api::serve(&config, store, live, info).await?;
 
     Ok(())
 }

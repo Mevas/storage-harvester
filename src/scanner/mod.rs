@@ -23,6 +23,9 @@ pub struct ScanResult {
     pub depth_limit_hits: u64,
     pub duration: Duration,
     pub timestamp: SystemTime,
+    /// Every tracked directory. The scheduler hands it to the live store before the result is
+    /// cached, so cached results carry `None`.
+    pub tree: Option<crate::tree::DirTree>,
 }
 
 #[derive(Debug, Clone)]
@@ -59,6 +62,7 @@ pub struct NodeObservation {
     pub parent: String,
     pub node: String,
     pub depth: usize,
+    pub ino: u64,
     pub own_blocks: u64,
     pub children_blocks: u64,
     pub own_apparent: u64,

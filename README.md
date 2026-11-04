@@ -51,6 +51,11 @@ walk of the same tree (`tests/support`), not from the scanner.
   `/metrics` size and series count. Fails if a warm scan exceeds `HARVESTER_PERF_MAX_RATIO`
   (default 1×) of that baseline, or if the walk was incomplete. The report goes to
   `target/tmp/perf-report.json`. Size the tree with `HARVESTER_PERF_FILES` (default 20000).
+- `tests/atlas.rs`: `/api/tree` against the independent walk at every depth, best-first
+  pruning, `/api/info`, CORS, and a change on disk reaching `/api/events`.
+- `tests/btrfs.rs`: opt-in (`HARVESTER_BTRFS_DIR`, root). Reflinks, a hard link and an
+  excluded reflink on a real btrfs: what deleting each directory frees, the sharing pairs, and
+  a change seen by generation polling. CI runs it on a loopback btrfs.
 - `tests/live.rs`: opt-in. Compares a deployed harvester with `find` run on its host, using the
   depth the config *intends*:
 
@@ -80,6 +85,88 @@ volumes:
 - `GET /metrics`: Prometheus text exposition from the cached snapshot store only.
 - `GET /-/health`: process health.
 - `GET /-/ready`: ready after each configured target has completed at least one scan.
+- `GET /atlas`: the Storage Atlas, a dashboard of every harvester's storage (see below).
+- `GET /api/info`, `GET /api/tree`, `GET /api/events`: what the atlas reads (see below).
+
+## Storage Atlas
+
+`/atlas` shows the storage of every machine running a harvester on one page: capacity and
+growth per filesystem, a heatmap of which directories changed when, a block map of every
+directory on every machine that pulses as files change, and which directories share blocks.
+It reads `/api/*` from this harvester and from each of `atlas.peers`, and history from
+`atlas.metrics_url`:
+
+```yaml
+host: nuc-ubuntu            # the `host` label your scraper adds; absent: the hostname
+display_name: NUC           # what the atlas calls this machine; absent: host
+atlas:
+  peers: ['http://nas.lan:9799']
+  metrics_url: http://victoriametrics.lan:8428   # Prometheus HTTP API with this data
+  capacity_queries:         # optional: older history for a filesystem, from other metrics
+    - path: /volume1
+      used: 'my_disk_used_bytes{volume="1"}'
+      size: 'my_disk_size_bytes{volume="1"}'
+```
+
+`/api/*` allows any origin, so the page can read peers directly; it is read-only.
+
+### Trees
+
+Each scan keeps every directory it walks in memory, up to `tree_max_directories` per target
+(default 500,000, about 200 bytes each; 0 keeps only the reported directories). Reported
+directories, and so `/metrics`, are unchanged.
+
+`GET /api/tree?target=NAME[&path=/abs/path][&limit=2500][&depth=8][&min_bytes=N]` returns a
+pruned subtree, best first: the largest listed directory is expanded next, until `limit`
+directories are listed or none within `depth` levels holds `min_bytes` (default: the root's
+total / 4000). Each node: `n` name, `t` total bytes, `a` apparent bytes, `f`/`d`/`l` files,
+directories and symlinks below it, `o` bytes of files directly in it, `k` subdirectories,
+`r` bytes of subdirectories not listed, `c` listed subdirectories, and `x` (btrfs, below)
+the bytes deleting it would free.
+
+### Live changes
+
+Between scans, the harvester follows changes and re-reads only the directories that changed:
+
+- **fanotify** (Linux 5.9+): one mark per filesystem reports each directory whose entries or
+  files changed, by file handle.
+- **btrfs generation polling** (any kernel): every `live.btrfs_poll_interval` (3 s), a
+  metadata search for blocks newer than the last poll names the changed directories. btrfs
+  writes inode updates at commit, so a change can take up to the commit interval (30 s by
+  default) to show.
+
+A file with several hard links counts once, in one directory; when that link goes, another
+directory holding one takes it over. One gap: under fanotify, a *new* hard link to a file that
+is counted elsewhere as a plain file counts twice until that file's directory changes or the
+next scan, because the kernel tells only the new link's directory. btrfs polling tells both.
+
+Both need `CAP_SYS_ADMIN` (`cap_add: [SYS_ADMIN]`). Without it, or with `live.enabled: false`
+or a target's `live: false`, trees change at each scan only. A directory is re-read at most
+once per `live.min_relist_interval` (1 s), and less often the longer it takes to read.
+
+`GET /api/events` is a Server-Sent Events stream. `change` events carry the directory's
+`path`, `db` (the change in bytes, which every ancestor shares), `da`, `df` (files), `b` (its
+new total) and `src` (`fanotify`, `btrfs`, or `scan` for a difference found by a scan). A
+`scan` event follows each scan. New clients get the last 200 changes first, marked `replay`.
+
+### What deleting a directory frees (btrfs)
+
+On btrfs, files can share blocks: reflink copies, deduplication, cross-seeded torrents, hard
+links. A directory's size then overstates what deleting it frees. With `sharing_interval`
+set (for example `6h`), the harvester reads the subvolume's extent metadata (about 1 GB of
+it for a 50 TiB share, in under 30 s) and settles each extent on the lowest directory holding
+every reference to it. Summed over a subtree, that is exactly what deleting the subtree would
+free within the subvolume. Snapshots and other subvolumes are not looked at, so those can keep
+more alive.
+
+- `/api/tree` nodes gain `x`; `/api/info` targets gain `sharing` with `logical` (what the
+  files add up to), `disk` (unique bytes on disk), `outside` (bytes also referenced by files
+  outside the tree) and the directory `pairs` sharing the most bytes.
+- Metrics: `storage_harvester_exclusive_size_bytes` per reported directory,
+  `storage_harvester_target_disk_bytes`, `storage_harvester_sharing_duration_seconds`.
+
+Other new metrics: `storage_harvester_filesystem_{size,used,avail}_bytes` per target, and
+`storage_harvester_live_{relists,changes,signals,overflows}_total`.
 
 ## MVP Scope
 
@@ -97,7 +184,7 @@ volumes:
 - Lightweight status web UI.
 - Structured scan lifecycle logs with issue breakdowns.
 
-Deferred: inotify, Docker API metadata, textfile output, deep snapshots, and advanced child-label parsing.
+Deferred: Docker API metadata, textfile output, and advanced child-label parsing.
 
 ## Architecture
 
@@ -110,6 +197,11 @@ src/collector/filesystem.rs   configured filesystem target collector
 src/scheduler.rs              background scan timing, timeouts, and task ownership
 src/scanner/mod.rs            scanner trait and backend factory
 src/scanner/native.rs         parallel getdents64/fstatat walker using block accounting
+src/tree.rs                   the directory tree a scan leaves, pruned views of it, diffs
+src/live.rs                   live updates: fanotify, btrfs polling, re-reads, events
+src/btrfs.rs                  btrfs metadata search: sharing pass, generation watcher
+src/fsinfo.rs                 which filesystem a target is on (mountinfo), statvfs
+src/atlas.rs, src/atlas.html  /atlas and /api/*
 src/cache.rs                  cached target snapshots read by exporters/API
 src/exporter/prometheus.rs    Prometheus text exposition renderer
 src/api.rs                    HTTP routes and graceful shutdown
@@ -129,9 +221,8 @@ A scan is a parallel walk that does a constant amount of work per entry:
 
 - Each entry costs one `fstatat` relative to its directory's open descriptor. On Linux, names
   come from `getdents64` into a reused buffer, so nothing per entry is allocated or looked up.
-- Sizes and counts are summed per directory, then added once to the nearest reported
-  directory. The scanner keeps nothing for directories deeper than `report_depth`, so its
-  memory follows the reported tree, not the walked one.
+- Sizes and counts are summed per directory, then added once to the directory's node, or to
+  its nearest tracked ancestor's past `tree_max_directories`. Memory is bounded by that cap.
 - `scan_threads` workers share directories through one stack. Each worker keeps descending
   into one child and hands the others out, so a walk stays roughly depth-first.
 - A multiply-linked file counts once, at the link whose path hashes lowest. Its allocation

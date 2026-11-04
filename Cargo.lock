@@ -698,14 +698,16 @@ dependencies = [
 
 [[package]]
 name = "storage-harvester"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "axum",
  "clap",
+ "futures-util",
  "globset",
  "libc",
  "serde",
+ "serde_json",
  "serde_yaml",
  "tempfile",
  "tokio",

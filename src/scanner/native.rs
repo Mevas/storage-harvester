@@ -4,9 +4,11 @@
 //!   from `getdents64` straight into a reused buffer) and a few additions. Nothing per entry is
 //!   allocated, hashed or looked up by path.
 //! - Sizes are summed per directory, then added once to the directory's *node*: its own when it
-//!   is tracked (depth <= `report_depth`), otherwise its nearest tracked ancestor's. Nothing is
-//!   kept for deeper directories, so memory follows the reported tree, not the walked one.
-//! - Tracked nodes roll up into their parents after the walk.
+//!   is tracked, otherwise its nearest tracked ancestor's. Directories at depth <= `report_depth`
+//!   are always tracked; deeper ones are while fewer than `tree_max_directories` are, so memory
+//!   is bounded by that cap, not by the walk.
+//! - Tracked nodes roll up into their parents after the walk, into the [`DirTree`] that
+//!   `/api/tree` and the live engine use; the reported nodes are read off it.
 //! - Directories are shared between `scan_threads` workers through one LIFO stack; a worker
 //!   keeps one child to descend into, so a walk stays roughly depth-first and the stack small.
 //! - A multiply-linked file is counted once, at the link with the smallest path hash, so its
@@ -17,9 +19,10 @@ use std::collections::HashMap;
 use std::ffi::{CStr, CString, OsStr};
 use std::hash::Hasher;
 use std::io;
+use std::ops::Range;
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::{Instant, SystemTime};
 
@@ -28,6 +31,7 @@ use globset::{Glob, GlobSet, GlobSetBuilder};
 
 use crate::config::{ReportMode, Target};
 use crate::scanner::{EntryObservation, EntryType, NodeObservation, ScanResult, Scanner};
+use crate::tree::{DirNode, DirTree, LinkOwner, Tally, NONE};
 
 #[derive(Debug)]
 pub struct NativeScanner {
@@ -37,18 +41,130 @@ pub struct NativeScanner {
 
 impl NativeScanner {
     pub fn new(target: &Target) -> Result<Self> {
-        let mut builder = GlobSetBuilder::new();
-        for pattern in &target.exclude {
-            builder.add(
-                Glob::new(pattern)
-                    .with_context(|| format!("invalid exclude pattern {pattern:?}"))?,
-            );
-        }
         Ok(Self {
-            exclude: builder.build()?,
+            exclude: exclude_set(&target.exclude)?,
             threads: target.scan_threads.max(1),
         })
     }
+}
+
+pub(crate) fn exclude_set(patterns: &[String]) -> Result<GlobSet> {
+    let mut builder = GlobSetBuilder::new();
+    for pattern in patterns {
+        builder.add(
+            Glob::new(pattern).with_context(|| format!("invalid exclude pattern {pattern:?}"))?,
+        );
+    }
+    Ok(builder.build()?)
+}
+
+/// One directory's own entries, read with the walk's rules (excludes, the device boundary,
+/// symlinks), for a live re-read of a directory the tree already holds.
+#[derive(Debug, Default)]
+pub(crate) struct Listing {
+    /// Every entry counted; sizes of subdirectories' inodes and of singly linked entries.
+    pub direct: Tally,
+    /// Subdirectories, sorted by name.
+    pub subdirs: Vec<Subdir>,
+    /// Multiply-linked entries: `((dev, ino), blocks, apparent)`. Whose they are is the
+    /// tree's call.
+    pub links: Vec<((u64, u64), u64, u64)>,
+    /// The directory's own inode: `(blocks, apparent)`.
+    /// The directory's own inode.
+    pub own: Own,
+}
+
+#[derive(Debug)]
+pub(crate) struct Subdir {
+    pub name: Box<[u8]>,
+    pub ino: u64,
+    pub blocks: u64,
+    pub apparent: u64,
+    pub mtime: i64,
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+pub(crate) struct Own {
+    pub blocks: u64,
+    pub apparent: u64,
+    pub mtime: i64,
+}
+
+/// A directory's file handle, as fanotify reports it.
+pub(crate) fn dir_handle(path: &[u8]) -> Option<Box<[u8]>> {
+    sys::path_handle(Path::new(OsStr::from_bytes(path)))
+}
+
+pub(crate) fn read_direct(
+    target: &Target,
+    exclude: &GlobSet,
+    scan_path: &[u8],
+    display_path: &[u8],
+    root_dev: u64,
+) -> io::Result<Listing> {
+    let follow = target.follow_symlinks;
+    let path = CString::new(scan_path).map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
+    let mut dir = sys::Dir::open(&path, follow)?;
+    let own = dir.stat_self()?;
+    let mut batch = sys::Batch::default();
+    let mut display = display_path.to_vec();
+    let dir_len = display.len();
+    let mut listing = Listing {
+        own: Own {
+            blocks: own.blocks,
+            apparent: own.size,
+            mtime: own.mtime,
+        },
+        ..Listing::default()
+    };
+    while dir.read(&mut batch)? {
+        for index in 0..batch.len() {
+            let name = batch.name(index);
+            let bytes = name.to_bytes();
+            if bytes == b"." || bytes == b".." {
+                continue;
+            }
+            if !exclude.is_empty() {
+                display.truncate(dir_len);
+                push_component(&mut display, bytes);
+                if exclude.is_match(Path::new(OsStr::from_bytes(&display))) {
+                    continue;
+                }
+            }
+            let Ok(stat) = dir.stat(name, follow) else {
+                continue;
+            };
+            if target.no_cross_filesystem && stat.dev != root_dev {
+                continue;
+            }
+            let direct = &mut listing.direct;
+            match stat.kind {
+                Kind::Directory => {
+                    direct.dirs += 1;
+                    direct.add_size(stat.blocks, stat.size);
+                    listing.subdirs.push(Subdir {
+                        name: bytes.into(),
+                        ino: stat.ino,
+                        blocks: stat.blocks,
+                        apparent: stat.size,
+                        mtime: stat.mtime,
+                    });
+                    continue;
+                }
+                Kind::Symlink => direct.symlinks += 1,
+                Kind::File | Kind::Other => direct.files += 1,
+            }
+            if stat.nlink > 1 {
+                listing
+                    .links
+                    .push(((stat.dev, stat.ino), stat.blocks, stat.size));
+            } else {
+                direct.add_size(stat.blocks, stat.size);
+            }
+        }
+    }
+    listing.subdirs.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(listing)
 }
 
 impl Scanner for NativeScanner {
@@ -72,10 +188,11 @@ impl Scanner for NativeScanner {
             return Ok(finish(
                 self.backend(),
                 target,
-                Vec::new(),
+                Nodes::default(),
                 vec![first],
                 started,
                 timestamp,
+                root.dev,
             ));
         }
         let walk = Walk {
@@ -85,7 +202,10 @@ impl Scanner for NativeScanner {
             root_dev: root.dev,
             display_root,
             rel_start: scan_root.len() + usize::from(!scan_root.ends_with(b"/")),
-            nodes: Mutex::new(Vec::new()),
+            nodes: Mutex::new(Nodes::default()),
+            tracked: AtomicUsize::new(1),
+            cap: target.tree_max_directories,
+            handles: target.collect_handles,
             queue: Mutex::new(Queue::default()),
             ready: Condvar::new(),
             halted: AtomicBool::new(false),
@@ -96,15 +216,22 @@ impl Scanner for NativeScanner {
         match root.kind {
             Kind::Directory => {
                 first.counts.scanned_directories += 1;
-                lock(&walk.nodes).push(TrackedNode {
-                    rel: Vec::new(),
-                    path: lossy(&walk.display_root),
-                    parent_path: String::new(),
-                    name: ".".to_string(),
+                let handle = if walk.handles {
+                    sys::path_handle(&target.scan_path)
+                } else {
+                    None
+                };
+                lock(&walk.nodes).list.push(TrackedNode {
+                    name: 0..0,
                     depth: 0,
-                    parent: 0,
+                    parent: NONE,
+                    ino: root.ino,
                     own_blocks: root.blocks,
                     own_apparent: root.size,
+                    mtime: root.mtime,
+                    sealed: target.max_depth == Some(0),
+                    pruned: false,
+                    handle,
                 });
                 if target.max_depth == Some(0) {
                     first.counts.depth_limit_hits += 1;
@@ -144,6 +271,7 @@ impl Scanner for NativeScanner {
             workers,
             started,
             timestamp,
+            root.dev,
         ))
     }
 }
@@ -157,9 +285,13 @@ struct Walk<'a> {
     display_root: Vec<u8>,
     /// Where a directory's path relative to the scan root starts in its scan path.
     rel_start: usize,
-    /// Directories at depth <= report_depth, in discovery order, so a parent precedes its
-    /// children.
-    nodes: Mutex<Vec<TrackedNode>>,
+    /// Tracked directories, in discovery order, so a parent precedes its children.
+    nodes: Mutex<Nodes>,
+    /// Directories offered a node so far, counted without the lock to apply `cap`.
+    tracked: AtomicUsize,
+    cap: usize,
+    /// Record each tracked directory's file handle (for fanotify).
+    handles: bool,
     queue: Mutex<Queue>,
     ready: Condvar,
     halted: AtomicBool,
@@ -184,39 +316,37 @@ struct Job {
     tracked: bool,
 }
 
+/// Tracked directories, and their names in one buffer: no allocation per directory, which
+/// musl's allocator would serialize across the walkers.
+#[derive(Default)]
+struct Nodes {
+    list: Vec<TrackedNode>,
+    names: Vec<u8>,
+}
+
 struct TrackedNode {
-    /// Path relative to the scan root, for ordering.
-    rel: Vec<u8>,
-    path: String,
-    parent_path: String,
-    name: String,
+    /// Where the name is in `Nodes::names`.
+    name: Range<usize>,
     depth: usize,
     parent: u32,
+    ino: u64,
     own_blocks: u64,
     own_apparent: u64,
+    mtime: i64,
+    /// Not (fully) read: past `max_depth`, or unreadable.
+    sealed: bool,
+    /// Some entries directly inside were excluded.
+    pruned: bool,
+    handle: Option<Box<[u8]>>,
 }
 
-#[derive(Debug, Default, Clone, Copy)]
-struct Tally {
-    files: u64,
-    dirs: u64,
-    symlinks: u64,
-    blocks: u64,
-    apparent: u64,
-}
-
-impl Tally {
-    fn add(&mut self, other: &Tally) {
-        self.files += other.files;
-        self.dirs += other.dirs;
-        self.symlinks += other.symlinks;
-        self.add_size(other.blocks, other.apparent);
-    }
-
-    fn add_size(&mut self, blocks: u64, apparent: u64) {
-        self.blocks = self.blocks.saturating_add(blocks);
-        self.apparent = self.apparent.saturating_add(apparent);
-    }
+/// A subdirectory to track, gathered while its parent is read and registered in one lock.
+struct PendingDir {
+    /// Its name, in the worker's `arena`.
+    name: Range<usize>,
+    stat: Stat,
+    handle: Option<Box<[u8]>>,
+    descend: bool,
 }
 
 /// What one node has gathered: entries directly inside it, and entries in untracked
@@ -287,6 +417,10 @@ struct Worker {
     batch: sys::Batch,
     /// Display path of the directory being read, then of each entry in turn.
     display: Vec<u8>,
+    pending: Vec<PendingDir>,
+    arena: Vec<u8>,
+    /// Every link of a multiply-linked file seen directly in a tracked directory.
+    link_dirs: Vec<((u64, u64), u32)>,
 }
 
 impl Worker {
@@ -403,14 +537,18 @@ impl Walk<'_> {
             links,
             batch,
             display,
+            pending,
+            arena,
+            link_dirs,
             ..
         } = worker;
         let mut dir = match sys::Dir::open(&job.path, follow) {
             Ok(dir) => dir,
             Err(error) => {
+                self.seal(job);
                 return tolerate(counts, error, || {
                     format!("failed to read {}", lossy(job.path.to_bytes()))
-                })
+                });
             }
         };
 
@@ -428,12 +566,14 @@ impl Walk<'_> {
         let parent_path = reported.then(|| lossy(display));
         let depth = job.depth + 1;
         let mut sums = Tally::default();
+        let mut pruned = false;
 
         loop {
             match dir.read(batch) {
                 Ok(true) => {}
                 Ok(false) => break,
                 Err(error) => {
+                    self.seal(job);
                     tolerate(counts, error, || {
                         format!("failed to read entry in {}", lossy(job.path.to_bytes()))
                     })?;
@@ -455,6 +595,7 @@ impl Walk<'_> {
                 }
                 if excluding && self.exclude.is_match(Path::new(OsStr::from_bytes(display))) {
                     counts.skipped_excluded += 1;
+                    pruned = true;
                     continue;
                 }
                 let stat = match dir.stat(name, follow) {
@@ -478,20 +619,25 @@ impl Walk<'_> {
                     counts.scanned_directories += 1;
                     sums.dirs += 1;
                     sums.add_size(stat.blocks, stat.size);
-                    let tracked = depth <= target.report_depth;
-                    let node = if tracked {
-                        self.track(job.node, depth, bytes, &stat)
-                    } else {
-                        job.node
-                    };
-                    if target.max_depth.is_some_and(|max_depth| depth >= max_depth) {
+                    let descend = target.max_depth.is_none_or(|max_depth| depth < max_depth);
+                    if !descend {
                         counts.depth_limit_hits += 1;
-                    } else {
+                    }
+                    if job.tracked && self.keeps(depth) {
+                        let start = arena.len();
+                        arena.extend_from_slice(bytes);
+                        pending.push(PendingDir {
+                            name: start..arena.len(),
+                            stat,
+                            handle: if self.handles { dir.handle(name) } else { None },
+                            descend,
+                        });
+                    } else if descend {
                         children.push(Job {
                             path: child_path(&job.path, bytes),
                             depth,
-                            node,
-                            tracked,
+                            node: job.node,
+                            tracked: false,
                         });
                     }
                     continue;
@@ -542,42 +688,70 @@ impl Walk<'_> {
                         entry,
                     };
                     keep_lowest(links, (stat.dev, stat.ino), link, |link| link.key);
+                    if job.tracked {
+                        link_dirs.push(((stat.dev, stat.ino), job.node));
+                    }
                 }
             }
         }
         drop(dir);
+        if pruned && job.tracked {
+            lock(&self.nodes).list[job.node as usize].pruned = true;
+        }
+
+        if !pending.is_empty() {
+            let first = {
+                let mut nodes = lock(&self.nodes);
+                let Nodes { list, names } = &mut *nodes;
+                let first = list.len();
+                for dir in pending.iter_mut() {
+                    let start = names.len();
+                    names.extend_from_slice(&arena[dir.name.clone()]);
+                    list.push(TrackedNode {
+                        name: start..names.len(),
+                        depth,
+                        parent: job.node,
+                        ino: dir.stat.ino,
+                        own_blocks: dir.stat.blocks,
+                        own_apparent: dir.stat.size,
+                        mtime: dir.stat.mtime,
+                        sealed: !dir.descend,
+                        pruned: false,
+                        handle: dir.handle.take(),
+                    });
+                }
+                first
+            };
+            for (offset, dir) in pending.drain(..).enumerate() {
+                if dir.descend {
+                    children.push(Job {
+                        path: child_path(&job.path, &arena[dir.name]),
+                        depth,
+                        node: u32::try_from(first + offset)
+                            .expect("fewer than 2^32 tracked directories"),
+                        tracked: true,
+                    });
+                }
+            }
+            arena.clear();
+        }
 
         worker.tally(job.node).part(job.tracked).add(&sums);
         Ok(())
     }
 
-    /// Registers a directory at depth <= report_depth and returns its node.
-    fn track(&self, parent: u32, depth: usize, name: &[u8], stat: &Stat) -> u32 {
-        let mut nodes = lock(&self.nodes);
-        let parent_node = &nodes[parent as usize];
-        let mut rel = parent_node.rel.clone();
-        if !rel.is_empty() {
-            rel.push(b'/');
+    /// Whether a directory found at `depth` under a tracked one gets a node of its own.
+    /// Reserves the slot as it answers, so siblings and other workers cannot all pass the cap.
+    fn keeps(&self, depth: usize) -> bool {
+        let reserved = self.tracked.fetch_add(1, Ordering::Relaxed);
+        depth <= self.target.report_depth || reserved < self.cap
+    }
+
+    /// Marks a tracked directory whose contents could not all be read.
+    fn seal(&self, job: &Job) {
+        if job.tracked {
+            lock(&self.nodes).list[job.node as usize].sealed = true;
         }
-        rel.extend_from_slice(name);
-        let parent_path = parent_node.path.clone();
-        let mut path = parent_path.clone();
-        if !path.ends_with('/') {
-            path.push('/');
-        }
-        let name = lossy(name);
-        path.push_str(&name);
-        nodes.push(TrackedNode {
-            rel,
-            path,
-            parent_path,
-            name,
-            depth,
-            parent,
-            own_blocks: stat.blocks,
-            own_apparent: stat.size,
-        });
-        u32::try_from(nodes.len() - 1).expect("fewer than 2^32 reported directories")
     }
 }
 
@@ -620,17 +794,22 @@ fn is_permission_denied(error: &io::Error) -> bool {
 fn finish(
     backend: &str,
     target: &Target,
-    nodes: Vec<TrackedNode>,
+    nodes: Nodes,
     workers: Vec<Worker>,
     started: Instant,
     timestamp: SystemTime,
+    root_dev: u64,
 ) -> ScanResult {
-    let mut tallies = vec![NodeTally::default(); nodes.len()];
+    let mut tallies = vec![NodeTally::default(); nodes.list.len()];
     let mut counts = Counts::default();
     let mut entries = Vec::with_capacity(workers.iter().map(|w| w.entries.len()).sum());
     let mut winners: HashMap<(u64, u64), (usize, Link)> = HashMap::new();
     let mut entry_offsets = Vec::with_capacity(workers.len());
+    let mut holders: HashMap<(u64, u64), Vec<u32>> = HashMap::new();
     for (index, worker) in workers.into_iter().enumerate() {
+        for (inode, node) in worker.link_dirs {
+            holders.entry(inode).or_default().push(node);
+        }
         for (node, tally) in worker.tallies.iter().enumerate() {
             tallies[node].direct.add(&tally.direct);
             tallies[node].below.add(&tally.below);
@@ -642,10 +821,26 @@ fn finish(
         entry_offsets.push(entries.len());
         entries.extend(worker.entries);
     }
-    for (worker, link) in winners.into_values() {
+    let mut owners = HashMap::new();
+    for (inode, (worker, link)) in winners {
         tallies[link.node as usize]
             .part(link.direct)
             .add_size(link.blocks, link.apparent);
+        if link.direct {
+            let mut others = holders.remove(&inode).unwrap_or_default();
+            others.sort_unstable();
+            others.dedup();
+            others.retain(|&node| node != link.node);
+            owners.insert(
+                inode,
+                LinkOwner {
+                    node: link.node,
+                    blocks: link.blocks,
+                    apparent: link.apparent,
+                    others,
+                },
+            );
+        }
         if let Some(entry) = link.entry {
             let entry = &mut entries[entry_offsets[worker] + entry];
             entry.blocks = link.blocks;
@@ -653,56 +848,16 @@ fn finish(
         }
     }
 
-    // `deep[n]`: entries below n's direct children, and the size of everything below n.
-    let mut deep: Vec<Tally> = tallies
-        .iter()
-        .map(|tally| Tally {
-            files: tally.below.files,
-            dirs: tally.below.dirs,
-            symlinks: tally.below.symlinks,
-            blocks: tally.direct.blocks.saturating_add(tally.below.blocks),
-            apparent: tally.direct.apparent.saturating_add(tally.below.apparent),
+    let tree = build_tree(target, nodes, &tallies, owners, root_dev);
+    let mut reported: Vec<(Vec<u8>, NodeObservation)> = tree
+        .as_ref()
+        .map(|tree| {
+            (0..tree.nodes.len() as u32)
+                .filter(|&index| is_reported(target, tree.nodes[index as usize].depth as usize))
+                .map(|index| (tree.relative_path(index), observe(tree, index)))
+                .collect()
         })
-        .collect();
-    for index in (1..nodes.len()).rev() {
-        let parent = nodes[index].parent as usize;
-        let child = deep[index];
-        let direct = tallies[index].direct;
-        let into = &mut deep[parent];
-        into.files += direct.files + child.files;
-        into.dirs += direct.dirs + child.dirs;
-        into.symlinks += direct.symlinks + child.symlinks;
-        into.add_size(child.blocks, child.apparent);
-    }
-
-    let mut reported: Vec<(Vec<u8>, NodeObservation)> = nodes
-        .into_iter()
-        .enumerate()
-        .filter(|(_, node)| is_reported(target, node.depth))
-        .map(|(index, node)| {
-            let direct = tallies[index].direct;
-            let deep = deep[index];
-            (
-                node.rel,
-                NodeObservation {
-                    path: node.path,
-                    parent: node.parent_path,
-                    node: node.name,
-                    depth: node.depth,
-                    own_blocks: node.own_blocks,
-                    children_blocks: deep.blocks,
-                    own_apparent: node.own_apparent,
-                    children_apparent: deep.apparent,
-                    file_count: direct.files,
-                    directory_count: direct.dirs,
-                    symlink_count: direct.symlinks,
-                    children_file_count: deep.files,
-                    children_directory_count: deep.dirs,
-                    children_symlink_count: deep.symlinks,
-                },
-            )
-        })
-        .collect();
+        .unwrap_or_default();
     reported.sort_by(|(left, _), (right, _)| {
         Path::new(OsStr::from_bytes(left)).cmp(Path::new(OsStr::from_bytes(right)))
     });
@@ -723,6 +878,105 @@ fn finish(
         depth_limit_hits: counts.depth_limit_hits,
         duration: started.elapsed(),
         timestamp,
+        tree,
+    }
+}
+
+/// Rolls the tracked directories up into a tree. `None` when there is no directory to hold
+/// (an excluded or non-directory root).
+fn build_tree(
+    target: &Target,
+    nodes: Nodes,
+    tallies: &[NodeTally],
+    links: HashMap<(u64, u64), LinkOwner>,
+    root_dev: u64,
+) -> Option<DirTree> {
+    if nodes.list.is_empty() {
+        return None;
+    }
+    let names = nodes.names;
+    let mut handles = Vec::new();
+    let mut tree_nodes: Vec<DirNode> = nodes
+        .list
+        .into_iter()
+        .enumerate()
+        .map(|(index, node)| {
+            if let Some(handle) = node.handle {
+                handles.push((index as u32, handle));
+            }
+            let tally = tallies[index];
+            let mut sub = tally.direct;
+            sub.add(&tally.below);
+            DirNode {
+                name: names[node.name].into(),
+                parent: node.parent,
+                depth: node.depth as u32,
+                ino: node.ino,
+                own_blocks: node.own_blocks,
+                own_apparent: node.own_apparent,
+                mtime: node.mtime,
+                direct: tally.direct,
+                sub,
+                children: Vec::new(),
+                sealed: node.sealed || !tally.below.is_empty(),
+                pruned: node.pruned,
+                alive: true,
+            }
+        })
+        .collect();
+    // A parent precedes its children, so one backwards pass rolls everything up.
+    for index in (1..tree_nodes.len()).rev() {
+        let parent = tree_nodes[index].parent as usize;
+        let sub = tree_nodes[index].sub;
+        tree_nodes[parent].sub.add(&sub);
+        tree_nodes[parent].children.push(index as u32);
+    }
+    for index in 0..tree_nodes.len() {
+        let mut children = std::mem::take(&mut tree_nodes[index].children);
+        children.sort_by(|&a, &b| {
+            tree_nodes[a as usize]
+                .name
+                .cmp(&tree_nodes[b as usize].name)
+        });
+        let node = &mut tree_nodes[index];
+        // Subdirectories past the cap have no node, so a re-read would mistake them for new.
+        node.sealed |= (children.len() as u64) < node.direct.dirs;
+        node.children = children;
+    }
+    Some(DirTree {
+        display_root: target.display_path.as_os_str().as_bytes().to_vec(),
+        scan_root: target.scan_path.as_os_str().as_bytes().to_vec(),
+        root_dev,
+        nodes: tree_nodes,
+        links,
+        handles,
+    })
+}
+
+/// The exported view of one reported directory.
+fn observe(tree: &DirTree, index: u32) -> NodeObservation {
+    let node = &tree.nodes[index as usize];
+    let (parent, name) = if index == 0 {
+        (String::new(), ".".to_string())
+    } else {
+        (tree.display_path(node.parent), lossy(&node.name))
+    };
+    NodeObservation {
+        path: tree.display_path(index),
+        parent,
+        node: name,
+        depth: node.depth as usize,
+        ino: node.ino,
+        own_blocks: node.own_blocks,
+        children_blocks: node.sub.blocks,
+        own_apparent: node.own_apparent,
+        children_apparent: node.sub.apparent,
+        file_count: node.direct.files,
+        directory_count: node.direct.dirs,
+        symlink_count: node.direct.symlinks,
+        children_file_count: node.sub.files - node.direct.files,
+        children_directory_count: node.sub.dirs - node.direct.dirs,
+        children_symlink_count: node.sub.symlinks - node.direct.symlinks,
     }
 }
 
@@ -801,6 +1055,8 @@ struct Stat {
     nlink: u64,
     blocks: u64,
     size: u64,
+    /// Nanoseconds since the epoch.
+    mtime: i64,
 }
 
 mod sys {
@@ -834,6 +1090,7 @@ mod sys {
             nlink: metadata.nlink(),
             blocks: metadata.blocks().saturating_mul(512),
             size: metadata.size(),
+            mtime: metadata.mtime() * 1_000_000_000 + metadata.mtime_nsec(),
         })
     }
 
@@ -856,9 +1113,9 @@ mod sys {
     }
 
     #[cfg(target_os = "linux")]
-    pub use linux::Dir;
+    pub use linux::{path_handle, Dir};
     #[cfg(not(target_os = "linux"))]
-    pub use portable::Dir;
+    pub use portable::{path_handle, Dir};
 
     #[cfg(target_os = "linux")]
     mod linux {
@@ -868,6 +1125,52 @@ mod sys {
         use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 
         use super::{Batch, Kind, Stat};
+
+        /// `MAX_HANDLE_SZ` in the kernel.
+        const MAX_HANDLE: usize = 128;
+
+        /// `struct file_handle` with room for any handle.
+        #[repr(C)]
+        struct FileHandle {
+            handle_bytes: u32,
+            handle_type: i32,
+            f_handle: [u8; MAX_HANDLE],
+        }
+
+        /// `name_to_handle_at` relative to `dirfd`, as the key fanotify reports a directory by:
+        /// the handle type, then the handle.
+        fn handle_at(dirfd: i32, name: &CStr, flags: i32) -> Option<Box<[u8]>> {
+            let mut handle = FileHandle {
+                handle_bytes: MAX_HANDLE as u32,
+                handle_type: 0,
+                f_handle: [0; MAX_HANDLE],
+            };
+            let mut mount_id = 0i32;
+            // SAFETY: `name` is NUL-terminated and both out-pointers are valid for writes.
+            let status = unsafe {
+                libc::syscall(
+                    libc::SYS_name_to_handle_at,
+                    dirfd,
+                    name.as_ptr(),
+                    &mut handle as *mut FileHandle,
+                    &mut mount_id as *mut i32,
+                    flags,
+                )
+            };
+            if status != 0 {
+                return None;
+            }
+            let len = (handle.handle_bytes as usize).min(MAX_HANDLE);
+            let mut key = handle.handle_type.to_ne_bytes().to_vec();
+            key.extend_from_slice(&handle.f_handle[..len]);
+            Some(key.into_boxed_slice())
+        }
+
+        pub fn path_handle(path: &std::path::Path) -> Option<Box<[u8]>> {
+            use std::os::unix::ffi::OsStrExt;
+            let path = std::ffi::CString::new(path.as_os_str().as_bytes()).ok()?;
+            handle_at(libc::AT_FDCWD, &path, 0)
+        }
 
         /// Large enough that most directories take one `getdents64` call.
         const BATCH_BYTES: usize = 64 * 1024;
@@ -931,6 +1234,21 @@ mod sys {
                 Ok(read > 0)
             }
 
+            pub fn stat_self(&self) -> io::Result<Stat> {
+                let mut stat = MaybeUninit::<libc::stat>::uninit();
+                // SAFETY: the descriptor is open and `stat` is valid for writes.
+                if unsafe { libc::fstat(self.fd.as_raw_fd(), stat.as_mut_ptr()) } != 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                // SAFETY: `fstat` succeeded, so it filled `stat`.
+                Ok(to_stat(unsafe { stat.assume_init() }))
+            }
+
+            /// The file handle of the entry `name` (a directory), as fanotify reports it.
+            pub fn handle(&self, name: &CStr) -> Option<Box<[u8]>> {
+                handle_at(self.fd.as_raw_fd(), name, 0)
+            }
+
             pub fn stat(&self, name: &CStr, follow: bool) -> io::Result<Stat> {
                 let flags = if follow { 0 } else { libc::AT_SYMLINK_NOFOLLOW };
                 let mut stat = MaybeUninit::<libc::stat>::uninit();
@@ -942,22 +1260,26 @@ mod sys {
                     return Err(io::Error::last_os_error());
                 }
                 // SAFETY: `fstatat` succeeded, so it filled `stat`.
-                let stat = unsafe { stat.assume_init() };
-                // The field types differ between architectures (`st_nlink` is u32 on arm64).
-                #[allow(clippy::unnecessary_cast)]
-                Ok(Stat {
-                    kind: match stat.st_mode & libc::S_IFMT {
-                        libc::S_IFDIR => Kind::Directory,
-                        libc::S_IFREG => Kind::File,
-                        libc::S_IFLNK => Kind::Symlink,
-                        _ => Kind::Other,
-                    },
-                    dev: stat.st_dev as u64,
-                    ino: stat.st_ino as u64,
-                    nlink: stat.st_nlink as u64,
-                    blocks: (stat.st_blocks as u64).saturating_mul(512),
-                    size: stat.st_size as u64,
-                })
+                Ok(to_stat(unsafe { stat.assume_init() }))
+            }
+        }
+
+        // The field types differ between architectures (`st_nlink` is u32 on arm64).
+        #[allow(clippy::unnecessary_cast)]
+        fn to_stat(stat: libc::stat) -> Stat {
+            Stat {
+                kind: match stat.st_mode & libc::S_IFMT {
+                    libc::S_IFDIR => Kind::Directory,
+                    libc::S_IFREG => Kind::File,
+                    libc::S_IFLNK => Kind::Symlink,
+                    _ => Kind::Other,
+                },
+                dev: stat.st_dev as u64,
+                ino: stat.st_ino as u64,
+                nlink: stat.st_nlink as u64,
+                blocks: (stat.st_blocks as u64).saturating_mul(512),
+                size: stat.st_size as u64,
+                mtime: stat.st_mtime as i64 * 1_000_000_000 + stat.st_mtime_nsec as i64,
             }
         }
     }
@@ -972,6 +1294,10 @@ mod sys {
         use std::path::PathBuf;
 
         use super::{stat_path, Batch, Stat};
+
+        pub fn path_handle(_path: &std::path::Path) -> Option<Box<[u8]>> {
+            None
+        }
 
         pub struct Dir {
             path: PathBuf,
@@ -1001,6 +1327,14 @@ mod sys {
                     batch.buf.push(0);
                 }
                 Ok(true)
+            }
+
+            pub fn handle(&self, _name: &CStr) -> Option<Box<[u8]>> {
+                None
+            }
+
+            pub fn stat_self(&self) -> io::Result<Stat> {
+                stat_path(&self.path, true)
             }
 
             pub fn stat(&self, name: &CStr, follow: bool) -> io::Result<Stat> {
@@ -1253,6 +1587,10 @@ mod tests {
             scan_threads: 4,
             size_modes: vec![SizeMode::Blocks],
             exclude,
+            tree_max_directories: 1000,
+            live: false,
+            sharing_interval: None,
+            collect_handles: false,
             labels: BTreeMap::new(),
         }
     }
