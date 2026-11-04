@@ -85,6 +85,7 @@ pub trait Scanner: Send + Sync {
 pub fn build(target: &Target) -> Result<Box<dyn Scanner>> {
     match target.scanner.as_str() {
         "native" => Ok(Box::new(native::NativeScanner::new(target)?)),
+        "lvm" => Ok(Box::new(crate::lvm::LvmScanner::new(target)?)),
         backend => bail!(
             "target {} uses unsupported scanner {backend:?}",
             target.name

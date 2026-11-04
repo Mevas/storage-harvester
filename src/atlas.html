@@ -3,8 +3,16 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#fcfcfd" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#14171b" media="(prefers-color-scheme: dark)">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Atlas">
 <title>Storage Atlas</title>
-<link rel="icon" href="data:,">
+<link rel="manifest" href="/atlas/manifest.webmanifest" crossorigin="use-credentials">
+<link rel="icon" type="image/png" sizes="192x192" href="/atlas/icon-192.png">
+<link rel="apple-touch-icon" sizes="180x180" href="/atlas/apple-touch-icon.png">
 <style>
 [hidden]{display:none!important}
 /* Storage Atlas: live view over storage-harvester's /api (tree, events) and VictoriaMetrics history.
@@ -19,6 +27,7 @@
   --div-pos:#e34948; --div-pos-deep:#8f1d1d; --div-neg:#2a78d6; --div-neg-deep:#0d366b; --div-mid:#e6e9ed;
   --share:#6250d6; --share-deep:#2e2280;
   --free:#eef1f4; --free-line:#cfd6de; --dark-tile:#5a6270; --other:#a3abb6;
+  --act:#eb6834; --act-deep:#7c2d0b; --act-ink:#b4461a; --vm:#8a93a3;
   --font-ui:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
   --font-mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Monaco,Consolas,"Liberation Mono",monospace;
   --r:6px;
@@ -33,6 +42,7 @@
     --div-pos:#d94a4a; --div-pos-deep:#ffaaa3; --div-neg:#3987e5; --div-neg-deep:#b7d3f6; --div-mid:#262b32;
     --share:#9085e9; --share-deep:#d4cffa;
     --free:#1a1e23; --free-line:#2f353e; --dark-tile:#4b525d; --other:#5d6570;
+    --act:#e0682a; --act-deep:#ffe0a3; --act-ink:#f0a46c; --vm:#5a6371;
     color-scheme:dark;
   }
 }
@@ -45,12 +55,14 @@
   --div-pos:#d94a4a; --div-pos-deep:#ffaaa3; --div-neg:#3987e5; --div-neg-deep:#b7d3f6; --div-mid:#262b32;
   --share:#9085e9; --share-deep:#d4cffa;
   --free:#1a1e23; --free-line:#2f353e; --dark-tile:#4b525d; --other:#5d6570;
+  --act:#e0682a; --act-deep:#ffe0a3; --act-ink:#f0a46c; --vm:#5a6371;
   color-scheme:dark;
 }
 *{box-sizing:border-box}
 html{-webkit-text-size-adjust:100%}
 body{background:var(--bg);color:var(--ink);font:400 14px/1.45 var(--font-ui);margin:0;min-width:0}
 body::before{content:"";position:fixed;inset:0 0 auto;height:env(safe-area-inset-top,0px);z-index:30;background:var(--surface)}
+html.standalone body::before{background:#0b0d10}  /* black-translucent: the status bar text is white in both themes */
 button,select,input{font:inherit;color:inherit}
 button{cursor:pointer}
 :focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:3px}
@@ -59,16 +71,18 @@ button{cursor:pointer}
 .muted{color:var(--muted)}
 
 /* bar */
-.bar{position:sticky;top:env(safe-area-inset-top,0px);z-index:20;background:var(--surface);border-bottom:1px solid var(--hair)}
+.bar{position:sticky;top:0;z-index:20;background:var(--surface);border-bottom:1px solid var(--hair);padding-top:env(safe-area-inset-top,0px)}
 .bar-in{display:flex;align-items:center;gap:8px 20px;flex-wrap:wrap;padding-block:8px;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}
 .brand{display:flex;align-items:baseline;gap:10px;min-width:0}
-.brand b{font-weight:600;font-size:15px;letter-spacing:-.01em;white-space:nowrap}
+.brand b{font-weight:600;font-size:15px;letter-spacing:-.01em;white-space:nowrap;display:inline-flex;align-items:center;gap:7px}
+.brand .logo{width:17px;height:17px;flex:none;align-self:center}
 .brand span{color:var(--muted);font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .tabs{display:flex;gap:2px;overflow-x:auto;scrollbar-width:none;min-width:0;max-width:100%}
 .tabs::-webkit-scrollbar{display:none}
 .tabs a{padding:6px 10px;border-radius:5px;color:var(--ink-2);text-decoration:none;white-space:nowrap;font-weight:500}
 .tabs a:hover{background:var(--surface-2);color:var(--ink)}
 .tabs a[aria-current="page"]{background:var(--accent-wash);color:var(--accent-ink)}
+.tabs a svg{display:none;width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linejoin:round}
 .spacer{flex:1}
 .seg{display:inline-flex;background:var(--surface-2);border-radius:6px;padding:2px;gap:2px;flex-wrap:nowrap}
 .seg button{border:0;background:none;padding:4px 10px;border-radius:4px;color:var(--ink-2);font-size:13px;white-space:nowrap}
@@ -77,6 +91,7 @@ button{cursor:pointer}
 .ctl label{display:inline-flex;align-items:center;gap:6px;color:var(--ink-2);font-size:13px;white-space:nowrap}
 .hosts{display:flex;gap:10px;flex-wrap:wrap;font-size:12px;color:var(--ink-2)}
 .hosts span{display:inline-flex;align-items:center;gap:5px;white-space:nowrap}
+.hosts small{color:var(--muted);font-size:11.5px}
 .cdot{width:8px;height:8px;border-radius:50%;display:inline-block;flex:none;background:var(--axis)}
 .cdot.open{background:var(--good)}.cdot.wait{background:var(--warn)}.cdot.down{background:var(--crit)}
 .cdot.open.pulse{animation:blip .5s ease-out}
@@ -160,12 +175,14 @@ td.wrap{white-space:normal}
 /* heatmap */
 .hm-tools{display:flex;gap:8px 16px;flex-wrap:wrap;align-items:center}
 .hm-scroll{overflow:auto;max-height:min(66vh,760px);border-radius:5px;box-shadow:inset 0 0 0 1px var(--hair);position:relative;overscroll-behavior:contain}
-.hm-grid{display:grid;grid-template-rows:30px auto;position:relative}
-.hm-corner{position:sticky;top:0;left:0;z-index:4;background:var(--surface);border-bottom:1px solid var(--hair);border-right:1px solid var(--hair);display:grid;grid-template-columns:1fr 70px 78px;align-items:center;padding:0 8px 0 10px;font-size:11.5px;color:var(--muted);gap:6px}
+.hm-grid{display:grid;grid-template-rows:30px auto;position:relative;width:max-content;min-width:100%}
+.ps,.psb{display:none}
+.hm-corner{grid-column:1/-1;grid-row:1;width:var(--lw,250px);justify-self:start;position:sticky;top:0;left:0;z-index:4;background:var(--surface);border-bottom:1px solid var(--hair);border-right:1px solid var(--hair);display:grid;grid-template-columns:1fr 70px 78px;align-items:center;padding:0 8px 0 10px;font-size:11.5px;color:var(--muted);gap:6px}
 .hm-corner span:not(:first-child){text-align:right}
-#hm-axis{position:sticky;top:0;z-index:3;background:var(--surface);border-bottom:1px solid var(--hair);display:block}
-#hm-rows{position:sticky;left:0;z-index:2;background:var(--surface);border-right:1px solid var(--hair)}
-#hm-cv{display:block}
+#hm-axis{grid-column:2;grid-row:1;position:sticky;top:0;z-index:3;background:var(--surface);border-bottom:1px solid var(--hair);display:block}
+/* the labels span both grid columns so they can stay stuck at the left while the cells scroll under them */
+#hm-rows{grid-column:1/-1;grid-row:2;width:var(--lw,250px);justify-self:start;position:sticky;left:0;z-index:2;background:var(--surface);border-right:1px solid var(--hair)}
+#hm-cv{display:block;grid-column:2;grid-row:2}
 .hm-row{display:grid;grid-template-columns:1fr 70px 78px;gap:6px;align-items:center;height:22px;padding:0 8px 0 10px;border:0;background:none;width:100%;text-align:left;font-size:12.5px;color:var(--ink)}
 .hm-row:hover,.hm-row.hov{background:var(--surface-2)}
 .hm-row.sel{background:var(--accent-wash)}
@@ -202,8 +219,10 @@ svg .lbl{fill:var(--ink-2);font-size:11.5px}
 
 /* block map */
 .bm-layout{display:grid;grid-template-columns:minmax(0,1fr) 360px;gap:12px}
-.bm-main{display:grid;gap:8px;min-width:0}
-.crumbs{display:flex;flex-wrap:wrap;gap:2px;align-items:center;font-size:13px;min-height:28px}
+.bm-main{display:grid;gap:8px;min-width:0;grid-template-columns:minmax(0,1fr)}
+.bm-nav{display:flex;gap:8px;align-items:center;min-width:0}
+.bm-nav .btn{flex:none}.bm-nav .btn:disabled{opacity:.45;cursor:default}
+.crumbs{display:flex;flex-wrap:wrap;gap:2px;align-items:center;font-size:13px;min-height:28px;min-width:0;flex:1}
 .crumbs button{border:0;background:none;padding:3px 6px;border-radius:4px;color:var(--accent-ink)}
 .crumbs button:hover{background:var(--surface-2)}
 .crumbs b{padding:3px 6px;font-weight:600}
@@ -222,6 +241,7 @@ svg .lbl{fill:var(--ink-2);font-size:11.5px}
 .src{font-size:10px;font-weight:600;letter-spacing:.03em;padding:1px 5px;border-radius:4px;background:var(--surface-2);color:var(--ink-2);text-transform:uppercase;box-shadow:inset 0 0 0 1px var(--hair)}
 .src.scan{background:color-mix(in srgb,var(--warn) 18%,transparent);color:var(--warn-ink);box-shadow:none}
 .src.btrfs{background:color-mix(in srgb,var(--s7) 16%,transparent);color:var(--s7);box-shadow:none}
+.src.lvm{background:color-mix(in srgb,var(--act) 16%,transparent);color:var(--act-ink);box-shadow:none}
 @keyframes fresh{from{background:var(--accent-wash)}to{background:transparent}}
 .side-note{font-size:12px;color:var(--muted);margin:0 0 8px}
 .conn{display:grid;gap:4px;margin-bottom:8px;font-size:12px}
@@ -267,6 +287,7 @@ svg .lbl{fill:var(--ink-2);font-size:11.5px}
 #tt .tt-row.m span{color:var(--muted)}
 #tt .tt-key{width:12px;height:2px;align-self:center;flex:none;border-radius:1px}
 #tt .tt-sw{width:9px;height:9px;border-radius:2px;flex:none;align-self:center}
+.vmtex{background-image:linear-gradient(rgba(255,255,255,.22) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.22) 1px,transparent 1px)!important;background-size:4px 4px!important}
 
 @media (max-width:1100px){
   .ov-top{grid-template-columns:1fr}
@@ -277,9 +298,26 @@ svg .lbl{fill:var(--ink-2);font-size:11.5px}
   .sh-grid{grid-template-columns:1fr}
 }
 @media (max-width:640px){
+  /* the bar dissolves: brand and controls scroll away, the view tabs stick (or sit at the bottom when installed) */
+  body{display:flex;flex-direction:column;min-height:100vh}
+  .bar,.bar-in{display:contents}
+  .spacer{display:none}
+  .brand{order:1;background:var(--surface);padding:calc(12px + env(safe-area-inset-top,0px)) max(16px,env(safe-area-inset-right,0px)) 2px max(16px,env(safe-area-inset-left,0px))}
+  .ctl{order:2;background:var(--surface);padding:8px max(16px,env(safe-area-inset-right,0px)) 10px max(16px,env(safe-area-inset-left,0px));gap:8px 12px}
+  .ctl .hosts{flex-basis:100%;gap:6px 14px;font-size:13px}
+  .tabs{order:3;position:sticky;top:0;z-index:20;background:var(--surface);border-bottom:1px solid var(--hair);border-top:1px solid var(--hair);padding:5px max(10px,env(safe-area-inset-right,0px)) 5px max(10px,env(safe-area-inset-left,0px));gap:4px;max-width:none;scroll-snap-type:x proximity}
+  .tabs a{padding:9px 11px;font-size:14px;scroll-snap-align:start}
+  main{order:4}
+  .seg button{padding:6px 11px}
+  .seg{max-width:100%;overflow-x:auto;scrollbar-width:none}.seg::-webkit-scrollbar{display:none}
+  .btn.sm{padding:6px 10px;font-size:13px}
+  .chip,.src,th,.eyebrow,.hm-corner,.hm-row,.hm-row .sz,.hm-row .dl,.hm-row .nohist,.feed .ev,.feed .ev .pa,.feed .ev .dv,.mini div,.mini .pa,.mini .dv,.pair,.pair span,#tt,#tt .tt-row.h,.segbar div,.scale,svg text,.kv,.note,.ph .sub,.legend,.side-note,.hosts small,.brow .val,.twobar .val,.twobar .lab,.lrow .v,.kpi .l,.kpi .d,.conn,.crumbs .ld,.pool-name span{font-size:12px}
+  #tt{font-size:12.5px}
+  .crumbs{flex-wrap:nowrap;overflow-x:auto;scrollbar-width:none;white-space:nowrap}
+  .crumbs::-webkit-scrollbar{display:none}
+  .crumbs button{padding:7px 6px}
   .hero .fig{font-size:44px}
   .brand span{display:none}
-  .bar-in{gap:6px 10px}
   .hm-corner,.hm-row{grid-template-columns:1fr 62px}
   .hm-corner span:last-child,.hm-row .dl{display:none}
   .lrow{grid-template-columns:minmax(0,1fr) 64px 74px}
@@ -288,7 +326,12 @@ svg .lbl{fill:var(--ink-2);font-size:11.5px}
   .hs{display:none}
   .nosh>div{grid-template-columns:1fr}
   #hist-chip{display:none}
-  .tabs a{padding:6px 7px;font-size:13.5px}
+  .ps{display:revert}span.ps,b.ps{display:inline-flex}.psb{display:block}
+  td,th{padding-left:6px;padding-right:6px}
+  td.pool-name,td.wrap-ph{white-space:normal}.pool-name b{flex-wrap:wrap}
+  .u2{display:block;color:var(--muted);font-size:12px}
+  #v-blockmap .view-head p{display:none}#v-blockmap .view-head p.ps{display:block}
+  .hm-row .car{font-size:12px}
   .hm-row .nm small{display:none}
   .twobar .track{grid-column:1/-1;order:3}
   .brow{grid-template-columns:minmax(0,1fr) minmax(0,.8fr) 72px}
@@ -296,19 +339,26 @@ svg .lbl{fill:var(--ink-2);font-size:11.5px}
   .pair{grid-template-columns:minmax(0,1fr) 16px minmax(0,1fr);}
   .pair .v{grid-column:1/-1;text-align:left}
 }
+@media (max-width:640px){
+  html.standalone .tabs{position:fixed;left:0;right:0;bottom:0;top:auto;display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:0;padding:0 env(safe-area-inset-right,0px) env(safe-area-inset-bottom,0px) env(safe-area-inset-left,0px);border-bottom:0;box-shadow:0 -6px 18px rgba(0,0,0,.06)}
+  html.standalone .tabs a{display:flex;flex-direction:column;align-items:center;gap:3px;padding:8px 2px 7px;font-size:12px;border-radius:0;text-align:center}
+  html.standalone .tabs a svg{display:block}
+  html.standalone .tabs a[aria-current="page"]{background:none}
+  html.standalone main{padding-bottom:calc(76px + env(safe-area-inset-bottom,0px))}
+}
 @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
 </style>
 </head>
 <body>
 <header class="bar">
   <div class="bar-in">
-    <div class="brand"><b>Storage Atlas</b><span id="brand-sub">connecting…</span></div>
+    <div class="brand"><b><svg class="logo" viewBox="0 0 16 16" aria-hidden="true"><rect x="0" y="0" width="9" height="16" rx="1.6" fill="var(--s1)"/><rect x="10" y="0" width="6" height="8.7" rx="1.3" fill="var(--s3)"/><rect x="10" y="9.7" width="2.6" height="6.3" rx=".9" fill="var(--s2)"/><rect x="13.5" y="9.7" width="2.5" height="2.8" rx=".8" fill="var(--s4)"/><rect x="13.5" y="13.3" width="2.5" height="2.7" rx=".8" fill="var(--s7)"/></svg>Storage Atlas</b><span id="brand-sub">connecting…</span></div>
     <nav class="tabs" aria-label="Views">
-      <a href="#overview" data-view="overview">Overview</a>
-      <a href="#changes" data-view="changes">Changes</a>
-      <a href="#blockmap" data-view="blockmap">Block map</a>
-      <a href="#sharing" data-view="sharing">Sharing</a>
-      <a href="#sources" data-view="sources">Sources</a>
+      <a href="#overview" data-view="overview"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 16V9m5 7V4m5 12v-5m4 5V7"/></svg>Overview</a>
+      <a href="#changes" data-view="changes"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 4h4v4H3zm5 0h4v4H8zm5 0h4v4h-4zM3 9h4v4H3zm5 0h4v4H8zm5 0h4v4h-4zM3 14h4v3H3zm5 0h4v3H8z"/></svg>Changes</a>
+      <a href="#blockmap" data-view="blockmap"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M2.5 2.5h8v15h-8zm9 0h6v8h-6zm0 9h3v6h-3zm4 0h2v6h-2z"/></svg>Block map</a>
+      <a href="#sharing" data-view="sharing"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 3h9v9H3zm5 5h9v9H8z"/></svg>Sharing</a>
+      <a href="#sources" data-view="sources"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 5h12M4 10h12M4 15h12M2 5h.5M2 10h.5M2 15h.5"/></svg>Sources</a>
     </nav>
     <div class="spacer"></div>
     <div class="ctl">
@@ -351,6 +401,8 @@ const fmtWhen=t=>new Date(t*1000).toLocaleString('en-GB',{weekday:'short',hour:'
 function fmtSince(t){if(t==null||!isFinite(t))return '–';const d=new Date(t*1000),n=new Date();if(d.toDateString()===n.toDateString())return fmtHM(t)+' today';if(Date.now()/1000-t<6*DAY)return fmtWhen(t);return d.toLocaleDateString('en-GB',{day:'numeric',month:'short'})+' '+fmtHM(t);}
 function fmtSpan(s){if(s==null||!isFinite(s))return '–';s=Math.abs(s);return s<1?Math.round(s*1000)+' ms':s<60?(s<10?s.toFixed(1):Math.round(s))+' s':s<3600?Math.round(s/60)+' min':s<172800?(s/3600).toFixed(s<36000?1:0)+' h':Math.round(s/86400)+' days';}
 function fmtAgo(t){if(t==null||!isFinite(t))return 'never';const s=Date.now()/1000-t;return s<5?'just now':fmtSpan(s)+' ago';}
+function fmtRate(b){return b>=1?fmtB(b)+'/s':'idle';}
+const isPhone=()=>innerWidth<=640;
 function fmtEvery(s){if(!s)return '–';return s%3600===0?s/3600+' h':s%60===0?s/60+' min':s+' s';}
 function hash(s){let h=2166136261;for(let i=0;i<s.length;i++){h^=s.charCodeAt(i);h=Math.imul(h,16777619);}return h>>>0;}
 function errText(e){return e&&e.name==='AbortError'?'timed out':(e&&e.message)||String(e);}
@@ -369,7 +421,7 @@ function comps(rel){return rel.split('/').filter(Boolean);}
 function dirname(p){if(p==='/'||!p)return null;const i=p.lastIndexOf('/');return i<=0?'/':p.slice(0,i);}
 
 /* ======================================================================= colours (tokens → canvas) */
-let C={},RAMP_POS=[],RAMP_NEG=[],RAMP_SHARE=[],PAT={};
+let C={},RAMP_POS=[],RAMP_NEG=[],RAMP_SHARE=[],RAMP_ACT=[],PAT={};
 function rgbOf(c){c=c.trim();if(c[0]==='#'){let h=c.slice(1);if(h.length===3)h=h.split('').map(x=>x+x).join('');const n=parseInt(h,16);return[(n>>16)&255,(n>>8)&255,n&255];}const m=c.match(/[\d.]+/g);return m?m.slice(0,3).map(Number):[128,128,128];}
 function mix(a,b,t){const A=rgbOf(a),B=rgbOf(b);return `rgb(${Math.round(A[0]+(B[0]-A[0])*t)},${Math.round(A[1]+(B[1]-A[1])*t)},${Math.round(A[2]+(B[2]-A[2])*t)})`;}
 function lum(c){const [r,g,b]=rgbOf(c).map(v=>{v/=255;return v<=0.03928?v/12.92:Math.pow((v+0.055)/1.055,2.4);});return 0.2126*r+0.7152*g+0.0722*b;}
@@ -377,8 +429,8 @@ function inkOn(c){return lum(c)>0.36?'#0b0b0b':'#ffffff';}
 function buildRamp(mid,pole,deep){const out=[];for(let i=0;i<64;i++){const t=i/63;out.push(t<0.62?mix(mix(mid,pole,0.2),pole,t/0.62):mix(pole,deep,(t-0.62)/0.38));}return out;}
 function readColors(){
   const cs=getComputedStyle(document.documentElement),g=n=>cs.getPropertyValue(n).trim();
-  C={bg:g('--bg'),surface:g('--surface'),s2:g('--surface-2'),s3:g('--surface-3'),ink:g('--ink'),ink2:g('--ink-2'),muted:g('--muted'),hair:g('--hair'),axis:g('--axis'),accent:g('--accent'),pos:g('--div-pos'),neg:g('--div-neg'),mid:g('--div-mid'),posDeep:g('--div-pos-deep'),negDeep:g('--div-neg-deep'),slots:[1,2,3,4,5,6,7,8].map(i=>g('--s'+i)),free:g('--free'),freeLine:g('--free-line'),dark:g('--dark-tile'),other:g('--other'),good:g('--good'),warn:g('--warn'),crit:g('--crit'),share:g('--share'),shareDeep:g('--share-deep')};
-  RAMP_POS=buildRamp(C.mid,C.pos,C.posDeep);RAMP_NEG=buildRamp(C.mid,C.neg,C.negDeep);RAMP_SHARE=buildRamp(C.mid,C.share,C.shareDeep);
+  C={bg:g('--bg'),surface:g('--surface'),s2:g('--surface-2'),s3:g('--surface-3'),ink:g('--ink'),ink2:g('--ink-2'),muted:g('--muted'),hair:g('--hair'),axis:g('--axis'),accent:g('--accent'),pos:g('--div-pos'),neg:g('--div-neg'),mid:g('--div-mid'),posDeep:g('--div-pos-deep'),negDeep:g('--div-neg-deep'),slots:[1,2,3,4,5,6,7,8].map(i=>g('--s'+i)),free:g('--free'),freeLine:g('--free-line'),dark:g('--dark-tile'),other:g('--other'),good:g('--good'),warn:g('--warn'),crit:g('--crit'),share:g('--share'),shareDeep:g('--share-deep'),act:g('--act'),actDeep:g('--act-deep'),vm:g('--vm')};
+  RAMP_POS=buildRamp(C.mid,C.pos,C.posDeep);RAMP_NEG=buildRamp(C.mid,C.neg,C.negDeep);RAMP_SHARE=buildRamp(C.mid,C.share,C.shareDeep);RAMP_ACT=buildRamp(C.mid,C.act,C.actDeep);
   PAT={};
 }
 function pattern(ctx,kind){
@@ -388,6 +440,7 @@ function pattern(ctx,kind){
   else if(kind==='reserved'||kind==='nohist'){x.fillStyle=kind==='nohist'?C.surface:C.s2;x.fillRect(0,0,s,s);x.strokeStyle=kind==='nohist'?C.hair:C.axis;x.lineWidth=1;x.beginPath();x.moveTo(0,0);x.lineTo(s,s);x.stroke();}
   else if(kind==='pending'){x.fillStyle=C.s2;x.fillRect(0,0,s,s);x.fillStyle=C.axis;x.fillRect(3,3,1.5,1.5);}
   else if(kind==='unknown'){x.fillStyle=C.mid;x.fillRect(0,0,s,s);x.fillStyle=C.axis;x.fillRect(1,1,1,1);x.fillRect(5,5,1,1);}
+  else if(kind==='vmgrid'){x.fillStyle='rgba(255,255,255,.2)';x.fillRect(0,0,s,1);x.fillRect(0,0,1,s);x.fillStyle='rgba(0,0,0,.16)';x.fillRect(0,s-1,s,1);x.fillRect(s-1,0,1,s);}  // overlay: "blocks inside a VM"
   else{x.fillStyle=C.dark;x.fillRect(0,0,s,s);x.fillStyle='rgba(255,255,255,.22)';x.fillRect(1,1,1.5,1.5);x.fillRect(5,5,1.5,1.5);}
   return PAT[kind]=ctx.createPattern(c,'repeat');
 }
@@ -396,14 +449,27 @@ function divInvr(t,lo,hi){return lo*(Math.exp(Math.abs(t)*Math.log(1+hi/lo))-1);
 function divColor(t){if(!t)return C.mid;const r=t>0?RAMP_POS:RAMP_NEG;return r[Math.min(63,Math.round(Math.abs(t)*63))];}
 function shareColor(shared){return RAMP_SHARE[Math.min(63,Math.round(Math.max(0,Math.min(1,shared))*63))];}
 function hostColor(H){return H?C.slots[H.slot%8]:C.other;}
+// Activity: write rate on a fixed log scale (so a steady writer keeps its colour), 8 KiB/s .. 128 MiB/s
+const ACT_LO=8*KiB,ACT_HI=128*MiB;
+function actTr(v){return v>0?Math.max(0,divTr(v,ACT_LO,ACT_HI)):0;}
+function actColor(t){return t>0?RAMP_ACT[Math.min(63,Math.round(t*63))]:C.mid;}
 // an adaptive symlog scale: hi is a power of two near the 95th percentile of what is on screen
 function scaleFor(vals,minHi){const a=vals.map(Math.abs).filter(v=>v>0).sort((x,y)=>x-y);let hi=a.length?a[Math.min(a.length-1,Math.floor(a.length*0.95))]:minHi;hi=Math.max(minHi,Math.pow(2,Math.ceil(Math.log2(hi||1))));return {lo:hi/16384,hi};}
 
 /* ======================================================================= tooltip & chart kit */
-const TT=$('#tt');
-function tip(e,rows){TT.replaceChildren();for(const r of rows){if(!r)continue;const row=el('div',{class:'tt-row'+(r.c?' '+r.c:'')});if(r.key){const k=el('i',{class:r.sw?'tt-sw':'tt-key'});k.style.background=r.key;row.append(k);}if(r.v!=null)row.append(el('b',{text:r.v}));if(r.l!=null)row.append(el('span',{text:r.l}));TT.append(row);}TT.hidden=false;const w=TT.offsetWidth,h=TT.offsetHeight;let x=e.clientX+14,y=e.clientY+14;if(x+w>innerWidth-8)x=e.clientX-w-14;if(y+h>innerHeight-8)y=e.clientY-h-14;TT.style.transform=`translate(${Math.max(8,x)}px,${Math.max(8,y)}px)`;}
-function untip(){TT.hidden=true;}
-function hoverTip(node,rows){node.addEventListener('pointermove',e=>tip(e,typeof rows==='function'?rows():rows));node.addEventListener('pointerleave',untip);return node;}
+const TT=$('#tt');let TT_OWNER=null;
+// On touch there is no hover: a tap shows the card above the finger, and it stays until a tap elsewhere or a scroll.
+function tip(e,rows,owner){TT.replaceChildren();for(const r of rows){if(!r)continue;const row=el('div',{class:'tt-row'+(r.c?' '+r.c:'')});if(r.key){const k=el('i',{class:r.sw?'tt-sw':'tt-key'});k.style.background=r.key;row.append(k);}if(r.v!=null)row.append(el('b',{text:r.v}));if(r.l!=null)row.append(el('span',{text:r.l}));TT.append(row);}
+  TT.hidden=false;TT_OWNER=owner||e.currentTarget||null;const touch=e.pointerType==='touch';TT.dataset.touch=touch?'1':'';const w=TT.offsetWidth,h=TT.offsetHeight;let x=e.clientX+14,y=e.clientY+14;
+  if(touch){x=e.clientX-w/2;y=e.clientY-h-24;if(y<8)y=e.clientY+28;}
+  if(x+w>innerWidth-8)x=touch?innerWidth-8-w:e.clientX-w-14;if(y+h>innerHeight-8)y=e.clientY-h-14;TT.style.transform=`translate(${Math.max(8,x)}px,${Math.max(8,y)}px)`;}
+function untip(){TT.hidden=true;TT_OWNER=null;}
+function hoverTip(node,rows){const f=e=>tip(e,typeof rows==='function'?rows():rows,node);node.addEventListener('pointermove',e=>{if(e.pointerType!=='touch')f(e);});node.addEventListener('pointerdown',e=>{if(e.pointerType==='touch')f(e);});node.addEventListener('pointerleave',e=>{if(e.pointerType!=='touch')untip();});return node;}
+document.addEventListener('pointerdown',e=>{if(!TT.hidden&&!(TT_OWNER&&TT_OWNER.contains&&TT_OWNER.contains(e.target)))untip();},true);
+addEventListener('scroll',()=>{if(!TT.hidden&&TT.dataset.touch)untip();},{capture:true,passive:true});
+// a click's pointer type, for browsers whose click events are not PointerEvents
+let PTYPE='mouse';document.addEventListener('pointerdown',e=>{PTYPE=e.pointerType||'mouse';},true);
+const tapEv=e=>({clientX:e.clientX,clientY:e.clientY,pointerType:e.pointerType||PTYPE,currentTarget:e.currentTarget});
 // axis ticks in the unit of the largest value, so labels stay short ("79.55 GiB", not "81,459 MiB")
 const UNITS=[[PiB,'PiB'],[TiB,'TiB'],[GiB,'GiB'],[MiB,'MiB'],[KiB,'KiB'],[1,'B']];
 function unitFor(mag){return UNITS.find(u=>mag>=u[0]*0.999)||UNITS[5];}
@@ -436,11 +502,12 @@ function lineChart(host,o){
   const xh=sv('line',{y1:m.t,y2:H-m.b,class:'xh',visibility:'hidden'});svg.append(xh);
   const hs=o.series.filter(s=>!s.noHover);
   const dots=hs.map(s=>{const c=sv('circle',{r:4,fill:s.color,stroke:C.surface,'stroke-width':2,visibility:'hidden'});svg.append(c);return c;});
-  const hit=sv('rect',{x:m.l,y:0,width:W-m.l-m.r,height:H,fill:'transparent'});svg.append(hit);
-  hit.addEventListener('pointermove',e=>{const bb=svg.getBoundingClientRect(),px=(e.clientX-bb.left)*W/bb.width;const tv=x0+(px-m.l)/(W-m.l-m.r)*(x1-x0);let i=0,best=Infinity;for(let j=0;j<n;j++){const dd=Math.abs(t[j]-tv);if(dd<best){best=dd;i=j;}}
+  const hit=sv('rect',{x:m.l,y:0,width:W-m.l-m.r,height:H,fill:'transparent'});svg.append(hit);svg.style.touchAction='pan-y';
+  const mv=e=>{const bb=svg.getBoundingClientRect(),px=(e.clientX-bb.left)*W/bb.width;const tv=x0+(px-m.l)/(W-m.l-m.r)*(x1-x0);let i=0,best=Infinity;for(let j=0;j<n;j++){const dd=Math.abs(t[j]-tv);if(dd<best){best=dd;i=j;}}
     xh.setAttribute('x1',X(t[i]));xh.setAttribute('x2',X(t[i]));xh.setAttribute('visibility','visible');
-    const rows=[{v:(o.tFmt||fmtWhen)(t[i]),c:'m'}];hs.forEach((s,j)=>{const v=s.v[i];if(v==null||!isFinite(v)){dots[j].setAttribute('visibility','hidden');return;}dots[j].setAttribute('cx',X(t[i]));dots[j].setAttribute('cy',Y(v));dots[j].setAttribute('visibility','visible');rows.push({key:s.color,v:(o.vFmt||fmtB)(v),l:s.name});});tip(e,rows);});
-  hit.addEventListener('pointerleave',()=>{xh.setAttribute('visibility','hidden');dots.forEach(d=>d.setAttribute('visibility','hidden'));untip();});
+    const rows=[{v:(o.tFmt||fmtWhen)(t[i]),c:'m'}];hs.forEach((s,j)=>{const v=s.v[i];if(v==null||!isFinite(v)){dots[j].setAttribute('visibility','hidden');return;}dots[j].setAttribute('cx',X(t[i]));dots[j].setAttribute('cy',Y(v));dots[j].setAttribute('visibility','visible');rows.push({key:s.color,v:(o.vFmt||fmtB)(v),l:s.name});});tip(e,rows,svg);};
+  hit.addEventListener('pointermove',mv);hit.addEventListener('pointerdown',e=>{if(e.pointerType==='touch')mv(e);});
+  hit.addEventListener('pointerleave',e=>{if(e.pointerType==='touch')return;xh.setAttribute('visibility','hidden');dots.forEach(d=>d.setAttribute('visibility','hidden'));untip();});
   return svg;
 }
 function sparkline(vals,color,w=120,h=28){const svg=sv('svg',{viewBox:`0 0 ${w} ${h}`,width:w,height:h,'aria-hidden':'true',class:'spark'});const v=vals.filter(isFinite);if(v.length<2)return svg;let lo=Math.min(...v),hi=Math.max(...v),r=hi-lo||1;let d='';v.forEach((x,i)=>{d+=(i?'L':'M')+(i/(v.length-1)*(w-6)+1).toFixed(1)+','+(h-3-(x-lo)/r*(h-8)).toFixed(1);});svg.append(sv('path',{d:d+`L${w-5},${h}L1,${h}Z`,fill:color,'fill-opacity':0.1}));svg.append(sv('path',{d,fill:'none',stroke:color,'stroke-width':1.6,'stroke-linejoin':'round'}));const lv=v[v.length-1];svg.append(sv('circle',{cx:w-5,cy:h-3-(lv-lo)/r*(h-8),r:2.6,fill:color}));return svg;}
@@ -452,10 +519,14 @@ function panel(title,sub,...kids){return el('div',{class:'panel'},el('div',{clas
 
 /* ======================================================================= names (the Hide names toggle) */
 let HIDE=false;
+const GUESTC=new Map();       // a guest's folder name in a pool path ("web (101)") -> its masked label ("vm 1")
+const DISKKEY=/^[a-z]+\d*$/;  // Proxmox config keys (scsi0, rootfs, mp0, efidisk0): generic, not names
 function mask(s,pre){return (pre||'dir')+'-'+(hash(String(s))%4096).toString(16).padStart(3,'0');}
-function maskPath(p){if(p==null)return '';if(!HIDE)return p;return p.split('/').map(c=>c?mask(c):c).join('/');}
+function maskPath(p){if(p==null)return '';if(!HIDE)return p;let g=false;return p.split('/').map(c=>{if(!c)return c;const gl=GUESTC.get(c),was=g;g=!!gl;return gl||(was&&DISKKEY.test(c)?c:mask(c));}).join('/');}
+function guestName(n){return HIDE?(GUESTC.get(n.name)||mask(n.name,'guest')):n.name;}
+function guestLabel(g){if(!g)return '?';const c=String(g.path||'').split('/').pop();return HIDE?(GUESTC.get(c)||'guest'):(g.vmid==null?String(g.name):`${g.name} (${g.vmid})`);}
 function tgName(name){return HIDE?mask(name,'target'):name;}
-function hostName(H){if(!H)return '?';if(H.info)return String(H.info.display_name||H.info.host);return HIDE?'harvester '+(H.idx+1):H.url;}
+function hostName(H){if(!H)return '?';if(H.info)return String(H.info.display_name||H.info.host);return HIDE?'harvester '+(H.idx+1):H.shown||H.url;}
 function urlText(u,i){return HIDE?'harvester '+(i+1):u;}
 function maskText(s){s=s==null?'':String(s);if(!HIDE)return s;return s.replace(/https?:\/\/[^\s'"]+/g,'(url)').replace(/(^|[\s'"(=:])(\/[^\s'"),:]+)/g,(m,a,p)=>a+maskPath(p));}
 function hostLabel(h){return HIDE?mask(h,'host'):h;}
@@ -465,9 +536,9 @@ function nameOf(n){
     case 'root':return 'Fleet';
     case 'host':return hostName(n.H)+(n.offline?' · offline':'');
     case 'fs':return maskPath(n.fs.mount)+' · '+n.fs.type;
-    case 'free':return 'free';case 'reserved':return 'reserved';case 'unacc':return 'unaccounted';
-    case 'here':return 'files here';case 'more':return n.name;
-    case 'dir':if(n.isRoot)return tgName(n.T.name);if(n.placeholder)return maskPath(n.name);return HIDE?mask(n.name):n.name;
+    case 'free':return 'free';case 'reserved':return 'reserved';case 'unacc':return n.p&&n.p.fs&&n.p.fs.type==='lvmthin'?'outside listed volumes':'unaccounted';
+    case 'here':return 'files here';case 'more':return n.name;case 'gap':return n.p.nest?'outside scanned folders':'unaccounted blocks';
+    case 'dir':if(n.isRoot)return tgName(n.T.name);if(n.placeholder)return maskPath(n.name);if(n.v==='guest')return guestName(n);if(n.v==='disk'&&DISKKEY.test(n.name))return n.name;return HIDE?mask(n.name):n.name;
   }
   return n.name||'';
 }
@@ -477,7 +548,7 @@ function pathOf(n){
     case 'root':return 'Fleet';case 'host':return hostName(n.H);
     case 'fs':return hostName(n.H)+' · '+maskPath(n.fs.mount);
     case 'free':case 'reserved':case 'unacc':return hostName(n.H)+' · '+maskPath(n.p.fs.mount)+' · '+nameOf(n);
-    case 'here':return maskPath(n.p.path)+' · files here';
+    case 'here':return maskPath(n.p.path)+' · files here';case 'gap':return maskPath(n.p.path)+' · '+nameOf(n);
     case 'more':return maskPath(n.p.path)+' · '+n.name;
     case 'dir':return maskPath(n.path);
   }
@@ -485,7 +556,7 @@ function pathOf(n){
 }
 
 /* ======================================================================= kinds (name heuristics, no fleet-specific names) */
-const KINDS=[{k:'media',label:'Media'},{k:'downloads',label:'Downloads and seeding'},{k:'personal',label:'Personal files'},{k:'backups',label:'Backups and objects'},{k:'apps',label:'App data'},{k:'telemetry',label:'Logs and metrics'},{k:'system',label:'System'},{k:'other',label:'Other'}];
+const KINDS=[{k:'media',label:'Media'},{k:'downloads',label:'Downloads and seeding'},{k:'personal',label:'Personal files'},{k:'backups',label:'Backups and objects'},{k:'apps',label:'App data'},{k:'telemetry',label:'Logs and metrics'},{k:'system',label:'System'},{k:'other',label:'Other'},{k:'vm',label:'Inside VMs (not scanned)'}];
 const KIDX=Object.fromEntries(KINDS.map((k,i)=>[k.k,i]));
 const KIND_RX=[
   ['downloads',/^(torrents?|downloads?|seeding|cross-?seeds?|usenet|incomplete|nzbs?|sabnzbd|qbittorrent|transmission|deluge|autobrr|radarr|sonarr|lidarr|readarr|prowlarr|whisparr)\b|^torrents?[_-]/i],
@@ -503,8 +574,12 @@ function kindOfPath(path,cls){const cs=comps(path||'').slice(0,5);let k=null;for
   let ck=null;if(cls)for(const [kk,rx] of CLASS_RX)if(rx.test(cls)){ck=kk;break;}
   if(!k||k==='apps'||k==='system')return ck&&ck!=='apps'&&ck!=='system'?ck:(k||ck||'other');return k;}
 function classFor(d){const H=d.H,O=d.T;let best=O,bl=-1;if(H&&H.info)for(const T of H.info.targets){if(T===O||H.outer.get(T.name)!==O)continue;const mp=mapPath(T,O,T.path);if(mp&&inside(d.path,mp)&&mp.length>bl){best=T;bl=mp.length;}}return best&&best.labels&&best.labels.class;}
-function kindOf(n){if(n.kd)return n.kd;const d=n.kind==='dir'?n:n.p&&n.p.kind==='dir'?n.p:null;if(!d)return null;return n.kd=kindOfPath(d.path,classFor(d));}
-function kindColor(k){return k==='other'?C.other:C.slots[KIDX[k]]||C.other;}
+function kindOf(n){if(n.kd)return n.kd;const d=n.kind==='dir'?n:n.p&&n.p.kind==='dir'?n.p:null;if(!d)return null;
+  // pool, guest and disk nodes are VM storage; a walked container's folders are classified from the container's root
+  if(d.v&&n===d)return n.kd='vm';
+  if(d.T&&d.T.kind==='lvm_thin'){let k=d;while(k&&k.kind==='dir'&&k.v!=='disk')k=k.p;if(k&&k.kind==='dir')return n.kd=kindOfPath(relPath(d.path,k.path)||'/',null);}
+  return n.kd=kindOfPath(d.path,classFor(d));}
+function kindColor(k){return k==='other'?C.other:k==='vm'?C.vm:C.slots[KIDX[k]]||C.other;}
 
 /* ======================================================================= endpoints */
 const QS=new URLSearchParams(location.search);
@@ -522,13 +597,16 @@ const EVLOG=[];                                // applied live events since page
 const FEED=[];                                 // newest first
 const HOTS=new Map();                          // event path -> {H,O,path,n,net,abs}
 const PAGE_T0=Date.now()/1000;
-let METRICS=null,METRICS_HOW='none',PEERS_HOW='none',SELF_HOW='none';
+let METRICS=null,METRICS_SHOWN=null,METRICS_HOW='none',PEERS_HOW='none',SELF_HOW='none';
+const IOD=new Map();                           // disk fleet id -> {H,O,path,w,r,at,poll}: block I/O from `io` events
+const ACT=new Map(),ACT_TAU=3000;              // fleet id -> {v,t}: bytes changed, leaking with ACT_TAU (change events)
 let HIST={status:'idle'},HIST_SEQ=0,HIST_FIRST=Infinity;   // earliest sample seen by any range query
 const CAP=new Map();                           // host|fsid -> capacity history
 let BOOTED=false,FATAL=null;
 
-function addHarvester(url,self){const u=normUrl(url);if(!u)return null;let H=HARV.find(h=>h.url===u);if(H)return H;
-  H={url:u,self:!!self,idx:HARV.length,slot:HARV.length,key:null,info:null,status:'loading',err:'',sse:'idle',es:null,hellos:0,ev:0,evLive:0,dup:0,lastEv:0,minutes:new Map(),roots:new Map(),pend:new Map(),tstate:new Map(),targets:new Map(),outer:new Map(),fsNodes:new Map(),node:null,infoAt:0,skew:0,recent:new Map(),maxT:0};
+// opt.shown: the URL to display (a relayed peer's real address); opt.relay: the harvester that relays it
+function addHarvester(url,self,opt){const u=normUrl(url);if(!u)return null;let H=HARV.find(h=>h.url===u);if(H)return H;
+  H={url:u,shown:(opt&&opt.shown)||u,relay:(opt&&opt.relay)||null,fss:[],gx:new Map(),self:!!self,idx:HARV.length,slot:HARV.length,key:null,info:null,status:'loading',err:'',sse:'idle',es:null,hellos:0,ev:0,evLive:0,dup:0,lastEv:0,minutes:new Map(),roots:new Map(),pend:new Map(),tstate:new Map(),targets:new Map(),outer:new Map(),fsNodes:new Map(),node:null,infoAt:0,skew:0,recent:new Map(),maxT:0};
   H.node={id:'h:'+u,kind:'host',H,kids:[],t:0,p:ROOT,offline:true};HARV.push(H);return H;}
 async function fetchT(url,ms=10000){const ac=new AbortController();const tm=setTimeout(()=>ac.abort(),ms);try{return await fetch(url,{signal:ac.signal,cache:'no-store'});}finally{clearTimeout(tm);}}
 async function getJSON(url,ms){const r=await fetchT(url,ms);let j=null;try{j=await r.json();}catch(e){}if(!r.ok){const e=new Error((j&&j.error)||('HTTP '+r.status));e.status=r.status;throw e;}return j;}
@@ -549,7 +627,7 @@ async function loadInfo(H){
     const was=H.status;
     info.targets=Array.isArray(info.targets)?info.targets:[];info.filesystems=Array.isArray(info.filesystems)?info.filesystems:[];
     H.info=info;H.key=String(info.host);H.status='ok';H.err='';H.infoAt=Date.now()/1000;H.skew=info.now?info.now-Date.now()/1000:0;
-    H.targets=new Map(info.targets.map(t=>[t.name,t]));computeOuter(H);
+    H.targets=new Map(info.targets.map(t=>[t.name,t]));computeOuter(H);indexGuests(H);
     for(const [name,root] of H.roots){const T=H.targets.get(name);if(T&&isOuter(H,T)){root.T=T;}else H.roots.delete(name);}
     rebuildHost(H);
     if(was!=='ok'&&BOOTED){loadTrees(H);connect(H);}
@@ -557,12 +635,21 @@ async function loadInfo(H){
   invalidate('info');FLEET_DIRTY=true;
 }
 
+// lvm_thin targets: guests by path, and the masked labels Hide names uses (vm 1, ct 2, … in vmid order)
+function indexGuests(H){H.gx=new Map();let i=0;
+  for(const T of H.info.targets){if(T.kind!=='lvm_thin'||!Array.isArray(T.guests))continue;
+    for(const g of T.guests.filter(g=>g&&g.path).sort((a,b)=>(a.vmid??1e9)-(b.vmid??1e9))){H.gx.set(T.name+'|'+g.path,g);GUESTC.set(String(g.path).split('/').pop(),g.vmid==null?'unattached':(g.type==='lxc'?'ct ':g.type==='qemu'?'vm ':'guest ')+(++i));}}}
+function guestOf(n){return n&&n.H&&n.T&&n.H.gx.get(n.T.name+'|'+n.path);}
+function diskOf(n){const g=n&&n.p&&guestOf(n.p);return g&&(g.disks||[]).find(d=>d&&d.path===n.path);}
+
 /* ======================================================================= fleet tree: host → filesystem → outermost targets → folders */
 let FLEET_DIRTY=true;
-function rebuildRoot(){ROOT.kids=HARV.filter(h=>h.status!=='duplicate').map(h=>h.node);}
+// A harvester nested in a hypervisor guest is drawn inside that guest's disks, not at the top (unless some of its
+// filesystems are on no pool disk: those stay under its own host block).
+function rebuildRoot(){ROOT.kids=HARV.filter(h=>h.status!=='duplicate'&&!(h.status==='ok'&&h.nestIn&&!h.node.kids.length)).map(h=>h.node);}
 function rebuildHost(H){
   const hn=H.node;hn.id='h:'+(H.key||H.url);hn.offline=H.status!=='ok';hn.p=ROOT;
-  if(H.status!=='ok'){hn.kids=[];hn.t=0;rebuildRoot();return;}
+  if(H.status!=='ok'){hn.kids=[];H.fss=[];hn.t=0;rebuildRoot();return;}
   const kids=[],seen=new Set();
   const fss=[...H.info.filesystems];
   for(const T of H.info.targets)if(!fss.some(f=>f.id===T.fs)&&!seen.has(T.fs)){seen.add(T.fs);fss.push({id:T.fs,type:'?',mount:'(filesystem '+T.fs+')',size:0,used:0,avail:0,reserved:0,synthetic:true});}
@@ -571,38 +658,66 @@ function rebuildHost(H){
     f.free=f.free||{kind:'free',H,p:f,t:0};f.res=f.res||{kind:'reserved',H,p:f,t:0};f.unacc=f.unacc||{kind:'unacc',H,p:f,t:0};
     f.free.id=f.id+'|~free';f.res.id=f.id+'|~res';f.unacc.id=f.id+'|~unacc';
     kids.push(f);}
-  hn.kids=kids;rollHost(H);rebuildRoot();
+  H.fss=kids;hn.kids=kids;rollHost(H);rebuildRoot();
 }
 function pendingNode(H,T){let n=H.pend.get(T.name);if(!n){n={kind:'dir',isRoot:true,pending:true,H,depth:0,c:[],kids:[],k:0,r:0,o:0,t:0,a:0,f:0,d:0,l:0};H.pend.set(T.name,n);}
   n.T=T;n.name=T.name;n.path=T.path;n.id=H.key+'|'+T.name+'|'+T.path;const tot=T.total||{};n.t=+tot.blocks||0;n.a=+tot.apparent||0;n.f=+tot.files||0;n.d=+tot.dirs||0;n.l=+tot.symlinks||0;return n;}
 function rollHost(H){
-  if(H.status!=='ok')return;let ht=0;
-  for(const f of H.node.kids){
+  if(H.status!=='ok')return;let ht=0;const nin=H.nestIn;
+  for(const f of H.fss){
     const fs=f.fs,roots=[];let sum=0;
     for(const T of H.info.targets){if(T.fs!==fs.id||!isOuter(H,T))continue;const r=H.roots.get(T.name)||pendingNode(H,T);r.p=f;roots.push(r);sum+=r.t;}
     const used=+fs.used||0,avail=+fs.avail||0,size=+fs.size||0,res=fs.reserved!=null?+fs.reserved:Math.max(0,size-used-avail);
     f.unacc.t=Math.max(0,used-sum);f.free.t=avail;f.res.t=Math.max(0,res);f.over=Math.max(0,sum-used);f.scanned=sum;
-    f.kids=[...roots,f.unacc,f.free,f.res].filter(k=>k.t>0||roots.includes(k));
-    let t=0;for(const k of f.kids)t+=k.t;f.t=t;ht+=t;
+    // inside a guest disk only the scanned trees count: the guest's free space is not allocated in the pool
+    f.nested=!!(nin&&nin.place.has(fs.id));
+    f.kids=f.nested?roots:[...roots,f.unacc,f.free,f.res].filter(k=>k.t>0||roots.includes(k));
+    let t=0;for(const k of f.kids)t+=k.t;f.t=t;if(!f.nested){f.p=H.node;ht+=t;}
   }
-  H.node.t=ht;
+  H.node.kids=H.fss.filter(f=>!f.nested);H.node.t=ht;
 }
-function rollFleet(){if(!FLEET_DIRTY)return;for(const H of HARV)rollHost(H);let t=0;for(const h of ROOT.kids)t+=h.t;ROOT.t=t;FLEET_DIRTY=false;}
+// API-v2 §5: a harvester whose machine.uuid is a qemu guest's uuid sits inside that guest. Each of its filesystems
+// goes into the first guest disk whose key it lists as "drive-<key>".
+function nestPass(){
+  for(const H of HARV)H.nestIn=null;
+  for(const P of HARV){if(P.status!=='ok')continue;
+    for(const T of P.info.targets){if(T.kind!=='lvm_thin'||!Array.isArray(T.guests)||!P.roots.has(T.name))continue;
+      for(const g of T.guests){if(!g||g.type!=='qemu'||!g.uuid)continue;const id=String(g.uuid).toLowerCase();
+        const N=HARV.find(h=>h!==P&&h.status==='ok'&&!h.nestIn&&h.info.machine&&h.info.machine.uuid&&String(h.info.machine.uuid).toLowerCase()===id);if(!N)continue;
+        const place=new Map();for(const fs of N.info.filesystems){const ds=Array.isArray(fs.disks)?fs.disks:[];const d=(g.disks||[]).find(d=>d&&d.path&&ds.includes('drive-'+d.key));if(d)place.set(fs.id,d);}
+        if(place.size)N.nestIn={P,T,g,place};}}}
+}
+function attachNest(){
+  for(const P of HARV){if(!P.nestDisks)continue;for(const d of P.nestDisks){d.nest=null;syncDir(d);}P.nestDisks=null;}
+  for(const N of HARV){const ni=N.nestIn;if(!ni)continue;const by=new Map();
+    for(const f of N.fss){const d=ni.place.get(f.fs.id);if(!d)continue;if(!by.has(d.path))by.set(d.path,[]);by.get(d.path).push(f);}
+    for(const [path,fs] of by){const r=findDir(ni.P,ni.T,path);if(!r||r.rest.length)continue;const dn=r.node;dn.nest=fs;for(const f of fs)f.p=dn;syncDir(dn);(ni.P.nestDisks=ni.P.nestDisks||[]).push(dn);}}
+}
+function rollFleet(){if(!FLEET_DIRTY)return;nestPass();for(const H of HARV)rollHost(H);attachNest();rebuildRoot();let t=0;for(const h of ROOT.kids)t+=h.t;ROOT.t=t;FLEET_DIRTY=false;}
 
 function buildDir(raw,parent,H,T,path,depth){
   const n={id:H.key+'|'+T.name+'|'+path,kind:'dir',name:String(raw.n),path,p:parent,H,T,depth,t:+raw.t||0,a:+raw.a||0,f:+raw.f||0,d:+raw.d||0,l:+raw.l||0,o:+raw.o||0,x:raw.x==null?null:+raw.x,k:+raw.k||0,r:+raw.r||0,c:[],ph:null,byName:null};
+  if(raw.v)vfields(n,raw);
   if(Array.isArray(raw.c))for(const rc of raw.c){if(!rc||rc.n==null)continue;n.c.push(buildDir(rc,n,H,T,joinPath(path,String(rc.n)),depth+1));}
   n.byName=new Map(n.c.map(c=>[c.name,c]));
   n.full=n.r<=0&&n.c.every(c=>c.full)&&(n.k<=n.c.length);
   syncDir(n);return n;
 }
+// lvm_thin node fields: v (pool/guest/disk), vmid, g (qemu/lxc/none), on, key, p → prov, u, w → wr, rd → rdr
+function vfields(n,raw){n.v=String(raw.v);if(raw.vmid!=null)n.vmid=raw.vmid;if(raw.g!=null)n.g=String(raw.g);if(raw.on!=null)n.on=!!raw.on;if(raw.key!=null)n.key=String(raw.key);if(raw.p!=null)n.prov=+raw.p||0;if(raw.u!=null)n.u=+raw.u||0;if(raw.w!=null)n.wr=+raw.w||0;if(raw.rd!=null)n.rdr=+raw.rd||0;}
+// Children of a folder block: listed subfolders, placeholders, nested filesystems (a VM disk), files here, the
+// "gap" (a disk's allocated blocks that no scanned file accounts for), and pruned folders.
 function syncDir(n){
   let s=0;for(const c of n.c)s+=c.t;if(n.ph)for(const c of n.ph.values())s+=c.t;
-  const has=n.c.length>0||(n.ph&&n.ph.size>0);
-  if(has){const here=n.t-n.r-s;if(here>0){n.here=n.here||{kind:'here',p:n,H:n.H,T:n.T,id:n.id+'|~here'};n.here.t=here;}else n.here=null;
+  let ns=0;if(n.nest)for(const f of n.nest)ns+=f.t;
+  const has=n.c.length>0||(n.ph&&n.ph.size>0)||!!(n.nest&&n.nest.length);
+  if(has){let here=n.t-n.r-s-ns,gap=0;
+    if(n.nest){gap=Math.max(0,here);here=0;}else if(n.v==='disk'&&n.u>0){gap=Math.max(0,Math.min(n.u,here));here-=gap;}
+    if(here>0){n.here=n.here||{kind:'here',p:n,H:n.H,T:n.T,id:n.id+'|~here'};n.here.t=here;}else n.here=null;
+    if(gap>0){n.gap=n.gap||{kind:'gap',p:n,H:n.H,T:n.T,id:n.id+'|~gap'};n.gap.t=gap;}else n.gap=null;
     if(n.r>0){n.more=n.more||{kind:'more',p:n,H:n.H,T:n.T,id:n.id+'|~more'};n.more.t=n.r;const m=Math.max(0,n.k-n.c.length);n.more.name=m?m+' more folder'+(m===1?'':'s'):'more folders';}else n.more=null;
-    n.kids=[...n.c];if(n.ph)n.kids.push(...n.ph.values());if(n.here)n.kids.push(n.here);if(n.more)n.kids.push(n.more);}
-  else{n.here=null;n.more=null;n.kids=[];}
+    n.kids=[...n.c];if(n.ph)n.kids.push(...n.ph.values());if(n.nest)n.kids.push(...n.nest);if(n.here)n.kids.push(n.here);if(n.gap)n.kids.push(n.gap);if(n.more)n.kids.push(n.more);}
+  else{n.here=null;n.more=null;n.gap=null;n.kids=[];}
 }
 function treeTs(j){return Math.max(+j.scanned_at||0,+j.live_at||0);}
 function tsOf(n){for(let t=n;t;t=t.p)if(t.ts)return t.ts;return 0;}
@@ -620,7 +735,7 @@ function findById(id){
   const m=/^(.*?)\|(.*)\|(\/.*?)(\|~\w+)?$/.exec(id);if(!m)return null;
   const H=HARV.find(h=>h.key===m[1]);if(!H)return null;const T=H.targets.get(m[2]);if(!T)return null;
   const r=findDir(H,T,m[3]);if(!r)return H.pend.get(T.name)||null;let n=r.node;
-  if(!r.rest.length&&m[4]){const s=m[4]==='|~here'?n.here:n.more;if(s)return s;}
+  if(!r.rest.length&&m[4]){const s=m[4]==='|~here'?n.here:m[4]==='|~gap'?n.gap:n.more;if(s)return s;}
   return n;
 }
 async function loadTrees(H){if(H.status!=='ok')return;await Promise.all(H.info.targets.filter(T=>isOuter(H,T)).map(T=>loadTree(H,T)));}
@@ -629,7 +744,7 @@ async function loadTree(H,T){
   try{
     const j=await getJSON(H.url+'/api/tree?target='+encodeURIComponent(T.name)+'&limit='+TREE_LIMIT,30000);
     T=H.targets.get(T.name)||T;
-    const root=buildDir(j.node,null,H,T,String(j.path||T.path),0);root.isRoot=true;root.ts=treeTs(j);
+    const root=buildDir(j.node,null,H,T,String(j.path||T.path),0);root.isRoot=true;root.ts=treeTs(j);if(T.kind==='lvm_thin')seedIo(H,T,root);
     root.p=(H.roots.get(T.name)||{}).p||null;H.roots.set(T.name,root);
     Object.assign(st,{status:'ok',err:'',at:Date.now()/1000,nodes:countNodes(root),scanned_at:j.scanned_at,live_at:j.live_at,sharing_at:j.sharing_at});
     reresolve();
@@ -657,7 +772,7 @@ async function deepen(n){
 }
 function graft(n,raw,ts){
   if(!raw)return;const old=n.t;
-  n.t=+raw.t||0;n.a=+raw.a||0;n.f=+raw.f||0;n.d=+raw.d||0;n.l=+raw.l||0;n.o=+raw.o||0;n.x=raw.x==null?null:+raw.x;n.k=+raw.k||0;n.r=+raw.r||0;
+  n.t=+raw.t||0;n.a=+raw.a||0;n.f=+raw.f||0;n.d=+raw.d||0;n.l=+raw.l||0;n.o=+raw.o||0;n.x=raw.x==null?null:+raw.x;n.k=+raw.k||0;n.r=+raw.r||0;if(raw.v)vfields(n,raw);
   n.c=[];n.ph=null;if(Array.isArray(raw.c))for(const rc of raw.c)n.c.push(buildDir(rc,n,n.H,n.T,joinPath(n.path,String(rc.n)),n.depth+1));
   n.byName=new Map(n.c.map(c=>[c.name,c]));n.full=n.r<=0&&n.c.every(c=>c.full)&&n.k<=n.c.length;n.ts=ts;syncDir(n);
   const diff=n.t-old;if(diff)for(let a=n.p;a&&a.kind==='dir';a=a.p){a.t+=diff;}
@@ -697,6 +812,7 @@ function onChange(H,ev){
   if(!replay){
     H.evLive++;const mi=Math.floor(tms/60000);H.minutes.set(mi,(H.minutes.get(mi)||0)+1);
     const ids=liveIds(H,O,path);liveAdd(ids,db,tms/1000,true);
+    if(ev.src!=='lvm'&&ev.src!=='scan'){const now=Date.now(),b=Math.abs(db);actBump(ids,b,now);actBump([ids[ids.length-1]+'|~here'],b,now);}
     EVLOG.push({H,O,path,db,t:tms,ids,src:ev.src});if(EVLOG.length>120000)EVLOG.splice(0,20000);
     const hk=H.key+'|'+O.name+'|'+path;let h=HOTS.get(hk);if(!h){h={H,O,path,n:0,net:0,abs:0,last:0};HOTS.set(hk,h);}h.n++;h.net+=db;h.abs+=Math.abs(db);h.last=tms/1000;
     if(HOTS.size>6000){const arr=[...HOTS.entries()].sort((a,b)=>a[1].abs-b[1].abs).slice(0,2000);for(const [k] of arr)HOTS.delete(k);}
@@ -712,6 +828,7 @@ function applyToTree(H,O,path,ev,db,tms){
   if(!rest.length){
     diff=ev.b!=null&&isFinite(+ev.b)?(+ev.b)-node.t:db;
     node.t+=diff;node.o=Math.max(0,node.o+diff);node.a+=+ev.da||0;node.f+=+ev.df||0;if(node.x!=null)node.x=Math.max(0,node.x+diff);
+    if(node.v==='disk'&&node.u!=null)node.u=Math.max(0,Math.min(node.o,node.u+diff));
     if(node.placeholder)node.o=node.t;
     syncDir(node);
   }else{
@@ -738,6 +855,28 @@ function onScan(H,ev){
   if(isOuter(H,T)){clearTimeout(T._rt);T._rt=setTimeout(()=>loadTree(H,H.targets.get(T.name)||T),800);}
   invalidate('info');
 }
+/* activity: block I/O per disk (io events, held for a poll and then fading) plus bytes changed per folder
+   (change events, leaking over a few seconds). Both are bytes/s. */
+function actBump(ids,b,now){for(const id of ids){const a=ACT.get(id);if(a){a.v=a.v*Math.exp(-(now-a.t)/ACT_TAU)+b;a.t=now;}else ACT.set(id,{v:b,t:now});}}
+function actBucket(id,now){const a=ACT.get(id);if(!a)return 0;const v=a.v*Math.exp(-(now-a.t)/ACT_TAU);return v<1?0:v/(ACT_TAU/1000);}
+function ioFade(e,now){const dt=now-e.at,hold=e.poll*1.3;const f=dt<=hold?1:Math.exp(-(dt-hold)/1500);return f<0.02?0:f;}
+// every ancestor's write and read rate (disk → guest → pool → filesystem → host → fleet)
+function ioAgg(){const now=Date.now(),m=new Map();for(const e of IOD.values()){const f=ioFade(e,now);if(!f)continue;const w=e.w*f,r=e.r*f;for(const a of liveIds(e.H,e.O,e.path)){const x=m.get(a);if(x){x.w+=w;x.r+=r;}else m.set(a,{w,r});}}return m;}
+function actOf(n,agg,now){
+  switch(n.kind){case 'free':case 'reserved':case 'unacc':case 'more':case 'gap':return null;case 'here':return actBucket(n.p.id+'|~here',now);}
+  const io=agg.get(n.id);return actBucket(n.id,now)+(io?io.w:0);
+}
+function seedIo(H,T,root){const now=Date.now(),poll=(+T.poll_s||2)*1000;(function w(n){if(n.v==='disk'){if((n.wr||n.rdr)&&!IOD.has(n.id))IOD.set(n.id,{H,O:T,path:n.path,w:n.wr||0,r:n.rdr||0,at:now,poll});return;}for(const c of n.c)w(c);})(root);}
+function onIo(H,ev){
+  const T=H.targets.get(ev.target);if(!T||!Array.isArray(ev.disks))return;const O=H.outer.get(T.name)||T,now=Date.now(),poll=(+T.poll_s||2)*1000;
+  H.ioN=(H.ioN||0)+1;H.lastIo=now/1000;
+  for(const d of ev.disks){if(!d||typeof d.path!=='string')continue;const path=O===T?d.path:mapPath(T,O,d.path);if(!path)continue;
+    const w=Math.max(0,+d.w||0),r=Math.max(0,+d.r||0);IOD.set(H.key+'|'+O.name+'|'+path,{H,O,path,w,r,at:now,poll});
+    // pulse the disk like a change; quiet disks (< 16 KiB/s) do not flash every poll
+    if(BM.on&&!REDUCED&&w+r>=16*KiB){const f=findDir(H,O,path);if(f&&!f.rest.length)BM.pulses.push({node:f.node,io:true,k:actTr(w+r),t0:performance.now()});}}
+  if(BM.pulses.length>240)BM.pulses.splice(0,BM.pulses.length-240);
+  invalidate('io');
+}
 function connect(H){
   if(H.es){try{H.es.close();}catch(e){}H.es=null;}
   if(!window.EventSource){H.sse='unsupported';return;}
@@ -749,6 +888,7 @@ function connect(H){
   es.addEventListener('hello',e=>{const d=parse(e.data);H.sse='open';H.hellos++;H.seenBefore=H.maxT||0;if(d&&d.live&&H.info)H.info.live=d.live;if(H.hellos>1||H.reconnected){loadTrees(H);}H.reconnected=true;invalidate('conn');});
   es.addEventListener('change',e=>{const d=parse(e.data);if(d)onChange(H,d);});
   es.addEventListener('scan',e=>{const d=parse(e.data);if(d)onScan(H,d);});
+  es.addEventListener('io',e=>{const d=parse(e.data);if(d)onIo(H,d);});
 }
 function feedPush(e){FEED.unshift(e);if(FEED.length>400)FEED.length=400;FEEDQ.push(e);invalidate('feed');}
 function liveRate(H,mins=5){const now=Math.floor(Date.now()/60000);let s=0;for(let m=now-mins+1;m<=now;m++)s+=H.minutes.get(m)||0;const up=Math.min(mins,Math.max(1/6,(Date.now()/1000-PAGE_T0)/60));return s/up;}
@@ -838,11 +978,13 @@ const hmNow=throttle(()=>{if(current()==='changes'){hmDraw();hmRefreshRowsNow();
 const shareLater=throttle(()=>{if(current()==='sharing')renderSharing();},5000);
 const srcLater=throttle(()=>{if(current()==='sources')renderSources();},2000);
 const headerLater=throttle(renderHeader,1000);
+const ovIoLater=throttle(()=>{if(current()==='overview')ovIo();},1000);
 function flush(){
   flushRaf=0;const D=Object.assign({},DIRTY);for(const k in DIRTY)delete DIRTY[k];const cur=current();
   if(D.info||D.conn||D.hist||D.tree)headerLater();
   if(D.feed)flushFeed();
   if(cur==='blockmap'){if(D.tree)BM.needLayout=true;if(D.hist)BM.needBase=true;if(D.info)FLEET_DIRTY=true;bmSchedule();if(D.hist||D.info)bmLegend();}
+  else if(cur==='overview'&&D.io)ovIoLater();
   else if(cur==='changes'){if(D.hist||(D.tree&&!HM.built))renderChanges();else if(D.live)hmNow();}
   else if(cur==='overview'){if(D.hist||D.info||D.tree)ovFull();else if(D.live)ovLive();}
   else if(cur==='sharing'){if(D.tree||D.info)shareLater();}
@@ -851,13 +993,13 @@ function flush(){
 
 /* ======================================================================= header */
 function renderHeader(){
-  const ok=HARV.filter(h=>h.status==='ok'),fsN=ok.reduce((a,h)=>a+h.info.filesystems.length,0);
+  rollFleet();const ok=HARV.filter(h=>h.status==='ok'),fsN=ok.reduce((a,h)=>a+h.info.filesystems.length,0);
   const live=ok.filter(h=>h.sse==='open').length;
   $('#brand-sub').textContent=HARV.length?`${ok.length} of ${HARV.filter(h=>h.status!=='duplicate').length} harvesters · ${fsN} filesystems · ${live} live`:'no harvester';
   const hs=$('#hosts');hs.replaceChildren();
   for(const H of HARV){if(H.status==='duplicate')continue;const st=H.status!=='ok'?'down':H.sse==='open'?'open':'wait';
-    const s=el('span',{'data-h':H.idx},el('i',{class:'cdot '+st}),hostName(H));
-    hoverTip(s,()=>[{v:hostName(H),l:H.status==='ok'?(H.sse==='open'?'live stream connected':'live stream '+H.sse):H.status+(H.err?': '+maskText(H.err):'')},{l:urlText(H.url,H.idx),c:'m'},H.status==='ok'?{v:liveRate(H).toFixed(1)+'/min',l:'changes, last 5 min'}:null]);
+    const ni=H.nestIn,s=el('span',{'data-h':H.idx},el('i',{class:'cdot '+st}),hostName(H),ni?el('small',{text:'in '+hostName(ni.P)}):null);
+    hoverTip(s,()=>[{v:hostName(H),l:H.status==='ok'?(H.sse==='open'?'live stream connected':'live stream '+H.sse):H.status+(H.err?': '+maskText(H.err):'')},ni?{l:`runs inside ${hostName(ni.P)}, guest ${guestLabel(ni.g)}: drawn inside its disks in the Block map`,c:'m'}:null,{l:urlText(H.shown,H.idx)+(H.relay?' · relayed by '+hostName(H.relay):''),c:'m'},H.status==='ok'?{v:liveRate(H).toFixed(1)+'/min',l:'changes, last 5 min'}:null]);
     hs.append(s);}
   const r=$('#range');if(!r.children.length){for(const k in RANGES)r.append(el('button',{type:'button','data-k':k,text:RANGES[k].label,onclick:()=>{RANGE=RANGES[k];store.set('range',k);for(const b of r.children)b.setAttribute('aria-pressed',String(b.dataset.k===k));HIST.status==='ok'&&(HIST.status='loading');loadHistory();show();}}));}
   for(const b of r.children)b.setAttribute('aria-pressed',String(RANGES[b.dataset.k]===RANGE));
@@ -875,7 +1017,8 @@ function histChip(){
 }
 
 /* ======================================================================= OVERVIEW */
-function fsRows(){const out=[];for(const H of HARV){if(H.status!=='ok')continue;for(const f of H.node.kids)if(!f.fs.synthetic)out.push({H,f,fs:f.fs,cap:CAP.get(H.key+'|'+f.fs.id)});}return out;}
+function fsRows(){const out=[];for(const H of HARV){if(H.status!=='ok')continue;for(const f of H.fss)if(!f.fs.synthetic)out.push({H,f,fs:f.fs,cap:CAP.get(H.key+'|'+f.fs.id)});}return out;}
+function metaUse(fs){const m=fs&&fs.meta;return m&&+m.size>0?(+m.used||0)/(+m.size):null;}
 function fsStats(r){const fs=r.fs,u=fs.size?fs.used/fs.size:0,cap=r.cap;let slope=null,eta=null,why='';
   if(cap&&cap.status==='ok'){if(cap.span>=12*3600){slope=cap.slope;if(slope>0)eta=fs.avail/slope;}else why='collecting since '+fmtSince(cap.start);}
   else if(!METRICS)why='no metrics_url';else if(cap&&cap.status==='error')why='query failed';else if(cap)why='no history yet';else why='loading';
@@ -888,8 +1031,8 @@ function renderOverview(){
   if(FATAL){v.append(FATAL());return;}
   rollFleet();
   const ok=HARV.filter(h=>h.status==='ok');
-  const rows=fsRows();
-  const used=rows.reduce((a,r)=>a+(+r.fs.used||0),0),size=rows.reduce((a,r)=>a+(+r.fs.size||0),0),avail=rows.reduce((a,r)=>a+(+r.fs.avail||0),0);
+  const rows=fsRows(),top=rows.filter(r=>!r.f.nested),nestN=rows.length-top.length;   // a VM's filesystems already sit inside its pool
+  const used=top.reduce((a,r)=>a+(+r.fs.used||0),0),size=top.reduce((a,r)=>a+(+r.fs.size||0),0),avail=top.reduce((a,r)=>a+(+r.fs.avail||0),0);
   v.append(el('div',{class:'view-head'},el('div',null,el('h1',{text:'Everything stored, on every machine'}),
     el('p',{text:ok.length?`${ok.length} harvester${ok.length===1?'':'s'} report ${rows.length} filesystem${rows.length===1?'':'s'}. Sizes are allocated blocks from the latest scans plus live changes; history comes from VictoriaMetrics.`:'Waiting for a harvester to answer.'})),el('span',{class:'vh-chip'},histChip())));
   // hero: the filesystem that fills first, or the fullest
@@ -905,13 +1048,14 @@ function renderOverview(){
   const allT=ok.flatMap(H=>H.info.targets.map(T=>({H,T})));const bad=allT.filter(x=>x.T.last_error).length;
   const rate=ok.reduce((a,H)=>a+liveRate(H),0),evs=ok.reduce((a,H)=>a+H.evLive,0);
   v.append(el('div',{class:'ov-top'},heroP,el('div',{class:'kpis'},
-    kpi('Stored',fmtB(used),`${pct(size?used/size:0)} of ${fmtB(size)} on ${rows.length} filesystems`),
-    kpi('Free',fmtB(avail),rows.length?`most on ${hostName((rows.slice().sort((a,b)=>b.fs.avail-a.fs.avail)[0]||{}).H)}`:''),
+    kpi('Stored',fmtB(used),`${pct(size?used/size:0)} of ${fmtB(size)} on ${top.length} filesystems`+(nestN?` · ${nestN} inside VMs counted in their pool`:'')),
+    kpi('Free',fmtB(avail),top.length?`most on ${hostName((top.slice().sort((a,b)=>b.fs.avail-a.fs.avail)[0]||{}).H)}`:''),
     kpi('Machines',`${ok.length} of ${HARV.filter(h=>h.status!=='duplicate').length}`,ok.length===HARV.length?'every harvester answers':HARV.filter(h=>h.status==='offline').map(hostName).join(', ')+' offline'),
     kpi('Live changes',rate.toFixed(rate<10?1:0)+' / min',`${fmtN(evs)} since ${fmtHM(PAGE_T0)}`),
     kpi('Scans',`${allT.length-bad} of ${allT.length} OK`,bad?`${bad} with errors, see Sources`:'no scan errors'))));
   const grid=el('div',{class:'ov-grid'});v.append(grid);
   grid.append(capacityPanel(rows));
+  for(const H of ok)for(const T of H.info.targets)if(T.kind==='lvm_thin'&&Array.isArray(T.guests))grid.append(guestsPanel(H,T));
   grid.append(fillsPanel());
   for(const H of ok)grid.append(largestPanel(H));
   grid.append(moversPanel());
@@ -920,39 +1064,72 @@ function renderOverview(){
 }
 function capacityPanel(rows){
   const tb=el('tbody');
-  for(const r of rows){const st=r.st||fsStats(r),s=sev(st.u),fs=r.fs;
+  for(const r of rows){const st=r.st||fsStats(r),fs=r.fs,mu=metaUse(fs),s=sev(Math.max(st.u,mu||0)),lvm=fs.type==='lvmthin',ni=r.f.nested&&r.H.nestIn,nd=ni&&ni.place.get(fs.id);
+    const notes=[fs.type];if(lvm&&+fs.provisioned>0&&fs.size)notes.push(`${fmtB(+fs.provisioned)} provisioned, ${(fs.provisioned/fs.size).toFixed(2)}× the pool`);if(mu!=null)notes.push(`metadata ${pct(mu)} of ${fmtB(+fs.meta.size)}`);
+    if(nd)notes.push(`inside ${hostName(ni.P)} › ${guestLabel(ni.g)} › ${nd.key}`);if(r.f.over>0)notes.push(lvm?'volumes share blocks':'files share blocks');if(r.f.unacc.t>0)notes.push(`${fmtB(r.f.unacc.t)} ${lvm?'in no listed volume':'not in any target'}`);
     const meter=el('div',{class:'meter '+s,role:'meter','aria-valuenow':Math.round(st.u*100),'aria-valuemin':0,'aria-valuemax':100,'aria-label':'used'},el('i',{style:`width:${(Math.min(1,st.u)*100).toFixed(1)}%`}));
     const sp=r.cap&&r.cap.status==='ok'&&r.cap.v.length>2?sparkline(r.cap.v,s==='crit'?C.crit:C.accent):el('span',{style:'color:var(--muted);font-size:12px',text:st.why||'–'});
     const tr=el('tr',null,
-      el('td',{class:'pool-name'},el('b',null,el('i',{class:'dot',style:`background:${hostColor(r.H)}`}),hostName(r.H)+' · ',el('span',{class:'mono',style:'font-size:12.5px;color:var(--ink)',text:maskPath(fs.mount)})),el('span',{text:`${fs.type}`+(r.f.over>0?' · files share blocks':'')+(r.f.unacc.t>0?` · ${fmtB(r.f.unacc.t)} not in any target`:'')})),
-      el('td',null,s==='crit'?chip('crit','Critical'):s==='warn'?chip('warn','Watch'):chip('good','OK')),
+      el('td',{class:'pool-name'},el('b',null,el('i',{class:'dot',style:`background:${hostColor(r.H)}`}),hostName(r.H)+' · ',el('span',{class:'mono',style:'font-size:12.5px;color:var(--ink)',text:maskPath(fs.mount)})),el('span',{class:'wrap',style:'white-space:normal'},el('span',{class:'ps',style:'margin-right:6px;vertical-align:middle'},s==='crit'?chip('crit','Critical'):s==='warn'?chip('warn','Watch'):chip('good','OK')),notes.join(' · '))),
+      el('td',{class:'hs'},s==='crit'?chip('crit','Critical'):s==='warn'?chip('warn','Watch'):chip('good','OK')),
       el('td',{class:'hs',style:'width:20%'},meter),
-      el('td',{class:'r num'},`${fmtB(fs.used)} / ${fmtB(fs.size)}`),
+      el('td',{class:'r num'},fmtB(fs.used),el('span',{class:'u2'},' / '+fmtB(fs.size))),
       el('td',{class:'r num hs'},fmtB(fs.avail)),
       el('td',{class:'hs'},sp),
       el('td',{class:'r num hs'},st.slope==null?'–':fmtD(st.slope)),
-      el('td',{class:'r num'},etaText(st)));
-    hoverTip(tr,()=>[{v:hostName(r.H)+' · '+maskPath(fs.mount),c:'h'},{v:pct(st.u),l:'used'},r.cap&&r.cap.status==='ok'?{l:`history from ${r.cap.src}, since ${fmtSince(r.cap.start)}`,c:'m'}:{l:st.why,c:'m'},st.eta!=null?{l:'full around '+fmtDate(Date.now()/1000+st.eta*DAY),c:'m'}:null]);
+      el('td',{class:'r num wrap-ph'},etaText(st)));
+    hoverTip(tr,()=>[{v:hostName(r.H)+' · '+maskPath(fs.mount),c:'h'},{v:pct(st.u),l:lvm?'of the pool allocated':'used'},mu!=null?{v:pct(mu),l:'thin metadata used: a full metadata volume stops the pool',c:mu>=0.8?'':'m'}:null,nd?{l:`a filesystem of ${hostName(r.H)}, on ${hostName(ni.P)}'s thin volume ${guestLabel(ni.g)} › ${nd.key}: it can fill before the pool does`,c:'m'}:null,r.cap&&r.cap.status==='ok'?{l:`history from ${r.cap.src}, since ${fmtSince(r.cap.start)}`,c:'m'}:{l:st.why,c:'m'},st.eta!=null?{l:'full around '+fmtDate(Date.now()/1000+st.eta*DAY),c:'m'}:null]);
     tb.append(tr);}
   return el('div',{class:'panel c12'},el('div',{class:'ph'},el('h2',{text:'Capacity'}),el('span',{class:'sub',text:'df from each harvester · trend from up to 90 days of VictoriaMetrics, growth per day from the last 30, independent of the range above'})),
-    rows.length?el('div',{class:'tbl-wrap'},el('table',null,el('thead',null,el('tr',null,...['Filesystem','Status','','Used','Free','90 days','Per day','Full in'].map((h,i)=>el('th',{class:([3,4,6,7].includes(i)?'r ':'')+([2,4,5,6].includes(i)?'hs':''),text:h})))),tb)):el('p',{class:'empty',text:'No filesystems yet.'}));
+    rows.length?el('div',{class:'tbl-wrap'},el('table',null,el('thead',null,el('tr',null,...['Filesystem','Status','','Used','Free','90 days','Per day','Full in'].map((h,i)=>el('th',{class:([3,4,6,7].includes(i)?'r ':'')+([1,2,4,5,6].includes(i)?'hs':''),text:h})))),tb)):el('p',{class:'empty',text:'No filesystems yet.'}));
 }
+// API-v2 §4: one row per guest of a thin pool. Reclaimable = allocated − what a nested guest's filesystems use.
+function guestsPanel(H,T){
+  const fs=H.info.filesystems.find(f=>f.id===T.fs)||{},size=+fs.size||0,root=H.roots.get(T.name),agg=ioAgg();
+  const rows=T.guests.filter(g=>g&&g.path).map(g=>{const f=root&&findDir(H,T,g.path),gn=f&&!f.rest.length?f.node:null;
+    const alloc=gn?gn.t:(g.disks||[]).reduce((a,d)=>a+(+d.allocated||0),0),prov=(g.disks||[]).reduce((a,d)=>a+(+d.size||0),0);
+    const N=HARV.find(h=>h.nestIn&&h.nestIn.P===H&&h.nestIn.g.vmid===g.vmid);let used=null;
+    if(N){used=0;for(const id of N.nestIn.place.keys()){const x=N.info.filesystems.find(y=>y.id===id);if(x)used+=+x.used||0;}}
+    return {g,alloc,prov,N,used,id:H.key+'|'+T.name+'|'+g.path};}).sort((a,b)=>b.alloc-a.alloc||(a.g.vmid??1e9)-(b.g.vmid??1e9));
+  const tb=el('tbody');
+  for(const r of rows){const g=r.g,u=r.prov?r.alloc/r.prov:0,io=agg.get(r.id),recl=r.N?r.alloc-r.used:null,typ=g.type==='qemu'?'VM':g.type==='lxc'?'CT':'–';
+    const tr=el('tr',null,
+      el('td',{class:'pool-name'},el('b',null,el('i',{class:'dot vmtex',style:`background:${r.N?hostColor(r.N):C.vm}`}),el('span',{style:'color:var(--ink);font-size:13px',text:guestLabel(g)})),r.N?el('span',{style:'display:block',text:'harvester '+hostName(r.N)+' inside'}):null,
+        el('span',{class:'psb'},(g.type==='none'?'volumes no guest refers to':typ+(g.template?' · template':g.running?' · running':' · stopped'))+(recl!=null?' · '+fmtB(Math.max(0,recl))+' reclaimable':''))),
+      el('td',{class:'hs'},el('span',{style:'margin-right:6px;color:var(--ink-2)',text:typ}),g.type==='none'?null:g.template?chip('need','template'):g.running?chip('good','running'):chip('need','stopped')),
+      el('td',{class:'r num'},fmtB(r.alloc),el('span',{class:'u2 psb'},'of '+fmtB(r.prov))),
+      el('td',{class:'hs',style:'width:14%'},el('div',{class:'meter','aria-label':'allocated of provisioned'},el('i',{style:`width:${(Math.min(1,u)*100).toFixed(1)}%`}))),
+      el('td',{class:'r num hs'},fmtB(r.prov)),
+      el('td',{class:'r num hs'},size?pct(r.alloc/size):'–'),
+      el('td',{class:'r num','data-io':r.id},io&&io.w>=1?fmtRate(io.w):g.running?'idle':'–'),
+      el('td',{class:'r num hs'},recl==null?'–':fmtB(Math.max(0,recl))));
+    hoverTip(tr,()=>{const a=ioAgg().get(r.id);const out=[{v:guestLabel(g),c:'h'},{l:(g.type==='lxc'?'container':g.type==='qemu'?'virtual machine':'volumes no guest refers to')+(g.template?', template':'')+(g.type==='none'?'':g.running?', running':', stopped'),c:'m'},{v:fmtB(r.alloc),l:`allocated of ${fmtB(r.prov)} provisioned (${pct(u)})`},{v:size?pct(r.alloc/size):'–',l:'of the pool'}];
+      for(const d of g.disks||[])out.push({v:d.key,l:`${fmtB(+d.allocated||0)} of ${fmtB(+d.size||0)}`+(HIDE?'':' · '+d.lv)+(d.discard?' · discard on':' · no discard')+(d.walked?' · walked':'')});
+      if(a)out.push({v:fmtRate(a.w),l:'writing'},{v:fmtRate(a.r),l:'reading'});
+      if(r.N)out.push({v:fmtB(Math.max(0,recl)),l:`reclaimable: allocated minus the ${fmtB(r.used)} its filesystems use. Blocks freed inside the guest stay allocated until it trims them (fstrim, with discard on).`});
+      return out;});
+    tb.append(tr);}
+  const th=(t,c)=>el('th',{class:c||'',text:t});
+  return el('div',{class:'panel c12'},el('div',{class:'ph'},el('h2',{text:'Guests · '+hostName(H)+' · '+maskPath(fs.mount||T.name)}),el('span',{class:'sub',text:`${rows.length} guests · ${fmtB(+fs.used||0)} of ${fmtB(size)} allocated · write rate from block I/O every ${fmtEvery(+T.poll_s||2)}`})),
+    el('div',{class:'tbl-wrap'},el('table',null,el('thead',null,el('tr',null,th('Guest'),th('Type','hs'),th('Allocated','r'),th('of provisioned','hs'),th('Provisioned','r hs'),th('Of pool','r hs'),th('Writing','r'),th('Reclaimable','r hs'))),tb)));
+}
+function ovIo(){const agg=ioAgg();for(const td of document.querySelectorAll('#v-overview [data-io]')){const a=agg.get(td.dataset.io);td.textContent=a&&a.w>=1?fmtRate(a.w):td.textContent==='–'?'–':'idle';}}
 function fillsPanel(){
   const byK={};let free=0,unacc=0,res=0,shared=false;
-  for(const n of fleetLeaves()){if(n.kind==='free'){free+=n.t;continue;}if(n.kind==='reserved'){res+=n.t;continue;}if(n.kind==='unacc'){unacc+=n.t;continue;}if(n.kind==='host'||n.kind==='root'||n.kind==='fs')continue;const k=kindOf(n)||'other';byK[k]=(byK[k]||0)+n.t;}
-  for(const H of HARV)if(H.status==='ok')for(const f of H.node.kids)if(f.over>0)shared=true;
-  const parts=KINDS.map(k=>({label:k.label,v:byK[k.k]||0,c:kindColor(k.k)})).filter(p=>p.v>0);
+  for(const n of fleetLeaves()){if(n.kind==='free'){free+=n.t;continue;}if(n.kind==='reserved'){res+=n.t;continue;}if(n.kind==='unacc'||n.kind==='gap'){unacc+=n.t;continue;}if(n.kind==='host'||n.kind==='root'||n.kind==='fs')continue;const k=kindOf(n)||'other';byK[k]=(byK[k]||0)+n.t;}
+  for(const H of HARV)if(H.status==='ok')for(const f of H.fss)if(f.over>0)shared=true;
+  const parts=KINDS.map(k=>({label:k.label,v:byK[k.k]||0,c:kindColor(k.k),vm:k.k==='vm'})).filter(p=>p.v>0);
   if(unacc>0)parts.push({label:'Not in any target',v:unacc,c:C.dark});if(res>0)parts.push({label:'Reserved',v:res,c:C.axis});
   parts.push({label:'Free',v:free,c:C.free,free:true});
   const tot=parts.reduce((a,p)=>a+p.v,0)||1;
   const sb=el('div',{class:'segbar',role:'img','aria-label':'What fills the fleet, by kind'});
-  for(const p of parts){const w=p.v/tot;if(w<=0)continue;const d=el('div',{style:`flex:${w} 1 0;background:${p.c};color:${inkOn(p.c)}`+(p.free?`;background-image:repeating-linear-gradient(135deg,transparent 0 5px,${C.freeLine} 5px 6px);color:${C.ink2}`:'')});if(w>0.07)d.textContent=pct(w);hoverTip(d,[{key:p.c,sw:1,v:fmtB(p.v),l:p.label},{v:pct(w),l:'of all space',c:'m'}]);sb.append(d);}
-  const lg=el('div',{class:'legend'},...parts.map(p=>el('span',null,el('i',{style:`background:${p.c}`+(p.free?`;box-shadow:inset 0 0 0 1px ${C.freeLine}`:'')}),`${p.label} · ${fmtB(p.v)}`)));
+  for(const p of parts){const w=p.v/tot;if(w<=0)continue;const d=el('div',{class:p.vm?'vmtex':null,style:`flex:${w} 1 0;background:${p.c};color:${inkOn(p.c)}`+(p.free?`;background-image:repeating-linear-gradient(135deg,transparent 0 5px,${C.freeLine} 5px 6px);color:${C.ink2}`:'')});if(w>0.07)d.textContent=pct(w);hoverTip(d,[{key:p.c,sw:1,v:fmtB(p.v),l:p.label},{v:pct(w),l:'of all space',c:'m'}]);sb.append(d);}
+  const lg=el('div',{class:'legend'},...parts.map(p=>el('span',null,el('i',{class:p.vm?'vmtex':null,style:`background:${p.c}`+(p.free?`;box-shadow:inset 0 0 0 1px ${C.freeLine}`:'')}),`${p.label} · ${fmtB(p.v)}`)));
   return el('div',{class:'panel c12'},el('div',{class:'ph'},el('h2',{text:'What fills the fleet'}),el('span',{class:'sub',text:'Guessed from folder names. '+(shared?'Logical sizes: blocks shared between folders count once per folder, see Sharing.':'Allocated blocks per folder.')})),sb,lg);
 }
 // largest folders: expand the biggest node until the top of the list is made of folders that are not mostly one child
 function largestOf(H,k=8){
-  let list=[];for(const f of H.node.kids)for(const r of f.kids)if(r.kind==='dir')list.push(r);
+  let list=[];for(const f of H.fss)for(const r of f.kids)if(r.kind==='dir')list.push(r);
   for(let it=0;it<60;it++){list.sort((a,b)=>b.t-a.t);const kth=list[Math.min(k,list.length)-1]?list[Math.min(k,list.length)-1].t:0;
     const i=list.findIndex(n=>n.kind==='dir'&&n.c.length&&n.t>2*kth);if(i<0)break;const n=list[i];list.splice(i,1,...n.c);}
   return list.filter(n=>n.kind==='dir').sort((a,b)=>b.t-a.t).slice(0,k);
@@ -992,18 +1169,19 @@ function renderOvLive(){
   else{const mx=hot[0].abs||1;p.append(el('div',{class:'bars'},...hot.map(h=>hoverTip(el('div',{class:'brow'},el('div',{class:'lab'},el('i',{class:'dot',style:`background:${hostColor(h.H)}`}),el('span',{class:'mono',style:'font-size:12px',text:tail(maskPath(h.path),3)})),el('div',{class:'track'},el('i',{style:`left:0;width:${(h.abs/mx*100).toFixed(1)}%;background:${h.net>=0?C.pos:C.neg}`})),el('div',{class:'val',text:fmtD(h.net)})),
     ()=>[{v:maskPath(h.path),c:'h'},{v:fmtD(h.net),l:'net'},{v:fmtB(h.abs),l:'moved in '+h.n+' change'+(h.n===1?'':'s')},{l:'last '+fmtAgo(h.last),c:'m'}]))));}
 }
+function liveText(T){return T.live?(T.source==='lvm'?'lvm poll every '+fmtEvery(+T.poll_s||2):'live')+' · '+(T.live_at?fmtAgo(T.live_at):'no change yet'):'scans only';}
 function scanPanel(){
   const tb=el('tbody');const now=Date.now()/1000;
   for(const H of HARV){if(H.status!=='ok')continue;for(const T of H.info.targets){
     const stale=T.last_scan&&T.interval_s&&now-T.last_scan>3*T.interval_s+120;
     const status=T.last_error?chip('crit','Error'):T.scan_running?chip('warn','Scanning'):!T.last_scan?chip('need','No scan yet'):stale?chip('warn','Late'):chip('good','OK');
     const tr=el('tr',null,el('td',null,el('i',{class:'dot',style:`background:${hostColor(H)};margin-right:7px`}),el('span',{class:'mono',style:'font-size:12.5px',text:tgName(T.name)})),el('td',null,status),
-      el('td',{class:'r num',text:fmtAgo(T.last_scan)}),el('td',{class:'r num',text:fmtSpan(T.scan_duration_s)}),el('td',{class:'r num',text:fmtEvery(T.interval_s)}),
-      el('td',null,T.live?el('span',{class:'num',style:'font-size:12.5px',text:'live · '+(T.live_at?fmtAgo(T.live_at):'no change yet')}):el('span',{class:'muted',style:'font-size:12.5px',text:'scans only'})),
+      el('td',{class:'r num',text:fmtAgo(T.last_scan)}),el('td',{class:'r num hs',text:fmtSpan(T.scan_duration_s)}),el('td',{class:'r num hs',text:fmtEvery(T.interval_s)}),
+      el('td',{class:'wrap-ph'},el('span',{class:T.live?'num':'muted',style:'font-size:12.5px',text:liveText(T)})),
       el('td',{class:'wrap',style:'font-size:12px;color:var(--crit-ink);max-width:340px'},T.last_error?maskText(T.last_error):''));
     hoverTip(tr,()=>[{v:maskPath(T.path),c:'h'},{l:hostName(H)+' · '+(isOuter(H,T)?'outermost target':'inside '+tgName(H.outer.get(T.name).name)),c:'m'}]);tb.append(tr);}}
   return el('div',{class:'panel c12'},el('div',{class:'ph'},el('h2',{text:'Scan health'}),el('span',{class:'sub',text:'last pass per target, from /api/info'})),
-    el('div',{class:'tbl-wrap'},el('table',null,el('thead',null,el('tr',null,el('th',{text:'Target'}),el('th',{text:'Status'}),el('th',{class:'r',text:'Last scan'}),el('th',{class:'r',text:'Took'}),el('th',{class:'r',text:'Every'}),el('th',{text:'Live'}),el('th',{text:'Error'}))),tb)));
+    el('div',{class:'tbl-wrap'},el('table',null,el('thead',null,el('tr',null,el('th',{text:'Target'}),el('th',{text:'Status'}),el('th',{class:'r',text:'Last scan'}),el('th',{class:'r hs',text:'Took'}),el('th',{class:'r hs',text:'Every'}),el('th',{text:'Live'}),el('th',{text:'Error'}))),tb)));
 }
 
 /* ======================================================================= CHANGES (heatmap) */
@@ -1024,7 +1202,7 @@ function rowNow(r){const L=r.id&&LIVE.get(r.id);return L?L.lh:0;}
 function rowAct(r){return (r.act||0)+Math.abs(rowNow(r));}
 function rowNet(r){return r.S?r.net:null;}
 function rowDelta(r,b){return r.S?r.S[b+1]-r.S[b]:NaN;}
-function rowName(r){if(r.kind==='host')return hostName(r.H);if(r.kind==='target')return tgName(r.tname||(r.node&&r.node.T.name));const p=r.path||(r.node&&r.node.path)||'';const nm=p.split('/').filter(Boolean).pop()||'/';return HIDE?mask(nm):nm;}
+function rowName(r){if(r.kind==='host')return hostName(r.H);if(r.kind==='target')return tgName(r.tname||(r.node&&r.node.T.name));const p=r.path||(r.node&&r.node.path)||'';return maskPath(p).split('/').filter(Boolean).pop()||'/';}
 function rowPath(r){if(r.kind==='host')return hostName(r.H);return maskPath(r.path||(r.node&&r.node.path)||'');}
 function hmSortKey(r){return HM.sort==='size'?rowSize(r):HM.sort==='growth'?((rowNet(r)||0)+rowNow(r)):rowAct(r);}
 function hmBuildRows(){
@@ -1068,7 +1246,7 @@ function renderChanges(){
   hmRenderRows();requestAnimationFrame(()=>{hmLayout();hmDraw();hmDrawer();});
   const cv=$('#hm-cv');
   const hit=e=>{const bb=cv.getBoundingClientRect();const r=Math.floor((e.clientY-bb.top)/ROWH),x=e.clientX-bb.left;if(r<0||r>=HM.rows.length)return null;const nb=hmNb();let b=Math.floor(x/HM.cw);if(x>=HM.nowX)b='now';else if(b>=nb||b<0)return null;return {r,b};};
-  cv.addEventListener('pointermove',e=>{const h=hit(e);if(!h){untip();return;}const {r,b}=h;if(!HM.hov||HM.hov.r!==r||HM.hov.b!==b){HM.hov={r,b};hmDraw();hmMarkRow(r);}
+  const show=e=>{const h=hit(e);if(!h){untip();return;}const {r,b}=h;if(!HM.hov||HM.hov.r!==r||HM.hov.b!==b){HM.hov={r,b};hmDraw();hmMarkRow(r);}
     const row=HM.rows[r].r,rows=[{v:rowPath(row),c:'h'}];
     if(b==='now'){const nw=rowNow(row);rows.push({v:'Live since '+fmtHM(hasH?HIST.t1:PAGE_T0),c:'m'},{key:divColor(cellT(nw,rowSize(row))),sw:1,v:fmtD(nw),l:'from live events'});const L=row.id&&LIVE.get(row.id);if(L&&L.n)rows.push({l:`${L.n} change${L.n===1?'':'s'} since the page opened`,c:'m'});}
     else if(!row.S)rows.push({l:row.kind==='host'?'No history for this machine yet.':'No history for this folder yet.',c:'m'});
@@ -1076,9 +1254,11 @@ function renderChanges(){
       if(!isFinite(d))rows.push({l:'Before this folder’s history starts',c:'m'});
       else{rows.push({key:divColor(cellT(d,end)),sw:1,v:fmtD(d),l:end>0?`${(d/end*100).toFixed(Math.abs(d/end)>0.01?1:3)}% of the folder`:''},{v:fmtB(end),l:'size at the end of the slot'});
         if(row.kids&&row.kids.length&&Math.abs(d)>=1){const top=row.kids.map(c=>({c,d:rowDelta(c,b)})).filter(x=>isFinite(x.d)&&Math.abs(x.d)>=1).sort((a,b)=>Math.abs(b.d)-Math.abs(a.d)).slice(0,3);for(const x of top)rows.push({v:fmtD(x.d),l:rowName(x.c),c:'m'});}}}
-    tip(e,rows);});
-  cv.addEventListener('pointerleave',()=>{HM.hov=null;hmDraw();hmMarkRow(-1);untip();});
-  cv.addEventListener('click',e=>{const h=hit(e);if(!h)return;HM.sel=HM.rows[h.r].r.key;HM.selAuto=false;HM.selB=h.b==='now'?null:h.b;hmRenderRows();hmDraw();hmDrawer();});
+    tip(e,rows,cv);};
+  cv.addEventListener('pointermove',e=>{if(e.pointerType!=='touch')show(e);});
+  cv.addEventListener('pointerleave',e=>{if(e.pointerType==='touch')return;HM.hov=null;hmDraw();hmMarkRow(-1);untip();});
+  // touch: the first tap on a cell shows its card, a second tap selects the row (the drawer below)
+  cv.addEventListener('click',e=>{const h=hit(e);if(!h)return;const te=tapEv(e);if(te.pointerType==='touch'&&HM.tap!==h.r+'|'+h.b){HM.tap=h.r+'|'+h.b;show(te);return;}HM.tap=null;HM.sel=HM.rows[h.r].r.key;HM.selAuto=false;HM.selB=h.b==='now'?null:h.b;hmRenderRows();hmDraw();hmDrawer();});
 }
 function hmNb(){return HIST.status==='ok'?HIST.n:0;}
 function hmMarkRow(r){const rows=$('#hm-rows');if(!rows)return;[...rows.children].forEach((b,i)=>b.classList.toggle('hov',i===r));}
@@ -1086,7 +1266,7 @@ function hmRenderRows(){
   const box=$('#hm-rows');if(!box)return;box.replaceChildren();
   for(const {r,d} of HM.rows){const open=HM.open.has(r.key),ks=r.kids,has=!!(ks&&ks.length);const net=rowNet(r);
     const dot=r.kind==='host'?hostColor(r.H):kindColor(r.node?kindOf(r.node):kindOfPath(r.path||'',((r.H.targets.get(r.tname)||{}).labels||{}).class));
-    const nm=el('span',{class:'nm',style:`padding-left:${d*14}px`},el('span',{class:'car',text:has?'▶':''}),el('i',{class:'dot',style:`background:${dot}`}),el('span',{class:r.kind==='host'?'':'mono',style:r.kind==='host'?'':'font-size:12px',text:rowName(r)}));
+    const nm=el('span',{class:'nm',style:`padding-left:${d*(isPhone()?9:14)}px`},el('span',{class:'car',text:has?'▶':''}),el('i',{class:'dot',style:`background:${dot}`}),el('span',{class:r.kind==='host'?'':'mono',style:r.kind==='host'?'':'font-size:12px',text:rowName(r)}));
     if(r.nested)nm.append(el('small',{text:'in '+tgName(r.outerName)}));
     const b=el('button',{type:'button',class:'hm-row'+(open?' open':'')+(HM.sel===r.key?' sel':'')+(r.kind==='host'?' host':''),role:'treeitem','aria-expanded':has?String(open):null,'aria-level':d+1,'data-key':r.key,
       onclick:()=>{if(has){open?HM.open.delete(r.key):HM.open.add(r.key);}HM.sel=r.key;HM.selAuto=false;HM.selB=null;hmBuildRows();hmRenderRows();hmLayout();hmDraw();hmDrawer();}},
@@ -1096,12 +1276,13 @@ function hmRenderRows(){
 function hmRefreshRowsNow(){const box=$('#hm-rows');if(!box)return;const kids=box.children;HM.rows.forEach(({r},i)=>{const b=kids[i];if(!b)return;if(!r.S){const s=b.querySelector('.sz');if(s)s.textContent=fmtB(rowSize(r));}});}
 function hmLayout(){
   const scroll=$('#hm-scroll'),cv=$('#hm-cv'),ax=$('#hm-axis');if(!scroll||!cv)return;
-  const leftW=Math.min(440,Math.max(innerWidth<640?200:250,Math.round(scroll.clientWidth*0.28)));
+  // phones: the labels take most of the width and stay put while the cells scroll under them
+  const leftW=isPhone()?Math.round(Math.min(280,Math.max(180,scroll.clientWidth*0.62))):Math.min(440,Math.max(250,Math.round(scroll.clientWidth*0.28)));
   const nb=hmNb(),avail=scroll.clientWidth-leftW-2,gap=nb?8:0;
   const nowW=nb?Math.max(30,Math.min(44,avail/(nb+3)*2)):Math.max(60,Math.min(260,avail));
   const cw=nb?Math.max(4,(avail-gap-nowW)/nb):0;HM.cw=cw;HM.nowX=Math.floor(cw*nb)+gap;HM.nowW=nowW;
   const W=Math.floor(HM.nowX+nowW),H=Math.max(1,HM.rows.length*ROWH),dpr=devicePixelRatio||1;
-  $('.hm-grid').style.gridTemplateColumns=`${leftW}px ${W}px`;
+  const g=$('.hm-grid');g.style.gridTemplateColumns=`${leftW}px ${W}px`;g.style.setProperty('--lw',leftW+'px');
   if(!HM.scrolled&&leftW+W>scroll.clientWidth){HM.scrolled=true;requestAnimationFrame(()=>{scroll.scrollLeft=scroll.scrollWidth;});}
   for(const [c,h] of [[cv,H],[ax,30]]){c.style.width=W+'px';c.style.height=h+'px';c.width=Math.round(W*dpr);c.height=Math.round(h*dpr);}
 }
@@ -1118,7 +1299,7 @@ function hmDraw(){
   if(nb&&HIST.step<86400){ctx.fillStyle=C.surface;for(let b=1;b<nb;b++){const t=HIST.t0+b*HIST.step,d=new Date(t*1000);if(d.getHours()===0&&d.getMinutes()*60<HIST.step)ctx.fillRect(b*cw-1,0,2,H);}}
   if(HM.sel){const i=HM.rows.findIndex(x=>x.r.key===HM.sel);if(i>=0){ctx.strokeStyle=C.ink;ctx.lineWidth=1.5;ctx.strokeRect(0.75,i*ROWH+0.75,W-1.5,ROWH-1.5);if(HM.selB!=null&&nb){ctx.strokeStyle=C.accent;ctx.lineWidth=2;ctx.strokeRect(HM.selB*cw,i*ROWH,cw,ROWH);}}}
   if(HM.hov){const {r,b}=HM.hov;const x=b==='now'?HM.nowX:b*cw,w=b==='now'?HM.nowW:cw;ctx.strokeStyle=C.ink2;ctx.lineWidth=1;ctx.strokeRect(x+0.5,0.5,w-1,H-1);ctx.strokeStyle=C.ink;ctx.lineWidth=2;ctx.strokeRect(x,r*ROWH,w,ROWH);}
-  const a=ax.getContext('2d');a.setTransform(dpr,0,0,dpr,0,0);a.fillStyle=C.surface;a.fillRect(0,0,W,30);a.font='11px '+getComputedStyle(document.body).fontFamily;a.textBaseline='middle';
+  const a=ax.getContext('2d');a.setTransform(dpr,0,0,dpr,0,0);a.fillStyle=C.surface;a.fillRect(0,0,W,30);a.font=cfs(11)+'px '+getComputedStyle(document.body).fontFamily;a.textBaseline='middle';
   if(nb){const t0=HIST.t0,t1=HIST.t1,X=t=>(t-t0)/(t1-t0)*nb*cw;
     for(const [t,lab] of timeTicks(t0,t1,nb*cw)){const x=X(t);a.fillStyle=C.axis;a.fillRect(Math.round(x),22,1,8);a.fillStyle=C.muted;a.fillText(lab,Math.max(0,Math.min(nb*cw-a.measureText(lab).width-2,x+4)),14);}
     if(HM.hov&&HM.hov.b!=='now'){a.fillStyle=C.accent;a.fillRect(HM.hov.b*cw,27,Math.max(2,cw),3);}}
@@ -1190,7 +1371,7 @@ function bmLayout(W,H){
 // live changes since the page opened everywhere else.
 function bmDelta(n){
   switch(n.kind){
-    case 'free':case 'reserved':case 'unacc':return null;
+    case 'free':case 'reserved':case 'unacc':case 'gap':return null;
     case 'here':{const L=LIVE.get(n.p.id);return L?L.own:0;}
     case 'more':return 0;
   }
@@ -1201,14 +1382,17 @@ function bmDelta(n){
 }
 function bmBasis(n){const hd=HIST.status==='ok'&&HIST.histD.get(n.id)!=null;return hd?`over ${fmtSpan(HIST.t1-HIST.t0)} (history) and live since ${fmtHM(HIST.t1)}`:`live since the page opened at ${fmtHM(PAGE_T0)}`;}
 function fillFor(ctx,n){
-  if(n.kind==='free')return pattern(ctx,'free');if(n.kind==='reserved')return pattern(ctx,'reserved');if(n.kind==='unacc')return pattern(ctx,'dark');
+  if(n.kind==='free')return pattern(ctx,'free');if(n.kind==='reserved')return pattern(ctx,'reserved');if(n.kind==='unacc'||n.kind==='gap')return pattern(ctx,'dark');
   if(n.kind==='host'&&n.offline)return pattern(ctx,'reserved');if(n.pending)return pattern(ctx,'pending');
+  if(BM.mode==='activity')return actColor(actTr(actOf(n,BM.agg,BM.now)||0));
   if(BM.mode==='kind')return kindColor(kindOf(n)||'other');
   if(BM.mode==='host')return hostColor(n.H);
   if(BM.mode==='share'){if(n.kind==='dir'&&n.x!=null&&n.t>0)return shareColor(1-Math.min(1,n.x/n.t));return pattern(ctx,'unknown');}
   const d=bmDelta(n);return divColor(d==null?0:divTr(d,BM.sc.lo,BM.sc.hi));
 }
 function baseColor(n,f){if(typeof f==='string')return f;if(n.kind==='free')return C.free;if(n.kind==='reserved'||n.pending||n.offline)return C.s2;if(BM.mode==='share')return C.mid;return C.dark;}
+const opaqueDisk=n=>n.kind==='dir'&&n.v==='disk'&&!n.kids.length;   // a VM disk nothing was scanned inside
+const cfs=px=>isPhone()?Math.max(12,px):px;
 function fit(ctx,s,max){if(max<=0)return '';if(ctx.measureText(s).width<=max)return s;let lo=0,hi=s.length;while(lo<hi){const m=(lo+hi+1)>>1;if(ctx.measureText(s.slice(0,m)+'…').width<=max)lo=m;else hi=m-1;}return lo>0?s.slice(0,lo)+'…':'';}
 function bmRelayout(){
   const cv=$('#bm-cv');if(!cv)return;rollFleet();
@@ -1222,15 +1406,21 @@ function bmPaintBase(){
   if(!BM.base)BM.base=document.createElement('canvas');const b=BM.base;
   if(b.width!==Math.round(W*dpr)||b.height!==Math.round(H*dpr)){b.width=Math.round(W*dpr);b.height=Math.round(H*dpr);}
   const ctx=b.getContext('2d');ctx.setTransform(dpr,0,0,dpr,0,0);ctx.fillStyle=C.surface;ctx.fillRect(0,0,W,H);
-  const font=getComputedStyle(document.body).fontFamily;
+  const font=getComputedStyle(document.body).fontFamily,f1=cfs(11.5),f2=cfs(11),act=BM.mode==='activity';BM.agg=ioAgg();BM.now=Date.now();
   for(const r of BM.rects){const {n,x,y,w,h}=r;if(r.d===0&&r.box)continue;
     if(r.box){ctx.fillStyle=C.s3;ctx.fillRect(x+1,y+1,w-2,h-2);
-      if(r.head){ctx.fillStyle=C.ink;ctx.font=`600 11.5px ${font}`;ctx.textBaseline='middle';const sz=fmtB(n.t);const nm=fit(ctx,nameOf(n),w-16-ctx.measureText(sz).width-8);ctx.fillText(nm,x+7,y+10);ctx.fillStyle=C.ink2;ctx.font=`11px ${font}`;ctx.fillText(sz,x+w-7-ctx.measureText(sz).width,y+10);}
+      if(n.v==='disk'){ctx.fillStyle=pattern(ctx,'vmgrid');ctx.fillRect(x+1,y+1,w-2,h-2);}
+      const a=act&&n.v?actOf(n,BM.agg,BM.now):0,at=actTr(a);
+      if(at>0){ctx.strokeStyle=actColor(at);ctx.lineWidth=1+2.5*at;ctx.strokeRect(x+1.5,y+1.5,w-3,h-3);}
+      if(r.head){ctx.fillStyle=C.ink;ctx.font=`600 ${f1}px ${font}`;ctx.textBaseline='middle';const nm0=nameOf(n);let sz=fmtB(n.t)+(at>0?' · '+fmtRate(a):'');
+        // the name wins over the figures: drop the rate, then the size, before the name shrinks below a few letters
+        const room=()=>w-16-ctx.measureText(sz).width-8,need=ctx.measureText(nm0.slice(0,6)+'…').width;if(room()<need)sz=fmtB(n.t);if(room()<need)sz='';const nm=fit(ctx,nm0,room());ctx.fillText(nm,x+7,y+10);ctx.fillStyle=C.ink2;ctx.font=`${f2}px ${font}`;ctx.fillText(sz,x+w-7-ctx.measureText(sz).width,y+10);}
       continue;}
     const f=fillFor(ctx,n);ctx.fillStyle=f;ctx.fillRect(x+1,y+1,Math.max(0,w-2),Math.max(0,h-2));
+    if(opaqueDisk(n)&&w>4&&h>4){ctx.fillStyle=pattern(ctx,'vmgrid');ctx.fillRect(x+1,y+1,w-2,h-2);}
     if(BM.cushion&&w>6&&h>6&&n.kind!=='free'&&n.kind!=='reserved'){const g=ctx.createLinearGradient(x,y,x+w,y+h);g.addColorStop(0,'rgba(255,255,255,0.20)');g.addColorStop(0.55,'rgba(255,255,255,0)');g.addColorStop(1,'rgba(0,0,0,0.13)');ctx.fillStyle=g;ctx.fillRect(x+1,y+1,w-2,h-2);}
-    if(w>46&&h>22){ctx.fillStyle=inkOn(baseColor(n,f));ctx.font=`500 11.5px ${font}`;ctx.textBaseline='top';const nm=fit(ctx,nameOf(n),w-12);if(nm)ctx.fillText(nm,x+6,y+5);
-      if(h>38){ctx.font=`11px ${font}`;ctx.globalAlpha=0.85;let s=fmtB(n.t);if(BM.mode==='change'){const d=bmDelta(n);if(d&&Math.abs(d)>=1)s+='  '+fmtD(d);}else if(BM.mode==='share'&&n.x!=null)s+='  frees '+fmtB(n.x);else if(n.pending)s+='  loading…';ctx.fillText(fit(ctx,s,w-12),x+6,y+20);ctx.globalAlpha=1;}}
+    if(w>46&&h>22){ctx.fillStyle=inkOn(baseColor(n,f));ctx.font=`500 ${f1}px ${font}`;ctx.textBaseline='top';const nm=fit(ctx,nameOf(n),w-12);if(nm)ctx.fillText(nm,x+6,y+5);
+      if(h>38){ctx.font=`${f2}px ${font}`;ctx.globalAlpha=0.85;let s=fmtB(n.t)+(n.prov?' of '+fmtB(n.prov):'');if(BM.mode==='change'){const d=bmDelta(n);if(d&&Math.abs(d)>=1)s+='  '+fmtD(d);}else if(act){const a=actOf(n,BM.agg,BM.now);if(a>=1)s+='  '+fmtRate(a);}else if(BM.mode==='share'&&n.x!=null)s+='  frees '+fmtB(n.x);else if(n.pending)s+='  loading…';ctx.fillText(fit(ctx,s,w-12),x+6,y+6+f1+3);ctx.globalAlpha=1;}}
     if(n.kind==='dir'&&!n.full&&!n.pending&&w>14&&h>14&&n===BM.focus){} // (focus is never a leaf rect)
   }
   BM.needBase=false;
@@ -1247,21 +1437,23 @@ function bmCompose(){
     BM.pulses=BM.pulses.filter(p=>now-p.t0<1700);
     const seen=new Map();
     for(const p of BM.pulses){let t=p.node,r=null;while(t&&!(r=BM.byNode.get(t)))t=t.p;if(!r||r.d===0)continue;seen.set(r,p);}
-    for(const [r,p] of seen){const q=(now-p.t0)/1700,col=p.d>=0?C.pos:C.neg;
-      if(r.box){ctx.globalAlpha=(1-q)*0.8;ctx.strokeStyle=col;ctx.lineWidth=1.5;ctx.strokeRect(r.x+1.5,r.y+1.5,r.w-3,r.h-3);ctx.globalAlpha=1;continue;}
-      ctx.globalAlpha=(1-q)*0.45;ctx.fillStyle=col;ctx.fillRect(r.x+1,r.y+1,r.w-2,r.h-2);ctx.globalAlpha=1-q;ctx.strokeStyle=col;ctx.lineWidth=2;const o=q*6;ctx.strokeRect(r.x+1-o,r.y+1-o,r.w-2+2*o,r.h-2+2*o);ctx.globalAlpha=1;}
+    for(const [r,p] of seen){const q=(now-p.t0)/1700,col=p.io?C.act:p.d>=0?C.pos:C.neg,amp=p.io?0.3+0.7*p.k:1;
+      if(r.box){ctx.globalAlpha=(1-q)*0.8*amp;ctx.strokeStyle=col;ctx.lineWidth=1.5;ctx.strokeRect(r.x+1.5,r.y+1.5,r.w-3,r.h-3);ctx.globalAlpha=1;continue;}
+      ctx.globalAlpha=(1-q)*0.45*amp;ctx.fillStyle=col;ctx.fillRect(r.x+1,r.y+1,r.w-2,r.h-2);ctx.globalAlpha=(1-q)*amp;ctx.strokeStyle=col;ctx.lineWidth=2;const o=q*6;ctx.strokeRect(r.x+1-o,r.y+1-o,r.w-2+2*o,r.h-2+2*o);ctx.globalAlpha=1;}
     if(BM.hov){const r=BM.byNode.get(BM.hov);if(r){ctx.strokeStyle=C.ink;ctx.lineWidth=2;ctx.strokeRect(r.x+1,r.y+1,r.w-2,r.h-2);}}
   }
 }
 let bmRaf=0;function bmSchedule(){if(!bmRaf)bmRaf=requestAnimationFrame(bmFrame);}
 function bmFrame(){bmRaf=0;if(current()!=='blockmap'||!$('#bm-cv'))return;const now=performance.now();
   if(BM.needLayout||(BM.sizesDirty&&now-BM.lastLayout>600))bmRelayout();
-  if(BM.needBase)bmPaintBase();
+  if(BM.mode==='activity'&&now-(BM.actAt||0)>240)BM.needBase=true;    // rates decay: repaint ~4 times a second
+  if(BM.needBase){bmPaintBase();BM.actAt=now;}
   bmCompose();
-  if(BM.pulses.length||BM.anim||BM.sizesDirty)bmSchedule();}
+  if(BM.pulses.length||BM.anim||BM.sizesDirty)bmSchedule();else if(BM.mode==='activity'&&!BM.actTm)BM.actTm=setTimeout(()=>{BM.actTm=0;bmSchedule();},250);}
 function bmHit(e){const cv=$('#bm-cv'),bb=cv.getBoundingClientRect(),x=e.clientX-bb.left,y=e.clientY-bb.top;let best=null;for(const r of BM.rects){if(x>=r.x&&x<r.x+r.w&&y>=r.y&&y<r.y+r.h)best=r;}return best;}
-function zoomTo(n,fromRect){if(!n)return;BM.focus=n;BM.anim=fromRect&&!REDUCED?{from:fromRect,t0:performance.now()}:null;BM.needLayout=true;BM.hov=null;bmSchedule();renderCrumbs();if(n.kind==='dir')deepen(n);}
+function zoomTo(n,fromRect){if(!n)return;untip();BM.focus=n;BM.tap=null;BM.anim=fromRect&&!REDUCED?{from:fromRect,t0:performance.now()}:null;BM.needLayout=true;BM.hov=null;bmSchedule();renderCrumbs();if(n.kind==='dir')deepen(n);}
 function renderCrumbs(){const c=$('#bm-crumbs');if(!c)return;c.replaceChildren();const chain=[];let t=BM.focus;while(t){chain.unshift(t);t=t.p;}
+  const up=$('#bm-up');if(up){up.disabled=!BM.focus.p;up.title=BM.focus.p?'Up to '+nameOf(BM.focus.p)+' (Esc)':'';}requestAnimationFrame(()=>{c.scrollLeft=c.scrollWidth;});
   chain.forEach((n,i)=>{if(i)c.append(el('span',{class:'sep',text:'›'}));if(i===chain.length-1)c.append(el('b',{text:`${nameOf(n)} · ${fmtB(n.t)}`}));else c.append(el('button',{type:'button',text:nameOf(n),onclick:()=>zoomTo(n)}));});
   if(BM.focus.loading)c.append(el('span',{class:'ld',text:'loading deeper folders…'}));else if(BM.focus.deepErr)c.append(el('span',{class:'ld err',text:'could not load deeper: '+maskText(BM.focus.deepErr)}));}
 function feedRow(e,fresh){
@@ -1269,7 +1461,7 @@ function feedRow(e,fresh){
   const b=el('button',{type:'button',class:'ev'+(fresh?' fresh':'')+(e.replay?' old':''),title:e.kind==='scan'?'':maskPath(e.path),onclick:()=>{const r=findDir(e.H,e.O,e.path);let n=r?r.node:null;if(n&&n.p&&n.p.kind==='dir'&&r.rest.length===0&&!(n.kids&&n.kids.length))n=n.p;if(n){if(current()!=='blockmap')location.hash='#blockmap';zoomTo(n);}}},
     el('span',{class:'tm',text:fmtHMS(e.t)}),el('i',{class:'dot',style:`background:${hostColor(e.H)}`}),el('span',{class:'pa',text:p}),
     el('span',{class:'dv',style:e.db==null?'':`color:${e.db>=0?'var(--crit-ink)':'var(--accent-ink)'}`,text:e.kind==='scan'?fmtSpan(e.dur):fmtD(e.db)}),
-    el('span',{class:'src '+(e.src==='scan'?'scan':e.src==='btrfs'?'btrfs':''),text:e.src==='fanotify'?'fan':e.src||'?'}));
+    el('span',{class:'src '+(e.src==='scan'?'scan':e.src==='btrfs'?'btrfs':e.src==='lvm'?'lvm':''),text:e.src==='fanotify'?'fan':e.src||'?'}));
   return b;
 }
 let FEED_PAUSE=false;
@@ -1280,15 +1472,16 @@ function renderConn(){const c=$('#bm-conn');if(!c)return;c.replaceChildren();for
 function renderBlockmap(){
   const v=$('#v-blockmap');untip();v.replaceChildren();
   if(FATAL){v.append(FATAL());return;}
-  v.append(el('div',{class:'view-head'},el('div',null,el('h1',{text:'Block map of every disk'}),el('p',{text:'Every block is a folder, sized by the blocks it holds, nested machine › filesystem › target › folder. Click a block to zoom in and load its deeper folders. Esc, right-click or the trail above the map zoom out. Blocks flash as live changes arrive.'})),el('span',{class:'vh-chip'},histChip())));
+  v.append(el('div',{class:'view-head'},el('div',null,el('h1',{text:'Block map of every disk'}),el('p',{text:'Every block is a folder, sized by the blocks it holds, nested machine › filesystem › target › folder. A hypervisor’s thin pool nests pool › guest › disk, and a VM that runs its own harvester is drawn inside its disks. Click a block to zoom in (on a touch screen: tap to inspect, tap again to zoom). Up, Esc, right-click or the trail zoom out. Blocks flash as changes and disk writes arrive.'}),el('p',{class:'ps',text:'Tap a block to inspect it, tap it again to zoom in. ↑ Up goes back.'})),el('span',{class:'vh-chip'},histChip())));
   const legend=el('div',{class:'legend',id:'bm-legend'});
   const ctl=el('div',{class:'bm-ctl'},
-    el('span',{class:'eyebrow',text:'Colour'}),seg('Colour',[['change','Change'],['kind','Kind'],['host','Machine'],['share','Sharing']],BM.mode,k=>{BM.mode=k;BM.needLayout=true;bmSchedule();bmLegend();}),
+    el('span',{class:'eyebrow',text:'Colour'}),seg('Colour',[['change','Change'],['activity','Activity'],['kind','Kind'],['host','Machine'],['share','Sharing']],BM.mode,k=>{BM.mode=k;BM.needLayout=true;bmSchedule();bmLegend();}),
     el('span',{class:'eyebrow',text:'Size'}),seg('Size',[['true','True size'],['equal','Equal machines']],BM.equal?'equal':'true',k=>{BM.equal=k==='equal';BM.needLayout=true;bmSchedule();}),
     check('Free space',BM.free,c=>{BM.free=c;BM.needLayout=true;bmSchedule();}),
     check('Cushions',BM.cushion,c=>{BM.cushion=c;BM.needBase=true;bmSchedule();}));
   const cv=el('canvas',{id:'bm-cv',role:'img','aria-label':'Treemap of all storage. Use the trail above to navigate.'});
-  const main=el('div',{class:'panel bm-main'},el('nav',{class:'crumbs',id:'bm-crumbs','aria-label':'Zoom trail'}),cv,ctl,legend);
+  const up=el('button',{type:'button',class:'btn sm',id:'bm-up','aria-label':'Zoom out one level',onclick:()=>{if(BM.focus.p)zoomTo(BM.focus.p);}},'↑ Up');
+  const main=el('div',{class:'panel bm-main'},el('div',{class:'bm-nav'},up,el('nav',{class:'crumbs',id:'bm-crumbs','aria-label':'Zoom trail'})),cv,ctl,legend);
   const feed=el('div',{class:'feed',id:'bm-feed','aria-live':'off',onpointerenter:()=>{FEED_PAUSE=true;},onpointerleave:()=>{FEED_PAUSE=false;flushFeed();}});
   const side=el('div',{class:'panel'},el('div',{class:'ph'},el('h2',{text:'Change stream'}),el('span',{class:'sub',text:'hover to pause'})),el('div',{class:'conn',id:'bm-conn'}),
     el('p',{class:'side-note',text:'Folders whose size changed, newest first, from every harvester’s event stream. Dimmed rows were replayed from before this page opened. Click a row to zoom to it.'}),feed);
@@ -1296,9 +1489,12 @@ function renderBlockmap(){
   FEEDQ.length=0;const frag=document.createDocumentFragment();for(const e of FEED.slice(0,150))frag.append(feedRow(e,false));feed.append(frag);renderConn();
   BM.on=true;BM.needLayout=true;BM.base=null;if(!BM.focus||(BM.focus!==ROOT&&!findById(BM.focus.id)))BM.focus=ROOT;
   renderCrumbs();bmLegend();bmSchedule();
-  cv.addEventListener('pointermove',e=>{const r=bmHit(e);if(!r){untip();return;}if(BM.hov!==r.n){BM.hov=r.n;bmSchedule();}tip(e,bmTip(r.n));});
-  cv.addEventListener('pointerleave',()=>{BM.hov=null;bmSchedule();untip();});
-  cv.addEventListener('click',e=>{const r=bmHit(e);if(!r)return;let t=r.n;while(t.p&&t.p!==BM.focus)t=t.p;if(t===BM.focus)return;untip();
+  cv.addEventListener('pointermove',e=>{if(e.pointerType==='touch')return;const r=bmHit(e);if(!r){untip();return;}if(BM.hov!==r.n){BM.hov=r.n;bmSchedule();}tip(e,bmTip(r.n));});
+  cv.addEventListener('pointerleave',e=>{if(e.pointerType==='touch')return;BM.hov=null;bmSchedule();untip();});
+  cv.addEventListener('click',e=>{const r=bmHit(e);if(!r)return;
+    // touch: the first tap on a block shows its card, a second tap on the same block zooms
+    const te=tapEv(e);if(te.pointerType==='touch'&&BM.tap!==r.n){BM.tap=r.n;BM.hov=r.n;bmSchedule();tip(te,bmTip(r.n),cv);return;}BM.tap=null;
+    let t=r.n;while(t.p&&t.p!==BM.focus)t=t.p;if(t===BM.focus)return;untip();
     if(t.kind==='more'||t.kind==='here'){const rr=BM.byNode.get(t.p)||BM.byNode.get(t);if(t.p!==BM.focus)zoomTo(t.p,rr&&rr.n===t.p?rr:null);else deepen(Object.assign(t.p,{deepAt:0}));return;}
     const canZoom=(t.kids&&t.kids.length)||(t.kind==='dir'&&!t.full&&!t.pending);if(!canZoom)return;const rr=BM.byNode.get(t);zoomTo(t,rr?{x:rr.x,y:rr.y,w:rr.w,h:rr.h}:null);});
   cv.addEventListener('contextmenu',e=>{if(BM.focus.p){e.preventDefault();zoomTo(BM.focus.p);}});
@@ -1307,16 +1503,29 @@ function bmTip(n){
   const rows=[{v:pathOf(n),c:'h'}];const par=n.p;
   rows.push({v:fmtB(n.t),l:par&&par.t?pct(n.t/par.t)+' of '+nameOf(par):''});
   if(n.kind==='host'&&n.offline){rows.push({l:'offline: '+(maskText(n.H.err)||'no answer'),c:'m'});return rows;}
-  if(n.kind==='fs'){const fs=n.fs;rows.push({v:fmtB(fs.used),l:`used of ${fmtB(fs.size)} (df) · ${fmtB(fs.avail)} free`});if(n.over>0)rows.push({l:`Files add up to ${fmtB(n.over)} more than df used: they share blocks (see Sharing).`,c:'m'});if(n.unacc.t>0)rows.push({v:fmtB(n.unacc.t),l:'used but in no target'});}
-  if(n.kind==='unacc')rows.push({l:'df used minus every target on this filesystem: excluded paths, other users of the disk, metadata, files deleted while open.',c:'m'});
+  const lvm=n.kind==='fs'&&n.fs.type==='lvmthin'||n.kind==='unacc'&&n.p.fs&&n.p.fs.type==='lvmthin';
+  if(n.kind==='fs'){const fs=n.fs,mu=metaUse(fs);rows.push({v:fmtB(fs.used),l:lvm?`allocated of ${fmtB(fs.size)} · ${fmtB(fs.avail)} free`:`used of ${fmtB(fs.size)} (df) · ${fmtB(fs.avail)} free`});
+    if(lvm&&+fs.provisioned>0)rows.push({v:fmtB(+fs.provisioned),l:`provisioned to volumes, ${(fs.provisioned/(fs.size||1)).toFixed(2)}× the pool`});if(mu!=null)rows.push({v:pct(mu),l:`of ${fmtB(+fs.meta.size)} thin metadata used`});
+    if(n.nested){const ni=n.H.nestIn,d=ni&&ni.place.get(fs.id);if(d)rows.push({l:`inside ${hostName(ni.P)} › ${guestLabel(ni.g)} › ${d.key}. Only its scanned folders are drawn: its free space is not allocated in the pool.`,c:'m'});}
+    if(n.over>0)rows.push({l:lvm?`Volumes add up to ${fmtB(n.over)} more than the pool allocated: snapshots share blocks with their volume.`:`Files add up to ${fmtB(n.over)} more than df used: they share blocks (see Sharing).`,c:'m'});if(n.unacc.t>0)rows.push({v:fmtB(n.unacc.t),l:lvm?'allocated but in no listed volume':'used but in no target'});}
+  if(n.kind==='unacc')rows.push({l:lvm?'pool data allocated minus every listed thin volume: snapshots and volumes the harvester does not list.':'df used minus every target on this filesystem: excluded paths, other users of the disk, metadata, files deleted while open.',c:'m'});
+  if(n.kind==='gap')rows.push({l:n.p.nest?'allocated in the thin pool but in none of the guest’s scanned folders: blocks freed inside the guest and not trimmed yet, its filesystem metadata, and paths its harvester does not scan.':'allocated blocks no file in the container accounts for: filesystem metadata, and blocks freed inside the container that are still mapped.',c:'m'});
   if(n.kind==='free')rows.push({l:'available to unprivileged users (df avail)',c:'m'});
   if(n.kind==='reserved')rows.push({l:'neither used nor available: kept back for root by the filesystem',c:'m'});
   if(n.kind==='more')rows.push({l:'smaller folders the tree API pruned. Click to load them.',c:'m'});
   if(n.kind==='here')rows.push({l:'files directly in this folder',c:'m'});
   if(n.pending){const st=n.H.tstate.get(n.T.name);rows.push({l:'tree '+(st&&st.status==='pending'?'waits for the first scan':st&&st.status==='error'?'failed: '+maskText(st.err):'is loading')+'. Size from /api/info.',c:'m'});}
-  if(n.kind!=='free'&&n.kind!=='reserved'&&n.kind!=='unacc'&&!n.pending){const d=bmDelta(n);if(d!=null)rows.push({key:divColor(divTr(d,BM.sc.lo,BM.sc.hi)),sw:1,v:fmtD(d),l:n.kind==='here'?'live since the page opened':bmBasis(n)});}
+  if(n.kind==='dir'&&n.v){const g=n.v==='guest'?guestOf(n):null,d=n.v==='disk'?diskOf(n):null,io=ioAgg().get(n.id);
+    if(n.v==='pool'){const fs=fsOf(n);rows.push({l:`thin pool: ${n.c.length} guests`+(fs&&fs.fs?` · pool ${pct(fs.fs.used/(fs.fs.size||1))} allocated`:''),c:'m'});}
+    if(n.v==='guest')rows.push({l:(n.g==='lxc'?'container':n.g==='qemu'?'virtual machine':'volumes no guest refers to')+(g&&g.template?', template':'')+(n.on?', running':', stopped')+(n.vmid!=null&&!HIDE?' · id '+n.vmid:''),c:'m'});
+    if(n.v==='disk'&&n.prov)rows.push({v:fmtB(n.t),l:`allocated of ${fmtB(n.prov)} provisioned, ${pct(n.t/n.prov)}`});
+    if(io)rows.push({key:actColor(actTr(io.w)),sw:1,v:fmtRate(io.w),l:'writing · '+fmtRate(io.r)+' reading'});
+    if(d)rows.push({l:(HIDE?'':d.lv+' · ')+(d.discard?'discard on: freed blocks go back to the pool':'no discard: freed blocks stay allocated'),c:'m'});
+    if(n.v==='disk')rows.push({l:n.nest?'holds '+n.nest.map(f=>hostName(f.H)+' '+maskPath(f.fs.mount)).join(', ')+' (its own harvester)':n.c.length?'the container’s folders, walked from the host':'blocks inside a VM: not scanned from here',c:'m'});}
+  if(BM.mode==='activity'&&n.kind!=='free'&&n.kind!=='reserved'&&n.kind!=='unacc'&&n.kind!=='gap'&&!(n.kind==='dir'&&n.v)){const a=actOf(n,ioAgg(),Date.now());if(a!=null)rows.push({key:actColor(actTr(a)),sw:1,v:fmtRate(a),l:'bytes changed in the last few seconds (live events)'});}
+  if(n.kind!=='free'&&n.kind!=='reserved'&&n.kind!=='unacc'&&n.kind!=='gap'&&!n.pending){const d=bmDelta(n);if(d!=null)rows.push({key:divColor(divTr(d,BM.sc.lo,BM.sc.hi)),sw:1,v:fmtD(d),l:n.kind==='here'?'live since the page opened':bmBasis(n)});}
   if(n.kind==='dir'){if(n.x!=null)rows.push({v:fmtB(n.x),l:`freed if deleted (${pct(n.t?n.x/n.t:0)})`});
-    rows.push({l:`${fmtN(n.f)} files · ${fmtN(n.d)} folders`+(n.placeholder?' · known from live changes only':''),c:'m'});
+    if(!n.v||n.f||n.d)rows.push({l:`${fmtN(n.f)} files · ${fmtN(n.d)} folders`+(n.placeholder?' · known from live changes only':''),c:'m'});
     if(!n.full&&!n.pending&&!n.placeholder)rows.push({l:n.c.length?'some subfolders pruned: zoom in to load them':'subfolders not loaded: zoom in to load them',c:'m'});
     rows.push({l:hostName(n.H)+' · target '+tgName(n.T.name),c:'m'});}
   return rows;
@@ -1326,8 +1535,10 @@ function bmLegend(){const l=$('#bm-legend');if(!l)return;l.replaceChildren();
   if(BM.mode==='kind')KINDS.forEach(k=>l.append(sw(kindColor(k.k),k.label)));
   else if(BM.mode==='host')HARV.filter(h=>h.status==='ok').forEach(h=>l.append(sw(hostColor(h),hostName(h))));
   else if(BM.mode==='share'){for(const [f,lab] of [[1,'frees all of it'],[0.75,'frees 75%'],[0.5,'50%'],[0.25,'25%'],[0,'frees nothing']])l.append(sw(shareColor(1-f),lab));l.append(sw(C.mid,'unknown (no sharing pass)',`background-image:radial-gradient(${C.axis} 1px,transparent 1px);background-size:4px 4px`));}
+  else if(BM.mode==='activity'){for(const [v,lab] of [[0,'idle'],[64*KiB,'64 KiB/s'],[MiB,'1 MiB/s'],[16*MiB,'16 MiB/s'],[128*MiB,'128 MiB/s']])l.append(sw(actColor(actTr(v)),lab));l.append(el('span',{class:'muted',text:'VM disks: block writes, polled; folders: bytes changed in the last few seconds'}));}
   else{const s=BM.sc;l.append(sw(divColor(-0.6),'shrank'),sw(C.mid,'no change'),sw(divColor(0.3),'grew ~'+fmtAxis(divInvr(0.3,s.lo,s.hi))),sw(divColor(0.6),'~'+fmtAxis(divInvr(0.6,s.lo,s.hi))),sw(divColor(0.9),'~'+fmtAxis(divInvr(0.9,s.lo,s.hi))),el('span',{class:'muted',text:HIST.status==='ok'?`folders with history: last ${fmtSpan(HIST.t1-HIST.t0)}; others: since ${fmtHM(PAGE_T0)}`:`since ${fmtHM(PAGE_T0)}`}));}
-  l.append(sw(C.free,'free',`background-image:repeating-linear-gradient(135deg,transparent 0 3px,${C.freeLine} 3px 4px)`),sw(C.dark,'not in any target'));}
+  l.append(sw(C.free,'free',`background-image:repeating-linear-gradient(135deg,transparent 0 3px,${C.freeLine} 3px 4px)`),sw(C.dark,'not in any target'));
+  if(HARV.some(h=>h.status==='ok'&&h.info.targets.some(t=>t.kind==='lvm_thin'))){const v=el('span',null,el('i',{class:'vmtex',style:`background:${C.vm}`}),'blocks inside a VM disk');l.append(v);}}
 document.addEventListener('keydown',e=>{if(e.key==='Escape'&&current()==='blockmap'&&BM.focus.p){zoomTo(BM.focus.p);}});
 
 /* ======================================================================= SHARING */
@@ -1342,10 +1553,10 @@ function renderSharing(){
   for(const {H,T} of withS)v.append(sharingTarget(H,T));
   if(without.length){
     const groups=new Map();for(const {H,T} of without){const k=H.idx+'|'+T.fs;let g=groups.get(k);if(!g){g={H,fs:H.info.filesystems.find(f=>f.id===T.fs)||{type:'?',mount:String(T.fs)},ts:[]};groups.set(k,g);}g.ts.push(T);}
-    const list=el('div',{class:'nosh'});for(const g of groups.values()){const bt=g.fs.type==='btrfs';
+    const list=el('div',{class:'nosh'});for(const g of groups.values()){const bt=g.fs.type==='btrfs',lt=g.fs.type==='lvmthin';
       list.append(el('div',null,el('div',{class:'h'},el('i',{class:'dot',style:`background:${hostColor(g.H)}`}),el('b',{text:hostName(g.H)}),el('span',{class:'mono',text:maskPath(g.fs.mount)}),el('span',{class:'muted',text:g.fs.type})),
         el('div',{class:'t mono',text:g.ts.map(t=>tgName(t.name)).join(', ')}),
-        el('div',{class:'w',text:bt?'btrfs, but the sharing pass has not run for '+(g.ts.length===1?'this target':'these targets')+' yet, or it is turned off.':'Not btrfs: files do not share blocks here, so a folder’s size is what deleting it frees. Hardlinks are the exception.'})));}
+        el('div',{class:'w',text:bt?'btrfs, but the sharing pass has not run for '+(g.ts.length===1?'this target':'these targets')+' yet, or it is turned off.':lt?'LVM thin pool: its blocks are guest volumes. A volume shares blocks only with its own snapshots, which are not measured here; removing a guest frees its allocated size.':'Not btrfs: files do not share blocks here, so a folder’s size is what deleting it frees. Hardlinks are the exception.'})));}
     v.append(el('div',{class:'panel'},el('div',{class:'ph'},el('h2',{text:'Targets without sharing data'}),el('span',{class:'sub',text:without.length+' target'+(without.length===1?'':'s')})),list));}
 }
 function sharingTarget(H,T){
@@ -1392,9 +1603,9 @@ function renderSources(){
   const v=$('#v-sources');untip();v.replaceChildren();
   v.append(el('div',{class:'view-head'},el('div',null,el('h1',{text:'Where the numbers come from'}),el('p',{text:'Every harvester this page talks to, what it watches, how fresh each target is, and the history store.'}))));
   const res=el('div',{class:'panel'},el('div',{class:'ph'},el('h2',{text:'Endpoints'}),el('span',{class:'sub',text:'override with ?self= ?peers= ?metrics='})),
-    el('dl',{class:'kv'},el('dt',{text:'This page'}),el('dd',{text:HARV[0]?`${urlText(HARV[0].url,0)} (from ${SELF_HOW})`:'none: open the page from a harvester at /atlas or pass ?self='}),
-      el('dt',{text:'Peers'}),el('dd',{text:HARV.length>1?HARV.slice(1).map(h=>urlText(h.url,h.idx)+' · '+(h.status==='ok'?'reachable':h.status)).join('  ·  ')+` (from ${PEERS_HOW})`:`none (from ${PEERS_HOW})`}),
-      el('dt',{text:'History'}),el('dd',null,METRICS?(HIDE?'VictoriaMetrics':METRICS)+` (from ${METRICS_HOW}) · `:'not configured',HIST.status==='ok'?chip('good','answering'):HIST.status==='error'?chip('crit',maskText(HIST.err)):HIST.status==='empty'?chip('warn','no series in range'):HIST.status==='none'?chip('need','off'):chip('need','loading')),
+    el('dl',{class:'kv'},el('dt',{text:'This page'}),el('dd',{text:HARV[0]?`${urlText(HARV[0].url,0)} (from ${SELF_HOW})`+(HARV[0].info&&HARV[0].info.atlas&&HARV[0].info.atlas.proxy?' · relays peers and history for this page':''):'none: open the page from a harvester at /atlas or pass ?self='}),
+      el('dt',{text:'Peers'}),el('dd',{text:HARV.length>1?HARV.slice(1).map(h=>urlText(h.shown,h.idx)+' · '+(h.status==='ok'?'reachable':h.status)+(h.relay?' via relay':'')).join('  ·  ')+` (from ${PEERS_HOW})`:`none (from ${PEERS_HOW})`}),
+      el('dt',{text:'History'}),el('dd',null,METRICS?(HIDE?'VictoriaMetrics':METRICS_SHOWN)+` (from ${METRICS_HOW}) · `:'not configured',HIST.status==='ok'?chip('good','answering'):HIST.status==='error'?chip('crit',maskText(HIST.err)):HIST.status==='empty'?chip('warn','no series in range'):HIST.status==='none'?chip('need','off'):chip('need','loading')),
       HIST.status==='ok'?el('dt',{text:'Series'}):null,HIST.status==='ok'?el('dd',{text:[...HIST.counts].map(([h,c])=>`${HARV.find(x=>x.key===h)?hostName(HARV.find(x=>x.key===h)):hostLabel(h)}: ${c} folders since ${fmtSince(HIST.starts.get(h))}`).join(' · ')+(HIST.unmatched.size?` · ignored ${[...HIST.unmatched.values()].reduce((a,b)=>a+b,0)} series from ${HIST.unmatched.size} host(s) not in this fleet`:'')}):null,
       el('dt',{text:'Page opened'}),el('dd',{text:fmtWhen(PAGE_T0)+' · '+fmtN(HARV.reduce((a,h)=>a+h.evLive,0))+' live changes since'})));
   v.append(res);
@@ -1403,9 +1614,13 @@ function renderSources(){
     const p=el('div',{class:'panel'});grid.append(p);
     const st=H.status==='ok'?chip('good','online'):H.status==='loading'?chip('need','connecting'):H.status==='duplicate'?chip('need','duplicate'):chip('crit','offline');
     p.append(el('div',{class:'ph'},el('h2',null,el('i',{class:'dot',style:`background:${hostColor(H)};margin-right:7px`}),hostName(H)),st));
-    if(H.status!=='ok'){p.append(el('dl',{class:'kv'},el('dt',{text:'URL'}),el('dd',{text:urlText(H.url,H.idx)}),el('dt',{text:'Error'}),el('dd',{class:'err',text:maskText(H.err)||'–'})));continue;}
-    const I=H.info,live=I.live||{};
-    p.append(el('dl',{class:'kv'},el('dt',{text:'URL'}),el('dd',{text:urlText(H.url,H.idx)}),el('dt',{text:'Host label'}),el('dd',{class:'mono',text:hostLabel(H.key)}),el('dt',{text:'Version'}),el('dd',{text:String(I.version||'?')}),
+    const where=urlText(H.shown,H.idx)+(H.relay?' · relayed by '+hostName(H.relay):'');
+    if(H.status!=='ok'){p.append(el('dl',{class:'kv'},el('dt',{text:'URL'}),el('dd',{text:where}),el('dt',{text:'Error'}),el('dd',{class:'err',text:maskText(H.err)||'–'})));continue;}
+    const I=H.info,live=I.live||{},ni=H.nestIn,mu=I.machine&&I.machine.uuid;
+    const gs=I.targets.filter(t=>t.kind==='lvm_thin'&&Array.isArray(t.guests)).flatMap(t=>t.guests.filter(Boolean)),inside=HARV.filter(h=>h.nestIn&&h.nestIn.P===H);
+    p.append(el('dl',{class:'kv'},el('dt',{text:'URL'}),el('dd',{text:where}),
+      el('dt',{text:'Machine'}),el('dd',{text:ni?`inside ${hostName(ni.P)} › ${guestLabel(ni.g)} · `+[...ni.place].map(([id,d])=>{const f=I.filesystems.find(x=>x.id===id);return `${d.key} → ${maskPath(f?f.mount:id)}`;}).join(', '):mu?(HIDE?'uuid known':'uuid '+mu)+(gs.length?'':' · not a guest of any hypervisor here'):'no machine uuid (cannot be nested)'}),
+      gs.length?el('dt',{text:'Guests'}):null,gs.length?el('dd',{text:`${gs.length} in its pool, ${gs.filter(g=>g.running).length} running`+(inside.length?` · ${inside.map(hostName).join(', ')} run${inside.length===1?'s':''} a harvester inside`:'')+(H.ioN?` · ${fmtN(H.ioN)} I/O polls received, last ${fmtAgo(H.lastIo)}`:'')}):null,el('dt',{text:'Host label'}),el('dd',{class:'mono',text:hostLabel(H.key)}),el('dt',{text:'Version'}),el('dd',{text:String(I.version||'?')}),
       el('dt',{text:'Clock'}),el('dd',{text:Math.abs(H.skew)<2?'in sync with this browser':`${H.skew>0?'ahead':'behind'} by ${fmtSpan(H.skew)}`}),
       el('dt',{text:'Live source'}),el('dd',null,String(live.source||'?')+(live.active?' · active':' · inactive'),live.error?el('span',{class:'err',text:' · '+maskText(live.error)}):null),
       el('dt',{text:'Event stream'}),el('dd',{text:`${H.sse} · ${fmtN(H.evLive)} changes since the page opened · last ${H.lastEv?fmtAgo(H.lastEv):'none'}`+(H.dup?` · ${fmtN(H.dup)} duplicate reports from nested targets merged`:'')}),
@@ -1414,10 +1629,10 @@ function renderSources(){
     for(const T of I.targets){const O=H.outer.get(T.name),ts=H.tstate.get(T.name),fs=I.filesystems.find(f=>f.id===T.fs);
       const tree=O!==T?el('span',{class:'muted',text:'in '+tgName(O.name)}):!ts?el('span',{class:'muted',text:'–'}):ts.status==='ok'?el('span',{text:fmtN(ts.nodes)+' nodes'}):ts.status==='pending'?chip('need','no scan yet'):ts.status==='error'?chip('crit','error'):el('span',{class:'muted',text:'loading'});
       const tr=el('tr',null,el('td',null,el('span',{class:'mono',style:'font-size:12.5px',text:tgName(T.name)})),el('td',{class:'mono',style:'font-size:12px;color:var(--ink-2)',text:fs?maskPath(fs.mount):String(T.fs)}),
-        el('td',{text:T.live?(T.live_at?'live · '+fmtAgo(T.live_at):'live'):'scans'}),el('td',{class:'r num',text:fmtAgo(T.last_scan)}),el('td',{class:'r num',text:fmtSpan(T.scan_duration_s)}),el('td',{class:'r num',text:fmtEvery(T.interval_s)}),
-        el('td',{text:T.sharing?fmtAgo(T.sharing.at):'–'}),el('td',null,tree),el('td',{class:'wrap err',style:'font-size:12px',text:maskText(T.last_error?T.last_error:(ts&&ts.status==='error'?ts.err:''))}));
+        el('td',{text:(T.kind==='lvm_thin'?'thin pool · ':'')+liveText(T)}),el('td',{class:'r num',text:fmtAgo(T.last_scan)}),el('td',{class:'r num hs',text:fmtSpan(T.scan_duration_s)}),el('td',{class:'r num hs',text:fmtEvery(T.interval_s)}),
+        el('td',{class:'hs',text:T.sharing?fmtAgo(T.sharing.at):'–'}),el('td',null,tree),el('td',{class:'wrap err',style:'font-size:12px',text:maskText(T.last_error?T.last_error:(ts&&ts.status==='error'?ts.err:''))}));
       hoverTip(tr,[{v:maskPath(T.path),c:'h'},{l:`${fs?fs.type:'?'} · ${maskPath(T.fs_path||'/')} inside the filesystem`,c:'m'},T.scan_running?{l:'scanning now',c:'m'}:null]);tb.append(tr);}
-    p.append(el('div',{class:'tbl-wrap',style:'margin-top:10px'},el('table',null,el('thead',null,el('tr',null,...['Target','On','Live','Last scan','Took','Every','Sharing pass','Tree','Error'].map((h,i)=>el('th',{class:[3,4,5].includes(i)?'r':'',text:h})))),tb)));
+    p.append(el('div',{class:'tbl-wrap',style:'margin-top:10px'},el('table',null,el('thead',null,el('tr',null,...['Target','On','Live','Last scan','Took','Every','Sharing pass','Tree','Error'].map((h,i)=>el('th',{class:([3,4,5].includes(i)?'r ':'')+([4,5,6].includes(i)?'hs':''),text:h})))),tb)));
     const caps=I.filesystems.map(fs=>({fs,c:CAP.get(H.key+'|'+fs.id)}));
     p.append(el('dl',{class:'kv',style:'margin-top:10px'},...caps.flatMap(({fs,c})=>[el('dt',{text:'Capacity '+maskPath(fs.mount)}),el('dd',{text:!METRICS?'no history store':!c?'loading':c.status==='ok'?`${c.src}, since ${fmtSince(c.start)}`:c.status==='empty'?`${c.src}: no samples yet`:`${c.src}: ${maskText(c.err)}`})])));
   }
@@ -1426,14 +1641,19 @@ function renderSources(){
 /* ======================================================================= shell */
 const VIEWS={overview:renderOverview,changes:renderChanges,blockmap:renderBlockmap,sharing:renderSharing,sources:renderSources};
 function current(){const h=location.hash.slice(1);return VIEWS[h]?h:'overview';}
-function show(){const cur=current();for(const k in VIEWS)$('#v-'+k).hidden=k!==cur;for(const a of document.querySelectorAll('.tabs a'))a.setAttribute('aria-current',a.dataset.view===cur?'page':'false');untip();BM.on=cur==='blockmap';if(!BM.on){BM.pulses.length=0;}VIEWS[cur]();}
+function show(){const cur=current();for(const k in VIEWS)$('#v-'+k).hidden=k!==cur;for(const a of document.querySelectorAll('.tabs a')){a.setAttribute('aria-current',a.dataset.view===cur?'page':'false');if(a.dataset.view===cur){const t=a.parentNode;if(a.offsetLeft+a.offsetWidth>t.scrollLeft+t.clientWidth)t.scrollLeft=a.offsetLeft+a.offsetWidth-t.clientWidth+12;else if(a.offsetLeft<t.scrollLeft)t.scrollLeft=a.offsetLeft-12;}}untip();BM.on=cur==='blockmap';if(!BM.on){BM.pulses.length=0;}VIEWS[cur]();}
 const hideBox=$('#hide-names');
 HIDE=QS.get('hide')==='1'||(QS.get('hide')==null&&store.get('hide')==='1');hideBox.checked=HIDE;
 hideBox.addEventListener('change',e=>{HIDE=e.target.checked;store.set('hide',HIDE?'1':null);renderHeader();BM.needBase=true;show();});
 addEventListener('hashchange',show);
 let rz=0;addEventListener('resize',()=>{clearTimeout(rz);rz=setTimeout(()=>{const cur=current();if(cur==='changes'){hmLayout();hmDraw();hmDrawer();}else if(cur==='blockmap'){BM.needLayout=true;bmSchedule();}else VIEWS[cur]();},150);});
 const THEMES=['auto','light','dark'];let THEME=QS.get('theme')||store.get('theme')||'auto';if(!THEMES.includes(THEME))THEME='auto';
-function applyTheme(){if(THEME==='auto')document.documentElement.removeAttribute('data-theme');else document.documentElement.setAttribute('data-theme',THEME);$('#theme-btn').textContent='Theme: '+THEME;}
+// theme-color follows the forced theme too (the browser chrome and an installed app's title bar)
+const TCOL={light:'#fcfcfd',dark:'#14171b'};
+function applyTheme(){if(THEME==='auto')document.documentElement.removeAttribute('data-theme');else document.documentElement.setAttribute('data-theme',THEME);$('#theme-btn').textContent='Theme: '+THEME;
+  for(const m of document.querySelectorAll('meta[name="theme-color"]')){if(m.dataset.media==null)m.dataset.media=m.media;const dark=/dark/.test(m.dataset.media);m.media=THEME==='auto'?m.dataset.media:'all';m.content=TCOL[THEME==='auto'?(dark?'dark':'light'):THEME];}}
+// installed (home screen / app window): the phone layout puts the views in a bottom tab bar. ?standalone=1 simulates it.
+if(matchMedia('(display-mode: standalone)').matches||navigator.standalone===true||QS.get('standalone')==='1')document.documentElement.classList.add('standalone');
 $('#theme-btn').addEventListener('click',()=>{THEME=THEMES[(THEMES.indexOf(THEME)+1)%3];store.set('theme',THEME==='auto'?null:THEME);applyTheme();});
 function retheme(){readColors();BM.base=null;BM.needBase=true;show();}
 matchMedia('(prefers-color-scheme: dark)').addEventListener('change',retheme);
@@ -1445,13 +1665,16 @@ async function boot(){
   if(!s.url){FATAL=()=>el('div',{class:'panel fatal'},el('h2',{text:'No harvester to talk to'}),el('p',{class:'explain',style:'margin-top:6px'},'Open this page from a storage-harvester at ',el('code',{text:'/atlas'}),', or pass ',el('code',{text:'?self=http://host:port'}),' (and optionally ',el('code',{text:'?peers=url1,url2'}),' and ',el('code',{text:'?metrics=url'}),').'));renderHeader();show();return;}
   const self=addHarvester(s.url,true);renderHeader();show();
   await loadInfo(self);
-  const qp=QS.get('peers');
-  const peers=qp!=null?qp.split(',').map(x=>x.trim()).filter(Boolean):(self.info&&self.info.atlas&&Array.isArray(self.info.atlas.peers)?self.info.atlas.peers:[]);
-  PEERS_HOW=qp!=null?'?peers=':self.info?'atlas.peers':'none (this harvester is offline)';
-  const qm=QS.get('metrics');METRICS=qm!=null?(qm||null):(self.info&&self.info.atlas&&self.info.atlas.metrics_url)||null;
+  // API-v2 §1: a harvester with atlas.proxy relays its peers and VictoriaMetrics on its own origin, so the page works
+  // over HTTPS behind a reverse proxy (no mixed content, one SSO cookie). ?peers= and ?metrics= still go direct.
+  const ai=(self.info&&self.info.atlas)||{},relay=ai.proxy===true,qp=QS.get('peers'),qm=QS.get('metrics');
+  const peers=qp!=null?qp.split(',').map(x=>x.trim()).filter(Boolean):(Array.isArray(ai.peers)?ai.peers:[]);
+  PEERS_HOW=qp!=null?'?peers=':self.info?(relay?'atlas.peers, relayed by '+hostName(self):'atlas.peers'):'none (this harvester is offline)';
+  METRICS=qm!=null?(qm||null):ai.metrics_url||null;
   if(METRICS&&!/^https?:\/\//.test(METRICS))METRICS=normUrl(METRICS);
-  METRICS_HOW=qm!=null?'?metrics=':'atlas.metrics_url';
-  const ps=peers.map(p=>addHarvester(p,false)).filter(Boolean);
+  METRICS_SHOWN=METRICS;METRICS_HOW=qm!=null?'?metrics=':'atlas.metrics_url';
+  if(qm==null&&relay&&METRICS){METRICS=self.url+'/api/metrics';METRICS_HOW='atlas.metrics_url, relayed by '+hostName(self);}
+  const ps=peers.map((p,i)=>qp==null&&relay?addHarvester(self.url+'/api/peer/'+i,false,{shown:normUrl(p)||String(p),relay:self}):addHarvester(p,false)).filter(Boolean);
   renderHeader();
   await Promise.all(ps.map(loadInfo));
   HARV.filter(h=>h.key).sort((a,b)=>a.key<b.key?-1:a.key>b.key?1:0).forEach((h,i)=>{h.slot=i;});let nx=HARV.filter(h=>h.key).length;for(const h of HARV)if(!h.key)h.slot=nx++;
@@ -1462,7 +1685,8 @@ async function boot(){
   setInterval(()=>{for(const H of HARV)if(H.status!=='duplicate')loadInfo(H);},30000);
   setInterval(()=>{if(METRICS&&document.visibilityState!=='hidden'&&(!HIST.fetchedAt||Date.now()/1000-HIST.fetchedAt>Math.max(60,Math.min(600,HIST.step||60))))loadHistory();},20000);
   setInterval(()=>{if(METRICS)loadCapacity();},600000);
-  setInterval(()=>{if(current()==='overview')renderOvLive();if(current()==='blockmap')renderConn();},5000);
+  setInterval(()=>{if(current()==='overview')renderOvLive();if(current()==='blockmap')renderConn();
+    const now=Date.now();if(ACT.size>5000)for(const [k,a] of ACT)if(a.v*Math.exp(-(now-a.t)/ACT_TAU)<1)ACT.delete(k);for(const [k,e] of IOD)if(now-e.at>120000)IOD.delete(k);},5000);
 }
 boot();
 </script>
