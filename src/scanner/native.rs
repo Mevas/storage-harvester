@@ -839,6 +839,7 @@ fn finish(
         entries.extend(worker.entries);
     }
     let mut owners = HashMap::new();
+    let mut untracked_links = Vec::new();
     for (inode, (worker, link)) in winners {
         tallies[link.node as usize]
             .part(link.direct)
@@ -857,6 +858,8 @@ fn finish(
                     others,
                 },
             );
+        } else if target.collect_handles {
+            untracked_links.push(inode);
         }
         if let Some(entry) = link.entry {
             let entry = &mut entries[entry_offsets[worker] + entry];
@@ -866,7 +869,10 @@ fn finish(
     }
 
     plain.sort_unstable();
-    let tree = build_tree(target, nodes, &tallies, owners, plain, root_dev);
+    let tree = build_tree(target, nodes, &tallies, owners, plain, root_dev).map(|mut tree| {
+        tree.untracked_links = untracked_links;
+        tree
+    });
     let mut reported: Vec<(Vec<u8>, NodeObservation)> = tree
         .as_ref()
         .map(|tree| {
@@ -970,6 +976,7 @@ fn build_tree(
         links,
         handles,
         plain,
+        untracked_links: Vec::new(),
     })
 }
 
