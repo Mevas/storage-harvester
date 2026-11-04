@@ -99,11 +99,14 @@ pub struct Disk {
     /// unattached volumes.
     pub key: String,
     pub lv: String,
-    /// device-mapper name, while the volume is active.
-    pub dm: Option<String>,
+    /// Its device-mapper name, whether or not it is active now.
+    pub dm: String,
+    /// The volume is active (mapped) as of the last reading.
+    pub active: bool,
     /// Provisioned (virtual) size.
     pub size: u64,
-    /// Mapped thin blocks. `None` while the volume is inactive: LVM cannot tell then.
+    /// Mapped thin blocks, as last seen; `None` until the volume has been active once (LVM
+    /// cannot tell an inactive volume's allocation).
     pub allocated: Option<u64>,
     /// The guest passes TRIM through, so blocks it frees return to the pool.
     pub discard: bool,
@@ -343,44 +346,111 @@ fn read_guests(pve: &Path) -> Vec<(u32, GuestKind, GuestConfig)> {
     guests
 }
 
-fn run(program: &str, args: &[&str]) -> Result<String> {
-    let output = Command::new(program)
+/// How long `lvs` and `dmsetup` may take: `lvs` can wait on an LVM lock, `dmsetup` on a
+/// suspended device.
+const COMMAND_DEADLINE: Duration = Duration::from_secs(15);
+
+/// Runs a read-only tool and returns its output, killing it past `deadline`.
+fn run(program: &str, args: &[&str], deadline: Duration) -> Result<String> {
+    use std::process::Stdio;
+    let mut child = Command::new(program)
         .args(args)
-        .output()
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .with_context(|| format!("failed to run {program}"))?;
-    if !output.status.success() {
+    let stdout = drain(child.stdout.take());
+    let stderr = drain(child.stderr.take());
+    let started = Instant::now();
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        if started.elapsed() > deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            bail!("{program} {} took longer than {deadline:?}", args.join(" "));
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    let stdout = stdout.join().unwrap_or_default();
+    if !status.success() {
+        let stderr = stderr.join().unwrap_or_default();
         bail!(
             "{program} {}: {}",
             args.join(" "),
-            String::from_utf8_lossy(&output.stderr).trim()
+            String::from_utf8_lossy(&stderr).trim()
         );
     }
-    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    Ok(String::from_utf8_lossy(&stdout).into_owned())
 }
 
-/// Active device-mapper devices: name → kernel name (`dm-7`).
-fn dm_kernel_names() -> HashMap<String, String> {
+/// Reads a child's pipe to its end (at most 16 MiB) on its own thread, so a chatty child never
+/// blocks on a full pipe while it is being waited for.
+fn drain(pipe: Option<impl std::io::Read + Send + 'static>) -> std::thread::JoinHandle<Vec<u8>> {
+    use std::io::Read;
+    std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        if let Some(pipe) = pipe {
+            let _ = pipe.take(16 << 20).read_to_end(&mut bytes);
+        }
+        bytes
+    })
+}
+
+/// An active device-mapper device, from sysfs.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct Device {
+    /// `major:minor`.
+    dev: String,
+    /// Sectors read and written since it was activated.
+    read: u64,
+    written: u64,
+}
+
+/// One reading of device-mapper: each device's status line, and its sysfs entry.
+struct Sample {
+    status: HashMap<String, String>,
+    devices: HashMap<String, Device>,
+    at: Instant,
+}
+
+fn sample() -> Result<Sample> {
+    let status = parse_dmsetup(&run("dmsetup", &["status"], COMMAND_DEADLINE)?);
+    Ok(Sample {
+        status,
+        devices: dm_devices(),
+        at: Instant::now(),
+    })
+}
+
+/// Active device-mapper devices by name (`/sys/block/dm-*`).
+fn dm_devices() -> HashMap<String, Device> {
     let Ok(entries) = fs::read_dir("/sys/block") else {
         return HashMap::new();
     };
     entries
         .flatten()
         .filter_map(|entry| {
-            let kernel = entry.file_name().to_str()?.to_string();
-            let name = fs::read_to_string(entry.path().join("dm/name")).ok()?;
-            Some((name.trim().to_string(), kernel))
+            let path = entry.path();
+            let name = fs::read_to_string(path.join("dm/name")).ok()?;
+            let dev = fs::read_to_string(path.join("dev")).ok()?;
+            let stat = fs::read_to_string(path.join("stat")).ok()?;
+            let fields: Vec<u64> = stat
+                .split_whitespace()
+                .filter_map(|field| field.parse().ok())
+                .collect();
+            Some((
+                name.trim().to_string(),
+                Device {
+                    dev: dev.trim().to_string(),
+                    read: *fields.get(2)?,
+                    written: *fields.get(6)?,
+                },
+            ))
         })
         .collect()
-}
-
-/// Sectors read and written by a block device since boot (`/sys/block/<kernel>/stat`).
-fn io_sectors(kernel: &str) -> Option<(u64, u64)> {
-    let text = fs::read_to_string(format!("/sys/block/{kernel}/stat")).ok()?;
-    let fields: Vec<u64> = text
-        .split_whitespace()
-        .filter_map(|field| field.parse().ok())
-        .collect();
-    Some((*fields.get(2)?, *fields.get(6)?))
 }
 
 fn qemu_running(vmid: u32) -> bool {
@@ -392,11 +462,15 @@ fn qemu_running(vmid: u32) -> bool {
 
 /// A running container's init process, as the host sees it.
 fn lxc_pid(vmid: u32) -> Option<u32> {
-    run("lxc-info", &["-n", &vmid.to_string(), "-p", "-H"])
-        .ok()?
-        .trim()
-        .parse()
-        .ok()
+    run(
+        "lxc-info",
+        &["-n", &vmid.to_string(), "-p", "-H"],
+        Duration::from_secs(5),
+    )
+    .ok()?
+    .trim()
+    .parse()
+    .ok()
 }
 
 pub struct LvmScanner {
@@ -434,12 +508,12 @@ impl Scanner for LvmScanner {
                     "lv_name,pool_lv,lv_size,lv_active",
                     &lvm.vg,
                 ],
+                COMMAND_DEADLINE,
             )?,
             &lvm.pool,
         )?;
-        let tables = parse_dmsetup(&run("dmsetup", &["table"])?);
-        let status = parse_dmsetup(&run("dmsetup", &["status"])?);
-        let kernel = dm_kernel_names();
+        let tables = parse_dmsetup(&run("dmsetup", &["table"], COMMAND_DEADLINE)?);
+        let sample = sample()?;
         let storages = fs::read_to_string(lvm.pve_config.join("storage.cfg"))
             .map(|text| parse_storage_cfg(&text))
             .unwrap_or_default();
@@ -447,15 +521,15 @@ impl Scanner for LvmScanner {
         let inputs = Inputs {
             volumes,
             tables,
-            status,
+            sample,
             storages,
             guests,
         };
         let (mut pool, mut tree) = build(target, lvm, &inputs)?;
-        pool.disks = kernel
+        let devices = &inputs.sample.devices;
+        pool.disks = devices
             .get(&pool.dm)
-            .and_then(|name| fs::read_to_string(format!("/sys/block/{name}/dev")).ok())
-            .map(|id| crate::fsinfo::disks_of(id.trim()))
+            .map(|device| crate::fsinfo::disks_of(&device.dev))
             .unwrap_or_default();
 
         // Running containers: walk their root disks from the host.
@@ -470,13 +544,23 @@ impl Scanner for LvmScanner {
                 continue;
             };
             let Some(vmid) = guest.vmid else { continue };
+            let Some(volume) = devices.get(&guest.disks[disk_index].dm) else {
+                continue;
+            };
             let Some(pid) = lxc_pid(vmid) else { continue };
             if cancel.load(Ordering::Relaxed) {
                 bail!("scan of {} cancelled", target.name);
             }
+            let root = match open_container_root(pid, &volume.dev) {
+                Ok(root) => root,
+                Err(error) => {
+                    warn!(target = %target.name, vmid, %error, "container root not walked");
+                    continue;
+                }
+            };
             let display = PathBuf::from(tree.display_path(guest.disks[disk_index].node));
             let budget = target.tree_max_directories.saturating_sub(tree.nodes.len());
-            match walk_container(target, pid, display, budget, cancel) {
+            match walk_container(target, &root, display, budget, cancel) {
                 Ok(result) => {
                     walks.add(&result);
                     if let Some(walked) = result.tree {
@@ -541,7 +625,7 @@ impl Walks {
 struct Inputs {
     volumes: Vec<ThinVolume>,
     tables: HashMap<String, String>,
-    status: HashMap<String, String>,
+    sample: Sample,
     storages: Vec<Storage>,
     guests: Vec<(u32, GuestKind, GuestConfig)>,
 }
@@ -576,6 +660,7 @@ fn build(target: &Target, lvm: &LvmTarget, inputs: &Inputs) -> Result<(Pool, Dir
         .with_context(|| format!("no active thin pool {}/{}", lvm.vg, lvm.pool))?;
     let chunk = pool_chunk(&table).unwrap_or(64 * 1024);
     let (used, size, meta_used, meta_size) = inputs
+        .sample
         .status
         .get(&dm)
         .and_then(|status| pool_usage(status, chunk))
@@ -596,27 +681,27 @@ fn build(target: &Target, lvm: &LvmTarget, inputs: &Inputs) -> Result<(Pool, Dir
         .map(|volume| (volume.lv.as_str(), volume))
         .collect();
     let disk = |key: &str, volume: &ThinVolume, discard: bool| {
-        let dm = volume
-            .active
-            .then(|| dm_name(&lvm.vg, &volume.lv))
-            .filter(|name| inputs.status.contains_key(name));
-        let allocated = dm
-            .as_ref()
-            .and_then(|name| inputs.status.get(name))
-            .and_then(|status| thin_mapped(status))
-            .map(|sectors| sectors * SECTOR);
+        let dm = dm_name(&lvm.vg, &volume.lv);
+        let mapped = inputs
+            .sample
+            .status
+            .get(&dm)
+            .and_then(|status| thin_mapped(status));
+        // Counters as of now, so a scan never publishes a disk at zero.
+        let device = inputs.sample.devices.get(&dm).cloned().unwrap_or_default();
         Disk {
             key: key.to_string(),
             lv: volume.lv.clone(),
             dm,
+            active: mapped.is_some(),
             size: volume.size,
-            allocated,
+            allocated: mapped.map(|sectors| sectors * SECTOR),
             discard,
             walked: false,
             node: NONE,
             unaccounted: 0,
-            read: 0,
-            written: 0,
+            read: device.read * SECTOR,
+            written: device.written * SECTOR,
             read_rate: 0,
             write_rate: 0,
         }
@@ -738,19 +823,52 @@ fn build(target: &Target, lvm: &LvmTarget, inputs: &Inputs) -> Result<(Pool, Dir
     Ok((pool, tree))
 }
 
-/// Walks a running container's root filesystem through `/proc/<pid>/root`.
+/// Opens a running container's root directory through its init process, and checks that it
+/// is on the container's own volume (`major:minor`). A PID reused by a host process since
+/// `lxc-info` answered would give the host's root instead.
+#[cfg(target_os = "linux")]
+fn open_container_root(pid: u32, volume: &str) -> Result<fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let root = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_DIRECTORY | libc::O_CLOEXEC)
+        .open(format!("/proc/{pid}/root"))?;
+    check_root_device(&root, volume)?;
+    Ok(root)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn open_container_root(_pid: u32, _volume: &str) -> Result<fs::File> {
+    bail!("walking containers needs Linux")
+}
+
+#[cfg(target_os = "linux")]
+fn check_root_device(root: &fs::File, volume: &str) -> Result<()> {
+    use std::os::unix::fs::MetadataExt;
+    let dev = root.metadata()?.dev();
+    let found = format!("{}:{}", libc::major(dev), libc::minor(dev));
+    if found != volume {
+        bail!("root is on {found}, not the container's volume {volume}");
+    }
+    Ok(())
+}
+
+/// Walks a container's root filesystem through the descriptor `root` holds, so the walk stays
+/// on that directory whatever happens to the process. Entries on other devices are skipped,
+/// so a symlink swapped in mid-walk leads nowhere.
 fn walk_container(
     target: &Target,
-    pid: u32,
+    root: &fs::File,
     display: PathBuf,
     budget: usize,
     cancel: &AtomicBool,
 ) -> Result<ScanResult> {
+    use std::os::fd::AsRawFd;
     let mut walk = target.clone();
     walk.lvm = None;
     walk.scanner = "native".to_string();
-    // `/proc/<pid>/root` is a symlink; the trailing slash makes the walk start at its target.
-    walk.scan_path = PathBuf::from(format!("/proc/{pid}/root/"));
+    // A magic link to the open directory; the trailing slash makes the walk start at it.
+    walk.scan_path = PathBuf::from(format!("/proc/self/fd/{}/", root.as_raw_fd()));
     walk.display_path = display;
     walk.report_mode = ReportMode::Tree;
     walk.report_depth = 0;
@@ -826,7 +944,7 @@ impl Pool {
                 object.insert("u".into(), json!(disk.unaccounted));
                 object.insert("w".into(), json!(disk.write_rate));
                 object.insert("rd".into(), json!(disk.read_rate));
-                if disk.allocated.is_none() {
+                if !disk.active {
                     object.insert("inactive".into(), json!(true));
                 }
             }
@@ -855,7 +973,7 @@ impl Pool {
                         "uuid": guest.uuid, "path": tree.display_path(guest.node),
                         "disks": guest.disks.iter().map(|disk| json!({
                             "key": disk.key, "lv": disk.lv, "path": tree.display_path(disk.node),
-                            "size": disk.size, "allocated": disk.allocated,
+                            "size": disk.size, "allocated": disk.allocated, "active": disk.active,
                             "discard": disk.discard, "walked": disk.walked,
                             "write_rate": disk.write_rate, "read_rate": disk.read_rate,
                         })).collect::<Vec<_>>(),
@@ -878,18 +996,46 @@ impl Pool {
 }
 
 /// Moves a disk node to `allocated` bytes. For a walked container root, only the part no file
-/// accounts for moves. Returns the change made to the node's subtree.
-fn set_allocated(tree: &mut DirTree, disk: &mut Disk, allocated: u64) -> Delta {
-    let files = tree.nodes[disk.node as usize]
+/// accounts for moves, unless allocation fell below what the walk found (freed and trimmed
+/// since): then the directories overstate the disk, and it goes opaque until a scan walks it
+/// again. Returns the change to the node's subtree, and whether it went opaque.
+fn set_allocated(tree: &mut DirTree, disk: &mut Disk, allocated: u64) -> (Delta, bool) {
+    let node = disk.node as usize;
+    let files = tree.nodes[node]
         .total_blocks()
         .saturating_sub(disk.unaccounted);
+    disk.allocated = Some(allocated);
+    if disk.walked && allocated < files {
+        let before = tree.nodes[node].sub;
+        let own = Delta {
+            blocks: tree.nodes[node].own_blocks as i64,
+            apparent: tree.nodes[node].own_apparent as i64,
+            ..Delta::default()
+        };
+        for child in std::mem::take(&mut tree.nodes[node].children) {
+            tree.detach(child);
+        }
+        let opaque = Tally {
+            blocks: allocated,
+            apparent: allocated,
+            ..Tally::default()
+        };
+        let disk_node = &mut tree.nodes[node];
+        (disk_node.direct, disk_node.sub) = (opaque, opaque);
+        (disk_node.own_blocks, disk_node.own_apparent) = (0, 0);
+        let delta = Delta::between(&before, &opaque).plus(own.negate());
+        let parent = disk_node.parent;
+        tree.propagate(parent, &delta);
+        disk.walked = false;
+        disk.unaccounted = allocated;
+        return (delta, true);
+    }
     let unaccounted = if disk.walked {
-        allocated.saturating_sub(files)
+        allocated - files
     } else {
         allocated
     };
     let change = unaccounted as i64 - disk.unaccounted as i64;
-    disk.allocated = Some(allocated);
     disk.unaccounted = unaccounted;
     let delta = Delta {
         blocks: change,
@@ -897,11 +1043,14 @@ fn set_allocated(tree: &mut DirTree, disk: &mut Disk, allocated: u64) -> Delta {
         ..Delta::default()
     };
     if change != 0 {
-        tree.nodes[disk.node as usize].direct.apply(&delta);
+        tree.nodes[node].direct.apply(&delta);
         tree.propagate(disk.node, &delta);
     }
-    delta
+    (delta, false)
 }
+
+/// The last I/O counters seen per device: `(when, sectors read, sectors written)`.
+type Counters = HashMap<String, (Instant, u64, u64)>;
 
 /// Follows allocation and I/O of an `lvm_thin` target until the process exits.
 pub fn follow(store: Arc<LiveStore>, lt: Arc<LiveTarget>, interval: Duration) {
@@ -910,7 +1059,7 @@ pub fn follow(store: Arc<LiveStore>, lt: Arc<LiveTarget>, interval: Duration) {
     std::thread::Builder::new()
         .name("harvester-lvm".to_string())
         .spawn(move || {
-            let mut last: HashMap<String, (Instant, u64, u64)> = HashMap::new();
+            let mut last = Counters::new();
             loop {
                 std::thread::sleep(interval);
                 if let Err(error) = poll(&store, &lt, &mut last) {
@@ -922,71 +1071,106 @@ pub fn follow(store: Arc<LiveStore>, lt: Arc<LiveTarget>, interval: Duration) {
         .expect("spawn an lvm poller");
 }
 
-fn poll(
+fn poll(store: &LiveStore, lt: &LiveTarget, last: &mut Counters) -> Result<()> {
+    let generation = lt
+        .state
+        .read()
+        .unwrap_or_else(PoisonError::into_inner)
+        .as_ref()
+        .map(|state| state.generation);
+    let Some(generation) = generation else {
+        return Ok(());
+    };
+    // Sampled without the lock: `dmsetup` may be slow.
+    let sample = sample()?;
+    apply(store, lt, generation, &sample, last);
+    Ok(())
+}
+
+/// Applies a sample to the tree it was taken for. A scan that replaced the tree meanwhile read
+/// device-mapper itself, so the sample is dropped rather than written over newer numbers.
+/// Events go out under the lock, so they cannot interleave with a scan's.
+fn apply(
     store: &LiveStore,
     lt: &LiveTarget,
-    last: &mut HashMap<String, (Instant, u64, u64)>,
-) -> Result<()> {
-    let status = parse_dmsetup(&run("dmsetup", &["status"])?);
-    let kernel = dm_kernel_names();
-    let now = Instant::now();
+    generation: u64,
+    sample: &Sample,
+    last: &mut Counters,
+) -> bool {
+    let mut guard = lt.state.write().unwrap_or_else(PoisonError::into_inner);
+    let Some(state) = guard.as_mut() else {
+        return false;
+    };
+    if state.generation != generation {
+        return false;
+    }
+    let Some(mut pool) = state.tree.pool.take() else {
+        return false;
+    };
+    if let Some((used, size, meta_used, meta_size)) = sample
+        .status
+        .get(&pool.dm)
+        .and_then(|line| pool_usage(line, pool.chunk))
+    {
+        (pool.used, pool.size, pool.meta_used, pool.meta_size) = (used, size, meta_used, meta_size);
+    }
     let mut changes = Vec::new();
     let mut io = Vec::new();
+    let mut rescan = false;
+    for disk in pool
+        .guests
+        .iter_mut()
+        .flat_map(|guest| guest.disks.iter_mut())
     {
-        let mut guard = lt.state.write().unwrap_or_else(PoisonError::into_inner);
-        let Some(state) = guard.as_mut() else {
-            return Ok(());
-        };
-        let Some(mut pool) = state.tree.pool.take() else {
-            return Ok(());
-        };
-        if let Some((used, size, meta_used, meta_size)) = status
-            .get(&pool.dm)
-            .and_then(|line| pool_usage(line, pool.chunk))
-        {
-            (pool.used, pool.size, pool.meta_used, pool.meta_size) =
-                (used, size, meta_used, meta_size);
-        }
-        for guest in &mut pool.guests {
-            for disk in &mut guest.disks {
-                let Some(dm) = disk.dm.clone() else { continue };
-                if let Some(sectors) = status.get(&dm).and_then(|line| thin_mapped(line)) {
-                    let allocated = sectors * SECTOR;
-                    if disk.allocated != Some(allocated) {
-                        let delta = set_allocated(&mut state.tree, disk, allocated);
-                        if !delta.is_zero() {
-                            changes.push((
-                                state.tree.display_path(disk.node),
-                                delta,
-                                state.tree.nodes[disk.node as usize].total_blocks(),
-                            ));
-                        }
-                    }
-                }
-                let Some((read, written)) = kernel.get(&dm).and_then(|k| io_sectors(k)) else {
-                    continue;
-                };
-                (disk.read, disk.written) = (read * SECTOR, written * SECTOR);
-                if let Some((then, read0, written0)) = last.insert(dm, (now, read, written)) {
-                    let seconds = now.duration_since(then).as_secs_f64().max(0.001);
-                    let rate = |now: u64, then: u64| {
-                        (now.saturating_sub(then) as f64 * SECTOR as f64 / seconds) as u64
-                    };
-                    disk.read_rate = rate(read, read0);
-                    disk.write_rate = rate(written, written0);
-                    if disk.read_rate > 0 || disk.write_rate > 0 {
-                        io.push(json!({
-                            "path": state.tree.display_path(disk.node),
-                            "w": disk.write_rate, "r": disk.read_rate,
-                        }));
-                    }
+        let mapped = sample
+            .status
+            .get(&disk.dm)
+            .and_then(|line| thin_mapped(line));
+        disk.active = mapped.is_some();
+        if let Some(sectors) = mapped {
+            let allocated = sectors * SECTOR;
+            if disk.allocated != Some(allocated) {
+                let (delta, opaque) = set_allocated(&mut state.tree, disk, allocated);
+                rescan |= opaque;
+                if !delta.is_zero() {
+                    changes.push((
+                        state.tree.display_path(disk.node),
+                        delta,
+                        state.tree.nodes[disk.node as usize].total_blocks(),
+                    ));
                 }
             }
         }
-        state.tree.pool = Some(pool);
-        if !changes.is_empty() {
-            state.live_at = Some(SystemTime::now());
+        let device = sample.devices.get(&disk.dm).filter(|_| disk.active);
+        let Some(device) = device else {
+            (disk.read_rate, disk.write_rate) = (0, 0);
+            last.remove(&disk.dm);
+            continue;
+        };
+        (disk.read, disk.written) = (device.read * SECTOR, device.written * SECTOR);
+        let previous = last.insert(disk.dm.clone(), (sample.at, device.read, device.written));
+        if let Some((then, read, written)) = previous {
+            let seconds = sample.at.duration_since(then).as_secs_f64().max(0.001);
+            let rate = |now: u64, then: u64| {
+                (now.saturating_sub(then) as f64 * SECTOR as f64 / seconds) as u64
+            };
+            disk.read_rate = rate(device.read, read);
+            disk.write_rate = rate(device.written, written);
+            if disk.read_rate > 0 || disk.write_rate > 0 {
+                io.push(json!({
+                    "path": state.tree.display_path(disk.node),
+                    "w": disk.write_rate, "r": disk.read_rate,
+                }));
+            }
         }
+    }
+    last.retain(|name, _| sample.devices.contains_key(name));
+    state.tree.pool = Some(pool);
+    if rescan {
+        lt.request_rescan();
+    }
+    if !changes.is_empty() {
+        state.live_at = Some(SystemTime::now());
     }
     let at = millis(SystemTime::now());
     for (path, delta, total) in changes {
@@ -995,7 +1179,8 @@ fn poll(
             "change",
             json!({
                 "t": at, "host": store.host, "target": lt.target.name, "path": path,
-                "db": delta.blocks, "da": delta.apparent, "df": 0, "b": total, "src": "lvm",
+                "db": delta.blocks, "da": delta.apparent, "df": delta.files, "b": total,
+                "src": "lvm",
             }),
         );
     }
@@ -1005,7 +1190,7 @@ fn poll(
             json!({ "t": at, "host": store.host, "target": lt.target.name, "disks": io }),
         );
     }
-    Ok(())
+    true
 }
 
 #[cfg(test)]
@@ -1083,7 +1268,18 @@ sata0: local-lvm:vm-103-disk-1,size=32G
         Inputs {
             volumes: parse_lvs(LVS, "data").unwrap(),
             tables: parse_dmsetup(TABLE),
-            status: parse_dmsetup(STATUS),
+            sample: Sample {
+                status: parse_dmsetup(STATUS),
+                devices: HashMap::from([(
+                    "pve-vm--100--disk--0".to_string(),
+                    Device {
+                        dev: "252:9".to_string(),
+                        read: 10,
+                        written: 20,
+                    },
+                )]),
+                at: Instant::now(),
+            },
             storages: parse_storage_cfg(STORAGE),
             guests: vec![
                 (
@@ -1174,7 +1370,13 @@ sata0: local-lvm:vm-103-disk-1,size=32G
         assert_eq!(tree.nodes[nuc as usize].total_blocks(), 248346880 * 512);
         // An inactive volume: listed, size unknown.
         let hassos = &pool.guests[2].disks[0];
-        assert_eq!((hassos.allocated, hassos.size), (None, 34359738368));
+        assert_eq!(
+            (hassos.active, hassos.allocated, hassos.size),
+            (false, None, 34359738368)
+        );
+        // Counters as of the scan, not zero until the first poll.
+        let scsi0 = &pool.guests[0].disks[0];
+        assert_eq!((scsi0.read, scsi0.written), (10 * 512, 20 * 512));
         assert!(tree.find("/local-lvm/Unattached/vm-110-disk-0").is_some());
         let disks: u64 = pool
             .guests
@@ -1242,12 +1444,167 @@ sata0: local-lvm:vm-103-disk-1,size=32G
         assert_eq!(object["v"], "disk", "the walked root is the disk now");
 
         // Allocation grows: only the unaccounted part moves.
-        let delta = set_allocated(&mut tree, &mut pool.guests[1].disks[0], allocated + 65536);
-        assert_eq!(delta.blocks, 65536);
+        let (delta, opaque) =
+            set_allocated(&mut tree, &mut pool.guests[1].disks[0], allocated + 65536);
+        assert_eq!((delta.blocks, opaque), (65536, false));
         assert_eq!(tree.root().total_blocks(), before + 65536);
-        // Shrinks below what the files hold: the files stay, the gap is gone.
-        set_allocated(&mut tree, &mut pool.guests[1].disks[0], files / 2);
-        assert_eq!(pool.guests[1].disks[0].unaccounted, 0);
-        assert_eq!(tree.nodes[disk_node as usize].total_blocks(), files);
+        // Trimmed below what the walk found: the disk is its allocation again, opaque, until
+        // a scan walks it.
+        let (_, opaque) = set_allocated(&mut tree, &mut pool.guests[1].disks[0], files / 2);
+        assert!(opaque);
+        assert_eq!(tree.nodes[disk_node as usize].total_blocks(), files / 2);
+        assert_eq!(tree.root().total_blocks(), before - allocated + files / 2);
+        assert!(tree.find("/local-lvm/tailscale (101)/rootfs/var").is_none());
+        assert!(!pool.guests[1].disks[0].walked);
+        let guest = tree.find("/local-lvm/tailscale (101)").unwrap();
+        assert_eq!(tree.nodes[guest as usize].sub.files, 0);
+    }
+
+    /// Polls follow a volume that comes and goes between scans, and never write a sample over
+    /// a newer scan.
+    #[test]
+    fn polls_follow_activation_and_skip_replaced_trees() {
+        let target = target();
+        let (pool, mut tree) = build(&target, target.lvm.as_ref().unwrap(), &inputs()).unwrap();
+        tree.pool = Some(Box::new(pool));
+        let store = LiveStore::new(
+            "pve".into(),
+            std::slice::from_ref(&target),
+            Path::new("/"),
+            Duration::ZERO,
+        )
+        .unwrap();
+        store.replace(0, tree, SystemTime::now(), Duration::ZERO);
+        let lt = &store.targets[0];
+        let mut events = store.subscribe();
+        let total = || {
+            lt.state
+                .read()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .tree
+                .root()
+                .total_blocks()
+        };
+        let hassos = |f: &dyn Fn(&Disk)| {
+            let guard = lt.state.read().unwrap();
+            f(&guard.as_ref().unwrap().tree.pool.as_ref().unwrap().guests[2].disks[0])
+        };
+        let before = total();
+        let started = Instant::now();
+        let sample = |sectors: Option<u64>, written: u64, at: Duration| {
+            let mut status = parse_dmsetup(STATUS);
+            let mut devices = HashMap::new();
+            if let Some(sectors) = sectors {
+                let name = "pve-vm--103--disk--1".to_string();
+                status.insert(name.clone(), format!("0 67108864 thin {sectors} 2047"));
+                devices.insert(
+                    name,
+                    Device {
+                        dev: "252:31".to_string(),
+                        read: 0,
+                        written,
+                    },
+                );
+            }
+            Sample {
+                status,
+                devices,
+                at: started + at,
+            }
+        };
+        let mut last = Counters::new();
+
+        // Started after the scan: picked up by the next poll.
+        assert!(apply(
+            &store,
+            lt,
+            1,
+            &sample(Some(2000), 100, Duration::ZERO),
+            &mut last
+        ));
+        assert_eq!(total(), before + 2000 * 512);
+        hassos(&|disk| assert_eq!((disk.active, disk.allocated), (true, Some(2000 * 512))));
+        let event: Value = serde_json::from_str(&events.try_recv().unwrap().data).unwrap();
+        assert_eq!(event["path"], "/local-lvm/hassos (103)/sata0");
+        assert_eq!(event["db"], 2000 * 512);
+        // Writing: a rate from the second sample on.
+        apply(
+            &store,
+            lt,
+            1,
+            &sample(Some(2000), 300, Duration::from_secs(1)),
+            &mut last,
+        );
+        hassos(&|disk| assert_eq!(disk.write_rate, 200 * 512));
+        // Stopped: inactive, idle, its allocation kept (the pool still holds it).
+        apply(
+            &store,
+            lt,
+            1,
+            &sample(None, 0, Duration::from_secs(2)),
+            &mut last,
+        );
+        hassos(&|disk| {
+            assert_eq!((disk.active, disk.write_rate), (false, 0));
+            assert_eq!(disk.allocated, Some(2000 * 512));
+        });
+        assert!(!last.contains_key("pve-vm--103--disk--1"));
+        // Sampled for a tree a scan has replaced since: dropped.
+        assert!(!apply(
+            &store,
+            lt,
+            0,
+            &sample(Some(9000), 0, Duration::ZERO),
+            &mut last
+        ));
+        assert_eq!(total(), before + 2000 * 512);
+    }
+
+    #[test]
+    fn commands_past_their_deadline_are_killed() {
+        let started = Instant::now();
+        let error = run("sleep", &["5"], Duration::from_millis(200)).unwrap_err();
+        assert!(error.to_string().contains("took longer"), "{error}");
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert_eq!(
+            run("sh", &["-c", "echo hi"], Duration::from_secs(5)).unwrap(),
+            "hi\n"
+        );
+    }
+
+    /// The walk follows the directory a descriptor holds, wherever its path goes, and a root
+    /// on another device than the container's volume is refused.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn container_roots_are_pinned_and_checked() {
+        use std::os::unix::fs::MetadataExt;
+        let temp = tempfile::tempdir().unwrap();
+        let ct = temp.path().join("ct");
+        fs::create_dir_all(ct.join("etc")).unwrap();
+        fs::write(ct.join("etc/conf"), vec![1u8; 50_000]).unwrap();
+        let root = fs::File::open(&ct).unwrap();
+        let dev = root.metadata().unwrap().dev();
+        check_root_device(&root, &format!("{}:{}", libc::major(dev), libc::minor(dev))).unwrap();
+        assert!(check_root_device(&root, "1:2").is_err());
+
+        // Swap the path for one leading elsewhere: the walk still sees the original.
+        fs::rename(&ct, temp.path().join("moved")).unwrap();
+        fs::create_dir_all(ct.join("other")).unwrap();
+        let mut target = target();
+        target.exclude.clear();
+        let walked = walk_container(
+            &target,
+            &root,
+            PathBuf::from("/local-lvm/ct (1)/rootfs"),
+            1000,
+            &AtomicBool::new(false),
+        )
+        .unwrap()
+        .tree
+        .unwrap();
+        assert!(walked.find("/local-lvm/ct (1)/rootfs/etc").is_some());
+        assert!(walked.find("/local-lvm/ct (1)/rootfs/other").is_none());
     }
 }
