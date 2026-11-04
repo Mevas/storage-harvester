@@ -194,31 +194,30 @@ impl TreeState {
 
     /// Links a scan saw while it also saw the same file with one link elsewhere: the file was
     /// linked while the scan ran, between its two directories' reads, and is counted twice.
-    /// Returns the holders to re-read, and whether one is out of reach (sealed or untracked).
-    fn linked_during_scan(&self) -> (Vec<u32>, bool) {
-        let mut reread = Vec::new();
+    /// Returns the directories to re-read. Sealed ones are left alone: keys fold 64-bit inode
+    /// numbers, so a match there may be another file, and a scan asked for on it would find
+    /// the same match again, forever.
+    fn linked_during_scan(&self) -> Vec<u32> {
         if self.plain.is_empty() {
             // Not a fanotify target: nothing recorded, nothing to reconcile.
-            return (reread, false);
+            return Vec::new();
         }
-        let mut out_of_reach = false;
-        for (inode, owner) in &self.tree.links {
-            for holder in self.plain_holders(*inode) {
-                if holder == owner.node || !self.tree.nodes[holder as usize].alive {
-                    continue;
-                }
-                if self.tree.nodes[holder as usize].sealed {
-                    out_of_reach = true;
-                } else if !reread.contains(&holder) {
-                    reread.push(holder);
+        let linked = self
+            .tree
+            .links
+            .iter()
+            .map(|(inode, owner)| (*inode, Some(owner.node)))
+            .chain(self.untracked.iter().map(|inode| (*inode, None)));
+        let mut reread = HashSet::new();
+        for (inode, owner) in linked {
+            for holder in self.plain_holders(inode) {
+                let held = &self.tree.nodes[holder as usize];
+                if Some(holder) != owner && held.alive && !held.sealed {
+                    reread.insert(holder);
                 }
             }
         }
-        out_of_reach |= self
-            .untracked
-            .iter()
-            .any(|inode| !self.plain_holders(*inode).is_empty());
-        (reread, out_of_reach)
+        reread.into_iter().collect()
     }
 
     /// Whether the tree already counts this multiply-linked file: under a live owner, or in an
@@ -484,11 +483,7 @@ impl LiveStore {
         let total = state.tree.root().total_blocks();
         let keys: Vec<StableKey> = lock(&lt.during_scan).drain().collect();
         let mut replay: Vec<u32> = keys.iter().filter_map(|key| state.resolve(key)).collect();
-        let (reread, out_of_reach) = state.linked_during_scan();
-        replay.extend(reread);
-        if out_of_reach {
-            lt.request_rescan();
-        }
+        replay.extend(state.linked_during_scan());
         *guard = Some(state);
         lt.scanning.store(false, Ordering::Relaxed);
         drop(guard);
@@ -1735,6 +1730,27 @@ mod tests {
 
         settle(&store, &[]);
         assert_eq!(tree_totals(&store), truth);
+    }
+
+    /// A file in a sealed directory whose folded key matches a linked file's (another file,
+    /// on a filesystem with 64-bit inodes) does not make every scan ask for the next one.
+    #[test]
+    fn a_folded_key_match_in_a_sealed_directory_does_not_ask_for_scans() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        write(&root.join("b/file.bin"), 300_000);
+        fs::hard_link(root.join("b/file.bin"), root.join("b/twin.bin")).unwrap();
+        let store = capped(root, 4, true);
+        let target = store.targets[0].target.clone();
+        for _ in 0..3 {
+            let mut tree = scan(&target);
+            let inode = *tree.links.keys().next().unwrap();
+            let sealed = tree.find("/data/a").unwrap();
+            tree.plain.push((plain_key(inode.0, inode.1), sealed));
+            tree.plain.sort_unstable();
+            store.replace(0, tree, SystemTime::now(), Duration::ZERO);
+        }
+        assert_eq!(rescans(&store), 0);
     }
 
     /// A large directory re-read lists all of its files in the live index again; that alone
