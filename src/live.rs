@@ -329,7 +329,7 @@ impl LiveTarget {
     }
 
     /// Asks for a scan sooner than the interval (the scheduler spaces them out).
-    fn request_rescan(&self) {
+    pub(crate) fn request_rescan(&self) {
         self.rescans_requested.fetch_add(1, Ordering::Relaxed);
         self.rescan.notify_one();
     }

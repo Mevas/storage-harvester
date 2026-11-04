@@ -116,7 +116,9 @@ atlas:
 event streams included) and `/api/metrics/...` to `atlas.metrics_url` (`query`,
 `query_range`, `series`, `labels` and label values only), so the page talks to one origin.
 That is what lets it work over HTTPS behind a reverse proxy with single sign-on, where the
-browser would block plain-HTTP peers on the LAN. Relayed peers must be `http://`.
+browser would block plain-HTTP peers on the LAN. Relayed peers must be `http://`. A relayed
+answer ends after 45 s without data (event streams send a keepalive every 15 s), a finite one
+after 2 minutes in all, and at most 64 are relayed at once.
 
 `/api/info` also says which machine this is (`machine.uuid`, the SMBIOS product UUID) and which
 whole disks each filesystem sits on (`filesystems[].disks`: a QEMU disk reports
@@ -137,9 +139,13 @@ targets:
 The tree is the pool, then each guest with a disk in it (`NUC (100)`), then its disks
 (`scsi0`, `rootfs`, `efidisk0`; volumes no guest refers to go under `Unattached`). A disk's
 size is its allocated thin blocks: what it costs the pool, not what the guest sees. A running
-container's root disk also holds the container's directories, walked from the host through
-`/proc/<pid>/root` at each scan. Between scans, `dmsetup status` and `/sys/block/dm-*/stat` are
-read every `live.block_poll_interval` (2 s): allocation changes become `change` events with
+container's root disk also holds the container's directories, walked from the host at each
+scan: its root is opened once through the container's init process, checked to be on the
+container's own volume (so a recycled PID cannot point the walk at the host), and walked through
+that descriptor, staying on that filesystem. If the container frees and trims blocks below what
+the walk found, the disk shows as one opaque block of its allocation until the next scan. Between scans, `dmsetup status` and `/sys/block/dm-*/stat` are
+read every `live.block_poll_interval` (2 s), including volumes activated since the scan:
+allocation changes become `change` events with
 `src: "lvm"`, and disks doing I/O get an `io` event with bytes/s read and written, sent live
 only (not replayed).
 
@@ -150,7 +156,7 @@ walked file accounts for). `/api/info` lists the pool as a filesystem (`type: lv
 
 It needs the host: run the harvester there as root (it only reads), not in a container. Inactive
 volumes are listed with their provisioned size only; LVM cannot tell their allocation until
-they are activated.
+they are activated. `lvs` and `dmsetup` are killed after 15 s.
 
 ### Trees
 

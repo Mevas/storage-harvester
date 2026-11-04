@@ -412,6 +412,18 @@ fn the_relay_serves_peers_and_metrics_from_one_origin() {
         events.next_named("hello", Duration::from_secs(10))["host"],
         "the-peer"
     );
+    // And keeps streaming: a change on the peer's disk comes through.
+    write_file(&peer_host.data().join("later/new.bin"), 1_000_000);
+    let deadline = Instant::now() + SCAN_TIMEOUT;
+    loop {
+        let change = events.next_named("change", deadline - Instant::now());
+        // `/srv/data/later` from a scan, `/srv/data` (or deeper) from fanotify.
+        let path = change["path"].as_str().unwrap();
+        if path.starts_with("/srv/data") && change["db"].as_i64().unwrap() >= 1_000_000 {
+            assert_eq!(change["host"], "the-peer");
+            break;
+        }
+    }
 
     for refused in [
         "/api/peer/0/metrics",

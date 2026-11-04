@@ -12,7 +12,7 @@ use std::time::{Duration, SystemTime};
 
 use axum::body::Body;
 use axum::extract::{Path, Query, RawQuery, State};
-use axum::http::{header, HeaderMap, HeaderValue, Request, StatusCode, Uri};
+use axum::http::{header, HeaderMap, HeaderName, HeaderValue, Request, StatusCode, Uri};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
@@ -22,7 +22,8 @@ use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::client::legacy::Client;
 use hyper_util::rt::TokioExecutor;
 use serde_json::{json, Value};
-use tokio::sync::{broadcast, watch};
+use tokio::sync::{broadcast, watch, OwnedSemaphorePermit, Semaphore};
+use tokio::time::Instant;
 
 use crate::cache::SnapshotStore;
 use crate::config::Config;
@@ -84,7 +85,17 @@ pub struct Static {
     machine_uuid: Option<String>,
     block_poll: Duration,
     relay: Client<HttpConnector, Body>,
+    /// Upstream requests in flight, event streams included.
+    relay_slots: Arc<Semaphore>,
 }
+
+/// At most this many relayed requests at once; more get 503.
+const RELAY_SLOTS: usize = 64;
+/// How long an upstream may take to answer, and to send a whole finite answer.
+const RELAY_ANSWER: Duration = Duration::from_secs(30);
+const RELAY_BODY: Duration = Duration::from_secs(120);
+/// How long a relayed stream may go quiet; event streams send a keepalive every 15 s.
+const RELAY_IDLE: Duration = Duration::from_secs(45);
 
 impl Static {
     pub fn new(config: &Config, host: String) -> Self {
@@ -112,6 +123,7 @@ impl Static {
             relay: Client::builder(TokioExecutor::new())
                 .pool_idle_timeout(Duration::from_secs(30))
                 .build(connector),
+            relay_slots: Arc::new(Semaphore::new(RELAY_SLOTS)),
         }
     }
 }
@@ -208,7 +220,8 @@ async fn metrics(
     relay(&state, base, &rest, query, &headers).await
 }
 
-/// Forwards one GET, streaming the answer back (event streams included) until shutdown.
+/// Forwards one GET, streaming the answer back (event streams included). A finite answer gets
+/// `RELAY_BODY` in all; any answer ends after `RELAY_IDLE` without data, and at shutdown.
 async fn relay(
     state: &AtlasState,
     base: &str,
@@ -230,6 +243,9 @@ async fn relay(
             "the relay reaches http:// upstreams only",
         );
     }
+    let Ok(slot) = Arc::clone(&state.info.relay_slots).try_acquire_owned() else {
+        return error(StatusCode::SERVICE_UNAVAILABLE, "relay busy");
+    };
     let mut request = Request::get(uri);
     for name in [header::ACCEPT, header::CACHE_CONTROL] {
         if let Some(value) = headers.get(&name) {
@@ -239,12 +255,14 @@ async fn relay(
     let Ok(request) = request.body(Body::empty()) else {
         return error(StatusCode::BAD_GATEWAY, "bad upstream request");
     };
-    let response = match tokio::time::timeout(
-        Duration::from_secs(30),
-        state.info.relay.request(request),
-    )
-    .await
-    {
+    let mut stop = state.stop.clone();
+    let answer = tokio::select! {
+        answer = tokio::time::timeout(RELAY_ANSWER, state.info.relay.request(request)) => answer,
+        _ = stop.wait_for(|stopping| *stopping) => {
+            return error(StatusCode::SERVICE_UNAVAILABLE, "shutting down");
+        }
+    };
+    let response = match answer {
         Ok(Ok(response)) => response,
         Ok(Err(failure)) => {
             let cause = std::error::Error::source(&failure)
@@ -255,18 +273,77 @@ async fn relay(
         Err(_) => return error(StatusCode::GATEWAY_TIMEOUT, "upstream did not answer"),
     };
     let (mut parts, body) = response.into_parts();
-    for name in [
-        header::CONNECTION,
-        header::TRANSFER_ENCODING,
-        header::ACCESS_CONTROL_ALLOW_ORIGIN,
-    ] {
-        parts.headers.remove(name);
+    strip_hop_by_hop(&mut parts.headers);
+    // Set again by this harvester's own middleware.
+    parts.headers.remove(header::ACCESS_CONTROL_ALLOW_ORIGIN);
+    let streaming = parts
+        .headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|kind| kind.starts_with("text/event-stream"));
+    let deadline = (!streaming).then(|| Instant::now() + RELAY_BODY);
+    let body = bounded(
+        Body::new(body),
+        RELAY_IDLE,
+        deadline,
+        state.stop.clone(),
+        slot,
+    );
+    Response::from_parts(parts, body)
+}
+
+/// Headers that describe one connection, not the answer (RFC 9110 7.6.1), plus any the
+/// `Connection` header names.
+fn strip_hop_by_hop(headers: &mut HeaderMap) {
+    let named: Vec<HeaderName> = headers
+        .get_all(header::CONNECTION)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .flat_map(|value| value.split(','))
+        .filter_map(|token| HeaderName::from_bytes(token.trim().as_bytes()).ok())
+        .collect();
+    for name in named {
+        headers.remove(name);
     }
-    let mut stop = state.stop.clone();
-    let stream = Body::new(body).into_data_stream().take_until(async move {
-        let _ = stop.wait_for(|stopping| *stopping).await;
-    });
-    Response::from_parts(parts, Body::from_stream(stream))
+    for name in [
+        "connection",
+        "keep-alive",
+        "proxy-connection",
+        "proxy-authenticate",
+        "proxy-authorization",
+        "te",
+        "trailer",
+        "transfer-encoding",
+        "upgrade",
+    ] {
+        headers.remove(name);
+    }
+}
+
+/// `body`, ended after `idle` without data, at `deadline`, or at shutdown. Holds `slot` until
+/// it ends.
+fn bounded(
+    body: Body,
+    idle: Duration,
+    deadline: Option<Instant>,
+    stop: watch::Receiver<bool>,
+    slot: OwnedSemaphorePermit,
+) -> Body {
+    let state = (body.into_data_stream(), stop, slot);
+    Body::from_stream(stream::unfold(
+        state,
+        move |(mut data, mut stop, slot)| async move {
+            let mut until = Instant::now() + idle;
+            if let Some(deadline) = deadline {
+                until = until.min(deadline);
+            }
+            let next = tokio::select! {
+                next = tokio::time::timeout_at(until, data.next()) => next.ok().flatten(),
+                _ = stop.wait_for(|stopping| *stopping) => None,
+            };
+            next.map(|chunk| (chunk, (data, stop, slot)))
+        },
+    ))
 }
 
 fn error(status: StatusCode, message: &str) -> Response {
@@ -465,4 +542,98 @@ async fn events(
             .interval(Duration::from_secs(15))
             .text("keepalive"),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use std::convert::Infallible;
+
+    use axum::body::Bytes;
+
+    use super::*;
+
+    #[test]
+    fn hop_by_hop_headers_and_the_ones_connection_names_are_dropped() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::CONNECTION,
+            HeaderValue::from_static("X-Upstream-State, keep-alive"),
+        );
+        headers.append(header::CONNECTION, HeaderValue::from_static("close"));
+        headers.insert("x-upstream-state", HeaderValue::from_static("1"));
+        headers.insert("keep-alive", HeaderValue::from_static("timeout=5"));
+        headers.insert(header::TE, HeaderValue::from_static("trailers"));
+        headers.insert(
+            header::TRANSFER_ENCODING,
+            HeaderValue::from_static("chunked"),
+        );
+        headers.insert(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("text/event-stream"),
+        );
+        strip_hop_by_hop(&mut headers);
+        let left: Vec<&str> = headers.keys().map(|name| name.as_str()).collect();
+        assert_eq!(left, ["content-type"]);
+    }
+
+    fn one_slot() -> (Arc<Semaphore>, OwnedSemaphorePermit) {
+        let slots = Arc::new(Semaphore::new(1));
+        let slot = Arc::clone(&slots).try_acquire_owned().unwrap();
+        (slots, slot)
+    }
+
+    async fn chunks(body: Body) -> usize {
+        body.into_data_stream().count().await
+    }
+
+    /// An upstream that sends headers and then nothing more is cut off, and its slot is free
+    /// again; so is one that never stops sending, at the deadline, and any at shutdown.
+    #[tokio::test]
+    async fn relayed_bodies_end_when_stalled_overdue_or_shutting_down() {
+        let (_stop_tx, stop) = watch::channel(false);
+        let (slots, slot) = one_slot();
+        let stalled = stream::once(async { Ok::<_, Infallible>(Bytes::from_static(b"{")) })
+            .chain(stream::pending());
+        let started = Instant::now();
+        let body = bounded(
+            Body::from_stream(stalled),
+            Duration::from_millis(100),
+            None,
+            stop.clone(),
+            slot,
+        );
+        assert_eq!(chunks(body).await, 1);
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert_eq!(slots.available_permits(), 1, "the slot is released");
+
+        let (_, slot) = one_slot();
+        let endless = stream::unfold((), |()| async {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            Some((Ok::<_, Infallible>(Bytes::from_static(b"x")), ()))
+        });
+        let body = bounded(
+            Body::from_stream(endless),
+            Duration::from_secs(10),
+            Some(Instant::now() + Duration::from_millis(300)),
+            stop.clone(),
+            slot,
+        );
+        let sent = chunks(body).await;
+        assert!((5..30).contains(&sent), "{sent} chunks");
+
+        let (stop_tx, stop) = watch::channel(false);
+        let (_, slot) = one_slot();
+        let body = bounded(
+            Body::from_stream(stream::pending::<Result<Bytes, Infallible>>()),
+            Duration::from_secs(10),
+            None,
+            stop,
+            slot,
+        );
+        let reader = tokio::spawn(chunks(body));
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        stop_tx.send(true).unwrap();
+        let read = tokio::time::timeout(Duration::from_secs(2), reader).await;
+        assert_eq!(read.unwrap().unwrap(), 0);
+    }
 }
