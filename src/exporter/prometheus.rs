@@ -50,6 +50,12 @@ pub fn render(snapshots: &[TargetSnapshot], live: Option<&LiveStore>) -> String 
                 lt.changes.load(Ordering::Relaxed)
             )
             .unwrap();
+            writeln!(
+                out,
+                "storage_harvester_live_rescans_requested_total{{{base_labels}}} {}",
+                lt.rescans_requested.load(Ordering::Relaxed)
+            )
+            .unwrap();
         }
         if let Some(report) = &sharing {
             writeln!(
@@ -302,6 +308,11 @@ fn write_headers(out: &mut String) {
             "storage_harvester_live_changes_total",
             "counter",
             "Re-reads between scans that found a change.",
+        ),
+        (
+            "storage_harvester_live_rescans_requested_total",
+            "counter",
+            "Early scans asked for by changes the live tree could not settle itself.",
         ),
         (
             "storage_harvester_live_signals_total",

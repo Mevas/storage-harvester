@@ -10,7 +10,7 @@
 //! Both sources need `CAP_SYS_ADMIN`. Without one, trees still change at each scan, and the
 //! scan's differences are published the same way.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::ffi::OsStr;
 use std::os::unix::ffi::OsStrExt;
 use std::path::PathBuf;
@@ -80,6 +80,9 @@ pub struct LiveTarget {
     during_scan: Mutex<HashSet<StableKey>>,
     pub relists: AtomicU64,
     pub changes: AtomicU64,
+    /// Wakes the scheduler for an early scan, when the live tree cannot settle a change itself.
+    pub rescan: tokio::sync::Notify,
+    pub rescans_requested: AtomicU64,
 }
 
 /// A directory's identity that survives a rescan, unlike its node number.
@@ -101,7 +104,8 @@ pub struct TreeState {
     /// The scan's [`DirTree::plain`], and what re-reads found since: which directory each
     /// singly linked file was in.
     plain: Vec<(u32, u32)>,
-    plain_live: HashMap<u32, u32>,
+    /// `(key, node)`, like `plain`; a set, so files sharing a key keep every holder.
+    plain_live: BTreeSet<(u32, u32)>,
 }
 
 impl TreeState {
@@ -125,7 +129,7 @@ impl TreeState {
             handles,
             inos,
             plain,
-            plain_live: HashMap::new(),
+            plain_live: BTreeSet::new(),
         }
     }
 
@@ -137,9 +141,7 @@ impl TreeState {
         for index in from..self.tree.nodes.len() {
             self.inos.insert(self.tree.nodes[index].ino, index as u32);
         }
-        for (key, node) in self.tree.plain.drain(..) {
-            self.plain_live.insert(key, node);
-        }
+        self.plain_live.extend(self.tree.plain.drain(..));
     }
 
     /// Directories that held a singly linked file with this inode, at the scan or since. Some
@@ -152,7 +154,11 @@ impl TreeState {
             .take_while(|&&(k, _)| k == key)
             .map(|&(_, node)| node)
             .collect();
-        holders.extend(self.plain_live.get(&key));
+        holders.extend(
+            self.plain_live
+                .range((key, 0)..=(key, u32::MAX))
+                .map(|&(_, node)| node),
+        );
         holders
     }
 
@@ -224,6 +230,12 @@ impl LiveTarget {
     pub fn exclude(&self) -> &GlobSet {
         &self.exclude
     }
+
+    /// Asks for a scan sooner than the interval (the scheduler spaces them out).
+    fn request_rescan(&self) {
+        self.rescans_requested.fetch_add(1, Ordering::Relaxed);
+        self.rescan.notify_one();
+    }
 }
 
 impl LiveStore {
@@ -251,6 +263,8 @@ impl LiveStore {
                     during_scan: Mutex::new(HashSet::new()),
                     relists: AtomicU64::new(0),
                     changes: AtomicU64::new(0),
+                    rescan: tokio::sync::Notify::new(),
+                    rescans_requested: AtomicU64::new(0),
                 }))
             })
             .collect::<anyhow::Result<Vec<_>>>()?;
@@ -558,9 +572,9 @@ fn relist(lt: &LiveTarget, state: &mut TreeState, node: u32) -> Outcome {
         here,
         mut adopted,
     } = settle_links(&mut state.tree, node, &listing.links, &mut direct);
-    for &key in &listing.plain {
-        state.plain_live.insert(key, node);
-    }
+    state
+        .plain_live
+        .extend(listing.plain.iter().map(|&key| (key, node)));
 
     // Subdirectories that came or went. A directory replaced under the same name is a new one.
     let mut moved = Delta::default();
@@ -603,8 +617,17 @@ fn relist(lt: &LiveTarget, state: &mut TreeState, node: u32) -> Outcome {
                     moved = moved.plus(Delta::from(&sub.nodes[0].sub));
                     let from = state.tree.nodes.len();
                     if from + sub.nodes.len() > lt.target.tree_max_directories {
-                        // Past the cap: counted, but without nodes, as a scan would.
+                        // Past the cap: counted, but without nodes, as a scan would. Its new
+                        // links cannot be settled against the tree, so if one of them may be
+                        // counted elsewhere as a plain file, a scan has to settle it.
                         state.tree.nodes[node as usize].sealed = true;
+                        if sub
+                            .links
+                            .keys()
+                            .any(|&inode| !state.plain_holders(inode).is_empty())
+                        {
+                            lt.request_rescan();
+                        }
                         j += 1;
                         continue;
                     }
@@ -628,10 +651,16 @@ fn relist(lt: &LiveTarget, state: &mut TreeState, node: u32) -> Outcome {
     // fanotify reports a new hard link only to the new link's directory. If the file had one
     // link before, the directory holding that link still counts it as a plain file: re-read it,
     // and it sees the file is now counted here.
+    // A sealed directory is never re-read (it has untracked contents), so a scan settles it.
     for inode in adopted {
         for holder in state.plain_holders(inode) {
             let held = &state.tree.nodes[holder as usize];
-            if held.alive && !held.sealed && holder != node && !out.requeue.contains(&holder) {
+            if !held.alive || holder == node || out.requeue.contains(&holder) {
+                continue;
+            }
+            if held.sealed {
+                lt.request_rescan();
+            } else {
                 out.requeue.push(holder);
             }
         }
@@ -1326,6 +1355,8 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path();
         write(&root.join("a/movie.bin"), 200_000);
+        // In its own directory: nothing but the grafted link gets it re-read.
+        write(&root.join("c/third.bin"), 400_000);
         fs::create_dir_all(root.join("b/sub")).unwrap();
         let mut target = target(root);
         target.collect_handles = true;
@@ -1337,18 +1368,84 @@ mod tests {
 
         fs::hard_link(root.join("a/movie.bin"), root.join("b/movie.bin")).unwrap();
         fs::hard_link(root.join("a/later.bin"), root.join("b/sub/later.bin")).unwrap();
-        // A new directory holding a link, grafted by its parent's re-read.
+        // A new directory holding the only new link to a file, grafted by its parent's re-read.
         fs::create_dir_all(root.join("b/fresh")).unwrap();
-        fs::hard_link(root.join("a/movie.bin"), root.join("b/fresh/movie.bin")).unwrap();
+        fs::hard_link(root.join("c/third.bin"), root.join("b/fresh/third.bin")).unwrap();
         settle(&store, &["/data/b", "/data/b/sub"]);
 
         let live = tree_totals(&store);
         let fresh = totals(&scan(&target));
         assert_eq!(live["/data"], fresh["/data"], "{live:#?}");
-        let counted = |path: &str| live[path].0 > 150_000;
-        assert!(
-            counted("/data/a") != counted("/data/b"),
-            "movie.bin counted once: {live:#?}"
+        for moved in ["/data/a", "/data/c"] {
+            assert!(
+                live[moved].0 < 100_000,
+                "{moved}'s files are now counted under b/: {live:#?}"
+            );
+        }
+    }
+
+    /// Files sharing a folded key keep every holder: one cannot hide another.
+    #[test]
+    fn colliding_keys_keep_every_holder() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        fs::create_dir_all(root.join("a")).unwrap();
+        fs::create_dir_all(root.join("c")).unwrap();
+        let mut target = target(root);
+        target.collect_handles = true;
+        let store = started(&target);
+        let mut guard = store.targets[0].state.write().unwrap();
+        let state = guard.as_mut().unwrap();
+        let (a, c) = (
+            state.tree.find("/data/a").unwrap(),
+            state.tree.find("/data/c").unwrap(),
+        );
+        let key = plain_key(1, 42);
+        state.plain_live.extend([(key, a), (key, c)]);
+        let mut holders = state.plain_holders((1, 42));
+        holders.sort_unstable();
+        assert_eq!(holders, [a.min(c), a.max(c)]);
+    }
+
+    /// Where the tree is already approximate (a sealed directory, a new subtree past the
+    /// directory cap), a new link that may be counted twice asks for a scan instead.
+    #[test]
+    fn links_the_tree_cannot_settle_ask_for_a_scan() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        write(&root.join("a/file.bin"), 300_000);
+        // Past the cap, so `a` is sealed.
+        fs::create_dir_all(root.join("a/deep/er")).unwrap();
+        write(&root.join("c/other.bin"), 300_000);
+        fs::create_dir_all(root.join("b")).unwrap();
+        let mut target = target(root);
+        target.collect_handles = true;
+        // The root and the three depth-1 directories.
+        target.tree_max_directories = 4;
+        let store = started(&target);
+        *lock(&store.targets[0].source) = Some("fanotify");
+        let lt = &store.targets[0];
+        {
+            let guard = lt.state.read().unwrap();
+            let tree = &guard.as_ref().unwrap().tree;
+            assert!(tree.nodes[tree.find("/data/a").unwrap() as usize].sealed);
+        }
+
+        fs::hard_link(root.join("a/file.bin"), root.join("b/file.bin")).unwrap();
+        settle(&store, &["/data/b"]);
+        assert_eq!(
+            lt.rescans_requested.load(Ordering::Relaxed),
+            1,
+            "sealed holder"
+        );
+
+        fs::create_dir_all(root.join("b/new")).unwrap();
+        fs::hard_link(root.join("c/other.bin"), root.join("b/new/other.bin")).unwrap();
+        settle(&store, &["/data/b"]);
+        assert_eq!(
+            lt.rescans_requested.load(Ordering::Relaxed),
+            2,
+            "subtree past the cap"
         );
     }
 
