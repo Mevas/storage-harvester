@@ -136,9 +136,14 @@ Between scans, the harvester follows changes and re-reads only the directories t
   default) to show.
 
 A file with several hard links counts once, in one directory; when that link goes, another
-directory holding one takes it over. One gap: under fanotify, a *new* hard link to a file that
-is counted elsewhere as a plain file counts twice until that file's directory changes or the
-next scan, because the kernel tells only the new link's directory. btrfs polling tells both.
+directory holding one takes it over. A *new* hard link to a file that had one link is reported
+by fanotify only to the new link's directory, so walks of fanotify targets also record which
+directory each singly linked file is in (8 bytes per file); the directory the file was counted
+in is then re-read as well. btrfs polling reports both directories itself. Where the tree is
+already approximate (that directory is sealed, or the new link sits in a new subtree past
+`tree_max_directories`), the harvester asks for an early scan instead: at most one a minute,
+and never scanning more than a tenth of the time
+(`storage_harvester_live_rescans_requested_total`).
 
 Both need `CAP_SYS_ADMIN` (`cap_add: [SYS_ADMIN]`). Without it, or with `live.enabled: false`
 or a target's `live: false`, trees change at each scan only. A directory is re-read at most
@@ -166,7 +171,7 @@ more alive.
   `storage_harvester_target_disk_bytes`, `storage_harvester_sharing_duration_seconds`.
 
 Other new metrics: `storage_harvester_filesystem_{size,used,avail}_bytes` per target, and
-`storage_harvester_live_{relists,changes,signals,overflows}_total`.
+`storage_harvester_live_{relists,changes,rescans_requested,signals,overflows}_total`.
 
 ## MVP Scope
 
