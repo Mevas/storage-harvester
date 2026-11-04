@@ -489,14 +489,15 @@ impl LiveStore {
         let lt = &self.targets[index];
         let mut tree = tree;
         let mut guard = lt.state.write().unwrap_or_else(PoisonError::into_inner);
+        // A thin pool polled during the scan has newer numbers than the scan's own reading.
+        let old_pool = guard.as_ref().and_then(|old| old.tree.pool.as_deref());
+        if old_pool.is_some_and(|old| crate::lvm::keep_newer_readings(&mut tree, old)) {
+            lt.request_rescan();
+        }
         let (generation, mut changes) = match guard.as_ref() {
             Some(old) => (old.generation + 1, old.tree.diff(&tree)),
             None => (1, Vec::new()),
         };
-        let old_pool = guard.as_ref().and_then(|old| old.tree.pool.as_deref());
-        if let (Some(old), Some(new)) = (old_pool, tree.pool.as_deref_mut()) {
-            new.keep_newer_counters(old);
-        }
         let state = TreeState::new(tree, generation, started);
         let total = state.tree.root().total_blocks();
         let keys: Vec<StableKey> = lock(&lt.during_scan).drain().collect();

@@ -345,6 +345,8 @@ fn bounded(
                     _ => break,
                 },
                 _ = stop.wait_for(|stopping| *stopping) => break,
+                // The reader went away (a tab closed): let go of the upstream now.
+                _ = sender.closed() => break,
             };
             let sent = tokio::select! {
                 sent = tokio::time::timeout_at(limit(), sender.send(chunk)) => sent,
@@ -670,5 +672,20 @@ mod tests {
         stop_tx.send(true).unwrap();
         let read = tokio::time::timeout(Duration::from_secs(2), reader).await;
         assert_eq!(read.unwrap().unwrap(), 0);
+
+        // A tab closes while the upstream is quiet: the upstream is let go at once.
+        let (_stop_tx, stop) = watch::channel(false);
+        let (slots, slot) = one_slot();
+        let body = bounded(
+            Body::from_stream(stream::pending::<Result<Bytes, Infallible>>()),
+            Duration::from_secs(30),
+            None,
+            stop,
+            slot,
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        drop(body);
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(slots.available_permits(), 1);
     }
 }
