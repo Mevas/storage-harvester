@@ -501,7 +501,7 @@ pub fn sharing(path: &Path, skeleton: &Skeleton, cancel: &AtomicBool) -> io::Res
     drop(chunks);
 
     let mut pairs: Vec<(u32, u32, u64)> = pairs.into_iter().map(|((a, b), n)| (a, b, n)).collect();
-    pairs.sort_by(|x, y| y.2.cmp(&x.2));
+    pairs.sort_by_key(|pair| std::cmp::Reverse(pair.2));
     pairs.truncate(50);
     result.pairs = pairs;
     result.duration = started.elapsed();
