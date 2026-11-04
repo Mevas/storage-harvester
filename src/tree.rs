@@ -179,6 +179,8 @@ pub struct DirTree {
     /// Multiply-linked files counted in an untracked directory (no node, so not in `links`),
     /// when the walk recorded them (fanotify).
     pub untracked_links: Vec<(u64, u64)>,
+    /// `lvm_thin` targets: the pool, its guests and disks, which annotate their nodes.
+    pub pool: Option<Box<crate::lvm::Pool>>,
 }
 
 /// A singly linked file's key in [`DirTree::plain`]: its inode folded to 32 bits (exact for
@@ -435,6 +437,9 @@ impl DirTree {
         object.insert("l".into(), json!(node.sub.symlinks));
         object.insert("o".into(), json!(files_here));
         object.insert("k".into(), json!(node.direct.dirs));
+        if let Some(pool) = &self.pool {
+            pool.annotate(index, &mut object);
+        }
         if let Some(bytes) = exclusive.and_then(|map| map.get(&node.ino)) {
             object.insert("x".into(), json!(bytes));
         }
@@ -573,6 +578,7 @@ mod tests {
             handles: Vec::new(),
             plain: Vec::new(),
             untracked_links: Vec::new(),
+            pool: None,
         }
     }
 

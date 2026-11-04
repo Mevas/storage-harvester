@@ -349,7 +349,12 @@ impl LiveStore {
                 Ok(Arc::new(LiveTarget {
                     index,
                     exclude: native::exclude_set(&target.exclude)?,
-                    location: fsinfo::locate(&target.scan_path, host_root),
+                    // A thin pool's path names the tree; it is not on any filesystem.
+                    location: if target.lvm.is_some() {
+                        None
+                    } else {
+                        fsinfo::locate(&target.scan_path, host_root)
+                    },
                     fsid: fsid(&target.scan_path),
                     btrfs: is_btrfs(&target.scan_path),
                     target: target.clone(),
@@ -413,6 +418,14 @@ impl LiveStore {
             "active": !sources.is_empty(),
             "error": error,
         })
+    }
+
+    /// Sends to current subscribers only: not replayed to new ones (`io` rates).
+    pub fn broadcast(&self, kind: &'static str, value: Value) {
+        let _ = self.events.send(Message {
+            kind,
+            data: value.to_string().into(),
+        });
     }
 
     pub fn publish(&self, kind: &'static str, value: Value) {
@@ -1043,7 +1056,11 @@ fn is_btrfs(_path: &std::path::Path) -> bool {
 
 /// Starts the sources for every live target; returns the targets whose walks must record
 /// file handles (the fanotify ones).
-pub fn start_sources(store: &Arc<LiveStore>, poll_interval: Duration) -> Vec<usize> {
+pub fn start_sources(
+    store: &Arc<LiveStore>,
+    poll_interval: Duration,
+    block_interval: Duration,
+) -> Vec<usize> {
     let live: Vec<&Arc<LiveTarget>> = store.targets.iter().filter(|lt| lt.target.live).collect();
     if live.is_empty() {
         return Vec::new();
@@ -1054,6 +1071,10 @@ pub fn start_sources(store: &Arc<LiveStore>, poll_interval: Duration) -> Vec<usi
         .spawn(move || engine.run())
         .expect("spawn the live engine");
 
+    let (pools, live): (Vec<_>, Vec<_>) = live.into_iter().partition(|lt| lt.target.lvm.is_some());
+    for lt in pools {
+        crate::lvm::follow(Arc::clone(store), Arc::clone(lt), block_interval);
+    }
     let (btrfs, others): (Vec<_>, Vec<_>) = live.into_iter().partition(|lt| lt.btrfs);
     for lt in btrfs {
         start_btrfs(store, lt, poll_interval);
@@ -1322,6 +1343,7 @@ mod tests {
             live: true,
             sharing_interval: None,
             collect_handles: false,
+            lvm: None,
             labels: BTreeMap::new(),
         }
     }

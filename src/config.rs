@@ -77,6 +77,12 @@ pub struct LiveConfig {
         deserialize_with = "deserialize_duration"
     )]
     pub min_relist_interval: Duration,
+    /// How often `lvm_thin` targets read allocation and I/O from device-mapper.
+    #[serde(
+        default = "default_block_poll_interval",
+        deserialize_with = "deserialize_duration"
+    )]
+    pub block_poll_interval: Duration,
 }
 
 impl Default for LiveConfig {
@@ -85,6 +91,7 @@ impl Default for LiveConfig {
             enabled: true,
             btrfs_poll_interval: default_btrfs_poll_interval(),
             min_relist_interval: default_min_relist_interval(),
+            block_poll_interval: default_block_poll_interval(),
         }
     }
 }
@@ -151,6 +158,12 @@ pub struct TargetConfig {
     #[serde(default = "default_target_type")]
     pub r#type: String,
     pub path: PathBuf,
+    /// `lvm_thin` only: the thin pool, as `vg/lv`.
+    #[serde(default)]
+    pub pool: Option<String>,
+    /// `lvm_thin` only: where Proxmox keeps guest and storage configs (default `/etc/pve`).
+    #[serde(default)]
+    pub pve_config: Option<PathBuf>,
     #[serde(default)]
     pub scanner: Option<String>,
     #[serde(default, deserialize_with = "deserialize_optional_duration")]
@@ -208,7 +221,25 @@ pub struct Target {
     /// Set at startup when the fanotify source runs: the walk then records each directory's
     /// file handle, the key fanotify reports changes by.
     pub collect_handles: bool,
+    /// Set for `type: lvm_thin`: the pool this target maps instead of a directory.
+    pub lvm: Option<LvmTarget>,
     pub labels: BTreeMap<String, String>,
+}
+
+/// A Proxmox thin pool (`type: lvm_thin`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LvmTarget {
+    pub vg: String,
+    pub pool: String,
+    /// `/etc/pve` under `host_root`.
+    pub pve_config: PathBuf,
+}
+
+impl LvmTarget {
+    /// The pool's filesystem id in `/api/info`.
+    pub fn fs_id(&self) -> String {
+        format!("lvm:{}/{}", self.vg, self.pool)
+    }
 }
 
 impl Default for Defaults {
@@ -250,18 +281,56 @@ impl Config {
     }
 
     fn resolve_target(&self, target: &TargetConfig) -> Result<Target> {
-        let scanner = target.scanner.as_deref().unwrap_or(&self.defaults.scanner);
-        if scanner != "native" {
+        let lvm = match target.r#type.as_str() {
+            "filesystem" => {
+                if target.pool.is_some() || target.pve_config.is_some() {
+                    bail!(
+                        "target {}: pool and pve_config are for type lvm_thin",
+                        target.name
+                    );
+                }
+                None
+            }
+            "lvm_thin" => {
+                let pool = target.pool.as_deref().unwrap_or_default();
+                let Some((vg, lv)) = pool
+                    .split_once('/')
+                    .filter(|(vg, lv)| !vg.is_empty() && !lv.is_empty() && !lv.contains('/'))
+                else {
+                    bail!(
+                        "target {} (lvm_thin) needs pool: <volume group>/<thin pool>",
+                        target.name
+                    );
+                };
+                let pve_config = target
+                    .pve_config
+                    .clone()
+                    .unwrap_or_else(|| PathBuf::from("/etc/pve"));
+                Some(LvmTarget {
+                    vg: vg.to_string(),
+                    pool: lv.to_string(),
+                    pve_config: join_host_root(&self.host_root, &pve_config),
+                })
+            }
+            other => bail!(
+                "target {} uses unsupported target type {other:?}",
+                target.name
+            ),
+        };
+        let scanner = match (&lvm, target.scanner.as_deref()) {
+            (Some(_), None | Some("lvm")) => "lvm",
+            (Some(_), Some(other)) => {
+                bail!(
+                    "target {} (lvm_thin) cannot use scanner {other:?}",
+                    target.name
+                )
+            }
+            (None, scanner) => scanner.unwrap_or(&self.defaults.scanner),
+        };
+        if lvm.is_none() && scanner != "native" {
             bail!(
                 "target {} uses unsupported scanner {scanner:?}",
                 target.name
-            );
-        }
-        if target.r#type != "filesystem" {
-            bail!(
-                "target {} uses unsupported target type {:?}",
-                target.name,
-                target.r#type
             );
         }
 
@@ -318,6 +387,7 @@ impl Config {
                 .sharing_interval
                 .unwrap_or(self.defaults.sharing_interval),
             collect_handles: false,
+            lvm,
             labels: target.labels.clone(),
         })
     }
@@ -339,6 +409,9 @@ impl Config {
         }
         if self.live.btrfs_poll_interval.is_zero() {
             bail!("live.btrfs_poll_interval must be greater than zero");
+        }
+        if self.live.block_poll_interval.is_zero() {
+            bail!("live.block_poll_interval must be greater than zero");
         }
 
         let mut names = HashSet::new();
@@ -574,6 +647,10 @@ fn default_true() -> bool {
 /// About 200 bytes each: half a million directories is ~100 MB at most.
 fn default_tree_max_directories() -> usize {
     500_000
+}
+
+fn default_block_poll_interval() -> Duration {
+    Duration::from_secs(2)
 }
 
 fn default_btrfs_poll_interval() -> Duration {

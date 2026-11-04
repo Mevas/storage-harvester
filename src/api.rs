@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use axum::body::Body;
 use axum::extract::State;
 use axum::http::{header, HeaderValue, StatusCode};
-use axum::response::{IntoResponse, Response};
+use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::get;
 use axum::Router;
 use std::fmt::Write;
@@ -42,7 +42,8 @@ pub async fn serve(
     let state = ApiState { store, live };
     let metrics_path = config.metrics_path.clone();
     let app = Router::new()
-        .route("/", get(status_page_handler))
+        // The atlas is what a person opening the harvester's address wants; /status stays.
+        .route("/", get(|| async { Redirect::temporary("/atlas") }))
         .route("/status", get(status_page_handler))
         .route("/status/fragment", get(status_fragment_handler))
         .route(&metrics_path, get(metrics_handler))

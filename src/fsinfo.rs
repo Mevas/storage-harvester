@@ -3,6 +3,9 @@
 //! Targets can alias one another: on the NUC, `/var/lib/docker` is a bind mount of a directory
 //! on the disk mounted at `/mnt/scratch`. Mount IDs and paths *inside* the filesystem (from
 //! `/proc/self/mountinfo`) tell the atlas that one target contains another.
+//!
+//! It also says which whole disks a filesystem sits on, and which machine this is, so the atlas
+//! can draw a VM's filesystems inside the hypervisor's disk for that VM.
 
 use std::ffi::CString;
 use std::fs;
@@ -19,6 +22,8 @@ pub struct FsLocation {
     pub mount: String,
     /// The target's path inside the filesystem.
     pub fs_path: String,
+    /// The whole disks under it (see [`disks_of`]).
+    pub disks: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -43,7 +48,10 @@ pub fn locate(scan_path: &Path, host_root: &Path) -> Option<FsLocation> {
     let mounts = fs::read_to_string("/proc/self/mountinfo")
         .map(|text| parse_mountinfo(&text))
         .unwrap_or_default();
-    locate_in(&mounts, scan_path, host_root).or_else(|| fallback(scan_path, host_root))
+    let mut location =
+        locate_in(&mounts, scan_path, host_root).or_else(|| fallback(scan_path, host_root))?;
+    location.disks = disks_of(&location.id);
+    Some(location)
 }
 
 fn fallback(scan_path: &Path, host_root: &Path) -> Option<FsLocation> {
@@ -55,6 +63,7 @@ fn fallback(scan_path: &Path, host_root: &Path) -> Option<FsLocation> {
         fstype: String::new(),
         mount: "/".to_string(),
         fs_path: host_path(scan_path, host_root),
+        disks: Vec::new(),
     })
 }
 
@@ -79,6 +88,7 @@ fn locate_in(mounts: &[Mount], scan_path: &Path, host_root: &Path) -> Option<FsL
         fstype: mount.fstype.clone(),
         mount: host_path(&label.point, host_root),
         fs_path,
+        disks: Vec::new(),
     })
 }
 
@@ -159,6 +169,95 @@ pub fn usage(path: &Path) -> Option<Usage> {
     })
 }
 
+/// The whole disks under block device `id` (`major:minor`), through partitions and
+/// device-mapper or md stacks, each named by [`disk_id`]. Empty when sysfs does not know the
+/// device (btrfs and other filesystems on anonymous devices, or no `/sys`).
+pub fn disks_of(id: &str) -> Vec<String> {
+    let mut disks = Vec::new();
+    let mut seen = Vec::new();
+    let mut stack = vec![PathBuf::from(format!("/sys/dev/block/{id}"))];
+    while let Some(path) = stack.pop() {
+        let Ok(device) = fs::canonicalize(&path) else {
+            continue;
+        };
+        if seen.contains(&device) {
+            continue;
+        }
+        seen.push(device.clone());
+        let below: Vec<PathBuf> = fs::read_dir(device.join("slaves"))
+            .map(|entries| entries.flatten().map(|entry| entry.path()).collect())
+            .unwrap_or_default();
+        if !below.is_empty() {
+            stack.extend(below);
+            continue;
+        }
+        let disk = if device.join("partition").exists() {
+            device.parent().map(Path::to_path_buf).unwrap_or(device)
+        } else {
+            device
+        };
+        if let Some(name) = disk_id(&disk) {
+            if !disks.contains(&name) {
+                disks.push(name);
+            }
+        }
+    }
+    disks
+}
+
+/// A disk's stable name: the vendor-specific designator of SCSI VPD page 0x83 (QEMU names its
+/// disks `drive-scsi0`, `drive-virtio1`, ...), else its serial or WWID.
+fn disk_id(disk: &Path) -> Option<String> {
+    if let Some(name) = fs::read(disk.join("device/vpd_pg83"))
+        .ok()
+        .and_then(|page| vpd83_vendor_id(&page))
+    {
+        return Some(name);
+    }
+    ["serial", "device/serial", "wwid", "device/wwid"]
+        .iter()
+        .filter_map(|file| fs::read_to_string(disk.join(file)).ok())
+        .map(|text| text.trim().to_string())
+        .find(|text| !text.is_empty())
+}
+
+/// The first ASCII or UTF-8 vendor-specific (type 0) designator in a VPD page 0x83.
+fn vpd83_vendor_id(page: &[u8]) -> Option<String> {
+    if page.len() < 4 || page[1] != 0x83 {
+        return None;
+    }
+    let end = (4 + u16::from_be_bytes([page[2], page[3]]) as usize).min(page.len());
+    let mut at = 4;
+    while at + 4 <= end {
+        let code_set = page[at] & 0x0f;
+        let kind = page[at + 1] & 0x0f;
+        let len = page[at + 3] as usize;
+        let data = page.get(at + 4..at + 4 + len)?;
+        if kind == 0 && matches!(code_set, 2 | 3) {
+            let text = String::from_utf8_lossy(data);
+            let text = text.trim_matches(|c: char| c == '\0' || c.is_whitespace());
+            if !text.is_empty() {
+                return Some(text.to_string());
+            }
+        }
+        at += 4 + len;
+    }
+    None
+}
+
+/// This machine's SMBIOS product UUID, lowercase. For a Proxmox VM it is the `smbios1: uuid=`
+/// of its config. Root-only; `None` when unreadable.
+pub fn machine_uuid(host_root: &Path) -> Option<String> {
+    [
+        host_root.join("sys/class/dmi/id/product_uuid"),
+        PathBuf::from("/sys/class/dmi/id/product_uuid"),
+    ]
+    .iter()
+    .filter_map(|path| fs::read_to_string(path).ok())
+    .map(|text| text.trim().to_ascii_lowercase())
+    .find(|text| text.len() == 36 && text.chars().all(|c| c.is_ascii_hexdigit() || c == '-'))
+}
+
 /// The filesystem ID fanotify stamps on every event (`statfs`'s `f_fsid`).
 #[cfg(target_os = "linux")]
 pub fn fsid(path: &Path) -> Option<[i32; 2]> {
@@ -212,6 +311,20 @@ mod tests {
         );
         let odd = locate_in(&mounts, Path::new("/host/odd place/x"), host).unwrap();
         assert_eq!(odd.fs_path, "/my share/x");
+    }
+
+    #[test]
+    fn qemu_disks_are_named_by_their_vpd_vendor_designator() {
+        // /sys/block/sda/device/vpd_pg83 of a Proxmox VM's scsi0.
+        let page = b"\x00\x83\x00\x0f\x02\x00\x00\x0bdrive-scsi0";
+        assert_eq!(vpd83_vendor_id(page).as_deref(), Some("drive-scsi0"));
+        // An NAA designator (binary, type 3) first, then the vendor one.
+        let mut page = vec![0x00, 0x83, 0x00, 0x18, 0x01, 0x03, 0x00, 0x08];
+        page.extend_from_slice(&[0x60, 0, 0, 0, 0, 0, 0, 1]);
+        page.extend_from_slice(b"\x02\x00\x00\x0ddrive-virtio1");
+        page[3] = (page.len() - 4) as u8;
+        assert_eq!(vpd83_vendor_id(&page).as_deref(), Some("drive-virtio1"));
+        assert_eq!(vpd83_vendor_id(b"\x00\x80\x00\x00"), None);
     }
 
     #[test]
