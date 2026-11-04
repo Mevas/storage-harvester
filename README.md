@@ -80,13 +80,16 @@ volumes:
 
 ## Endpoints
 
-- `GET /` or `GET /status`: lightweight HTML status UI backed by cached scan state.
+- `GET /`: redirects to `/atlas`.
+- `GET /status`: lightweight HTML status UI backed by cached scan state.
 - `GET /status/fragment`: partial HTML used by the live-updating status UI.
 - `GET /metrics`: Prometheus text exposition from the cached snapshot store only.
 - `GET /-/health`: process health.
 - `GET /-/ready`: ready after each configured target has completed at least one scan.
-- `GET /atlas`: the Storage Atlas, a dashboard of every harvester's storage (see below).
+- `GET /atlas`: the Storage Atlas, a dashboard of every harvester's storage (see below), and
+  `/atlas/manifest.webmanifest` and its icons, so a phone can install it as an app.
 - `GET /api/info`, `GET /api/tree`, `GET /api/events`: what the atlas reads (see below).
+- `GET /api/peer/<i>/api/{info,tree,events}`, `GET /api/metrics/api/v1/...`: the relay.
 
 ## Storage Atlas
 
@@ -108,7 +111,46 @@ atlas:
       size: 'my_disk_size_bytes{volume="1"}'
 ```
 
-`/api/*` allows any origin, so the page can read peers directly; it is read-only.
+`/api/*` is read-only and allows any origin. The harvester serving the page also relays
+`/api/peer/<i>/...` to `atlas.peers[i]` (`/api/info`, `/api/tree` and `/api/events` only,
+event streams included) and `/api/metrics/...` to `atlas.metrics_url` (`query`,
+`query_range`, `series`, `labels` and label values only), so the page talks to one origin.
+That is what lets it work over HTTPS behind a reverse proxy with single sign-on, where the
+browser would block plain-HTTP peers on the LAN. Relayed peers must be `http://`.
+
+`/api/info` also says which machine this is (`machine.uuid`, the SMBIOS product UUID) and which
+whole disks each filesystem sits on (`filesystems[].disks`: a QEMU disk reports
+`drive-scsi0`). A Proxmox harvester reports the same for each VM, so the atlas draws a VM's
+harvester inside that VM's disks.
+
+### Proxmox thin pools
+
+```yaml
+targets:
+  - name: local_lvm
+    type: lvm_thin
+    path: /local-lvm          # the tree's root path; nothing is read from it
+    pool: pve/data            # volume group / thin pool
+    pve_config: /etc/pve      # default
+```
+
+The tree is the pool, then each guest with a disk in it (`NUC (100)`), then its disks
+(`scsi0`, `rootfs`, `efidisk0`; volumes no guest refers to go under `Unattached`). A disk's
+size is its allocated thin blocks: what it costs the pool, not what the guest sees. A running
+container's root disk also holds the container's directories, walked from the host through
+`/proc/<pid>/root` at each scan. Between scans, `dmsetup status` and `/sys/block/dm-*/stat` are
+read every `live.block_poll_interval` (2 s): allocation changes become `change` events with
+`src: "lvm"`, and disks doing I/O get an `io` event with bytes/s read and written, sent live
+only (not replayed).
+
+`/api/tree` nodes gain `v` (`pool`, `guest`, `disk`); guests `vmid`, `g` (`qemu`, `lxc`) and
+`on`; disks `key`, `p` (provisioned bytes), `w`/`rd` (bytes/s) and `u` (allocated bytes no
+walked file accounts for). `/api/info` lists the pool as a filesystem (`type: lvmthin`, with
+`provisioned` and thin `meta`) and the target's `guests`, with each VM's SMBIOS UUID.
+
+It needs the host: run the harvester there as root (it only reads), not in a container. Inactive
+volumes are listed with their provisioned size only; LVM cannot tell their allocation until
+they are activated.
 
 ### Trees
 
@@ -170,8 +212,11 @@ more alive.
 - Metrics: `storage_harvester_exclusive_size_bytes` per reported directory,
   `storage_harvester_target_disk_bytes`, `storage_harvester_sharing_duration_seconds`.
 
-Other new metrics: `storage_harvester_filesystem_{size,used,avail}_bytes` per target, and
-`storage_harvester_live_{relists,changes,rescans_requested,signals,overflows}_total`.
+Other new metrics: `storage_harvester_filesystem_{size,used,avail}_bytes` per target (a thin
+pool's own usage for `lvm_thin` targets),
+`storage_harvester_live_{relists,changes,rescans_requested,signals,overflows}_total`, and for
+thin pools `storage_harvester_thin_{metadata_size,metadata_used,provisioned}_bytes` and
+`storage_harvester_block_{read,written}_bytes_total` per disk (`path`).
 
 ## MVP Scope
 

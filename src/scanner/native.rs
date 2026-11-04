@@ -874,23 +874,14 @@ fn finish(
         tree.untracked_links = untracked_links;
         tree
     });
-    let mut reported: Vec<(Vec<u8>, NodeObservation)> = tree
-        .as_ref()
-        .map(|tree| {
-            (0..tree.nodes.len() as u32)
-                .filter(|&index| is_reported(target, tree.nodes[index as usize].depth as usize))
-                .map(|index| (tree.relative_path(index), observe(tree, index)))
-                .collect()
-        })
-        .unwrap_or_default();
-    reported.sort_by(|(left, _), (right, _)| {
-        Path::new(OsStr::from_bytes(left)).cmp(Path::new(OsStr::from_bytes(right)))
-    });
     entries.sort_by(|left, right| left.path.cmp(&right.path));
 
     ScanResult {
         backend: backend.to_string(),
-        observations: reported.into_iter().map(|(_, node)| node).collect(),
+        observations: tree
+            .as_ref()
+            .map(|tree| reported(target, tree))
+            .unwrap_or_default(),
         entries,
         permission_errors: counts.permission_errors,
         missing_path_races: counts.missing_path_races,
@@ -905,6 +896,21 @@ fn finish(
         timestamp,
         tree,
     }
+}
+
+/// The reported directories of `tree`, in path order.
+pub(crate) fn reported(target: &Target, tree: &DirTree) -> Vec<NodeObservation> {
+    let mut reported: Vec<(Vec<u8>, NodeObservation)> = (0..tree.nodes.len() as u32)
+        .filter(|&index| {
+            tree.nodes[index as usize].alive
+                && is_reported(target, tree.nodes[index as usize].depth as usize)
+        })
+        .map(|index| (tree.relative_path(index), observe(tree, index)))
+        .collect();
+    reported.sort_by(|(left, _), (right, _)| {
+        Path::new(OsStr::from_bytes(left)).cmp(Path::new(OsStr::from_bytes(right)))
+    });
+    reported.into_iter().map(|(_, node)| node).collect()
 }
 
 /// Rolls the tracked directories up into a tree. `None` when there is no directory to hold
@@ -978,6 +984,7 @@ fn build_tree(
         handles,
         plain,
         untracked_links: Vec::new(),
+        pool: None,
     })
 }
 
@@ -1619,6 +1626,7 @@ mod tests {
             live: false,
             sharing_interval: None,
             collect_handles: false,
+            lvm: None,
             labels: BTreeMap::new(),
         }
     }

@@ -1,11 +1,13 @@
 //! Black-box checks of the atlas API: `/api/tree` against an independent walk at every depth,
-//! `/api/info`, and the `/api/events` stream after a real change on disk.
+//! `/api/info`, the `/api/events` stream after a real change on disk, and the relay that lets
+//! one harvester serve the page for the others.
 
 mod support;
 
 use std::io::{BufRead, BufReader, Read, Write};
-use std::net::TcpStream;
+use std::net::{TcpListener, TcpStream};
 use std::path::Path;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use serde_json::Value;
@@ -282,8 +284,9 @@ fn raw_head(port: u16, path: &str) -> String {
         "GET {path} HTTP/1.0\r\nHost: x\r\nOrigin: http://elsewhere\r\n\r\n"
     )
     .unwrap();
-    let mut raw = String::new();
-    stream.read_to_string(&mut raw).unwrap();
+    let mut raw = Vec::new();
+    stream.read_to_end(&mut raw).unwrap();
+    let raw = String::from_utf8_lossy(&raw);
     raw.split("\r\n\r\n").next().unwrap().to_string()
 }
 
@@ -293,10 +296,14 @@ struct Events {
 
 impl Events {
     fn open(port: u16) -> Self {
+        Self::open_at(port, "/api/events")
+    }
+
+    fn open_at(port: u16, path: &str) -> Self {
         let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
         write!(
             stream,
-            "GET /api/events HTTP/1.1\r\nHost: x\r\nAccept: text/event-stream\r\n\r\n"
+            "GET {path} HTTP/1.1\r\nHost: x\r\nAccept: text/event-stream\r\n\r\n"
         )
         .unwrap();
         let mut reader = BufReader::new(stream);
@@ -335,4 +342,128 @@ impl Events {
             }
         }
     }
+}
+
+/// A stand-in for VictoriaMetrics: answers every request with an empty vector and records the
+/// request line.
+fn fake_metrics() -> (u16, Arc<Mutex<Vec<String>>>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let log = Arc::clone(&seen);
+    std::thread::spawn(move || {
+        for stream in listener.incoming().flatten() {
+            let mut reader = BufReader::new(stream);
+            let mut line = String::new();
+            if reader.read_line(&mut line).is_err() {
+                continue;
+            }
+            log.lock().unwrap().push(line.trim_end().to_string());
+            let mut header = String::new();
+            while reader.read_line(&mut header).is_ok_and(|n| n > 2) {
+                header.clear();
+            }
+            let body = r#"{"status":"success","data":{"resultType":"vector","result":[]}}"#;
+            let _ = write!(
+                reader.get_mut(),
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+        }
+    });
+    (port, seen)
+}
+
+/// The harvester serving the page relays its peers' API, event streams included, and
+/// read-only metrics queries, and nothing else.
+#[test]
+fn the_relay_serves_peers_and_metrics_from_one_origin() {
+    let peer_host = Host::new();
+    write_file(&peer_host.data().join("peer.bin"), 50_000);
+    let peer = Harvester::start(
+        &peer_host.tmp.path().join("run"),
+        &format!(
+            "host_root: {}\nhost: the-peer\n{ONE_TARGET}",
+            yaml_quote(&peer_host.root())
+        ),
+    );
+    first_scan(&peer);
+    let (metrics_port, seen) = fake_metrics();
+    let host = Host::new();
+    write_file(&host.data().join("f"), 10);
+    let h = host.start(&format!(
+        "atlas:\n  peers: ['http://127.0.0.1:{}']\n  metrics_url: http://127.0.0.1:{metrics_port}\n{ONE_TARGET}",
+        peer.port
+    ));
+    first_scan(&h);
+
+    let (_, info) = json(&h, "/api/info");
+    assert_eq!(info["atlas"]["proxy"], true);
+    assert!(info["filesystems"][0]["disks"].is_array());
+    assert_eq!(info["targets"][0]["kind"], "directory");
+    let (status, relayed) = json(&h, "/api/peer/0/api/info");
+    assert_eq!(status, 200);
+    assert_eq!(relayed["host"], "the-peer");
+    let (status, tree) = json(&h, "/api/peer/0/api/tree?target=data&depth=1");
+    assert_eq!(status, 200, "{tree}");
+    assert!(tree["node"]["t"].as_u64().unwrap() >= 50_000);
+    let mut events = Events::open_at(h.port, "/api/peer/0/api/events");
+    assert_eq!(
+        events.next_named("hello", Duration::from_secs(10))["host"],
+        "the-peer"
+    );
+
+    for refused in [
+        "/api/peer/0/metrics",
+        "/api/peer/0/atlas",
+        "/api/peer/1/api/info",
+    ] {
+        assert_eq!(h.get(refused).0, 404, "{refused}");
+    }
+
+    let (status, answer) = json(&h, "/api/metrics/api/v1/query?query=up");
+    assert_eq!((status, answer["status"].as_str()), (200, Some("success")));
+    assert_eq!(h.get("/api/metrics/api/v1/admin/tsdb/delete_series").0, 404);
+    assert_eq!(h.get("/api/metrics/api/v1/label/__name__/values").0, 200);
+    let seen = seen.lock().unwrap().clone();
+    assert_eq!(
+        seen,
+        [
+            "GET /api/v1/query?query=up HTTP/1.1",
+            "GET /api/v1/label/__name__/values HTTP/1.1"
+        ],
+        "only allowed paths reach the metrics store"
+    );
+
+    // A peer that is down: 502, with why.
+    drop(peer);
+    let (status, failed) = json(&h, "/api/peer/0/api/info");
+    assert_eq!(status, 502, "{failed}");
+    assert!(failed["error"].as_str().unwrap().starts_with("upstream"));
+}
+
+#[test]
+fn the_root_opens_the_atlas_and_the_app_manifest_is_served() {
+    let host = Host::new();
+    write_file(&host.data().join("f"), 10);
+    let h = host.start(ONE_TARGET);
+    let mut stream = TcpStream::connect(("127.0.0.1", h.port)).unwrap();
+    write!(stream, "GET / HTTP/1.0\r\nHost: x\r\n\r\n").unwrap();
+    let mut head = String::new();
+    stream.read_to_string(&mut head).unwrap();
+    assert!(head.starts_with("HTTP/1.0 307"), "{head}");
+    assert!(
+        head.to_ascii_lowercase().contains("location: /atlas"),
+        "{head}"
+    );
+    let (status, manifest) = json(&h, "/atlas/manifest.webmanifest");
+    assert_eq!(status, 200);
+    assert_eq!(manifest["start_url"], "/atlas");
+    let head = raw_head(h.port, "/atlas/icon-192.png");
+    assert!(
+        head.to_ascii_lowercase()
+            .contains("content-type: image/png"),
+        "{head}"
+    );
+    assert_eq!(h.get("/atlas/nothing.png").0, 404);
 }
