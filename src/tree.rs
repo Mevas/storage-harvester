@@ -171,8 +171,9 @@ pub struct DirTree {
     pub links: HashMap<(u64, u64), LinkOwner>,
     /// `(node, file handle)` per tracked directory, when the walk recorded them.
     pub handles: Vec<(u32, Box<[u8]>)>,
-    /// `(plain_key(dev, ino), node)` for every singly linked file in a tracked directory, sorted,
-    /// when the walk recorded them (fanotify). fanotify reports a new hard link only to the new
+    /// `(plain_key(dev, ino), node)` for every singly linked file, sorted, when the walk
+    /// recorded them (fanotify). A file in an untracked directory is listed under its nearest
+    /// tracked ancestor, which is sealed. fanotify reports a new hard link only to the new
     /// link's directory; this finds the directory that counted the file while it had one link.
     pub plain: Vec<(u32, u32)>,
     /// Multiply-linked files counted in an untracked directory (no node, so not in `links`),
