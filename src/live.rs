@@ -181,6 +181,46 @@ impl TreeState {
         }
     }
 
+    /// Adds singly linked files counted under `node` to what it already holds.
+    fn add_plain(&mut self, node: u32, keys: impl Iterator<Item = u32>) {
+        let held = self.plain_by_node.entry(node).or_default();
+        for key in keys {
+            self.plain_live.insert((key, node));
+            held.push(key);
+        }
+        held.sort_unstable();
+        held.dedup();
+    }
+
+    /// Links a scan saw while it also saw the same file with one link elsewhere: the file was
+    /// linked while the scan ran, between its two directories' reads, and is counted twice.
+    /// Returns the holders to re-read, and whether one is out of reach (sealed or untracked).
+    fn linked_during_scan(&self) -> (Vec<u32>, bool) {
+        let mut reread = Vec::new();
+        if self.plain.is_empty() {
+            // Not a fanotify target: nothing recorded, nothing to reconcile.
+            return (reread, false);
+        }
+        let mut out_of_reach = false;
+        for (inode, owner) in &self.tree.links {
+            for holder in self.plain_holders(*inode) {
+                if holder == owner.node || !self.tree.nodes[holder as usize].alive {
+                    continue;
+                }
+                if self.tree.nodes[holder as usize].sealed {
+                    out_of_reach = true;
+                } else if !reread.contains(&holder) {
+                    reread.push(holder);
+                }
+            }
+        }
+        out_of_reach |= self
+            .untracked
+            .iter()
+            .any(|inode| !self.plain_holders(*inode).is_empty());
+        (reread, out_of_reach)
+    }
+
     /// Whether the tree already counts this multiply-linked file: under a live owner, or in an
     /// untracked directory.
     fn already_counted(&self, inode: &(u64, u64)) -> bool {
@@ -443,7 +483,12 @@ impl LiveStore {
         let state = TreeState::new(tree, generation, started);
         let total = state.tree.root().total_blocks();
         let keys: Vec<StableKey> = lock(&lt.during_scan).drain().collect();
-        let replay: Vec<u32> = keys.iter().filter_map(|key| state.resolve(key)).collect();
+        let mut replay: Vec<u32> = keys.iter().filter_map(|key| state.resolve(key)).collect();
+        let (reread, out_of_reach) = state.linked_during_scan();
+        replay.extend(reread);
+        if out_of_reach {
+            lt.request_rescan();
+        }
         *guard = Some(state);
         lt.scanning.store(false, Ordering::Relaxed);
         drop(guard);
@@ -590,9 +635,9 @@ impl LiveStore {
     }
 }
 
-/// `plain_live` may hold this many entries, or as many as the scan's index, before a scan is
-/// asked for to rebuild it.
-const PLAIN_LIVE_FLOOR: usize = 100_000;
+/// `plain_live` may hold this many entries more than the scan's index before a scan is asked
+/// for to rebuild it. (A re-read of a directory lists all of its files there again.)
+const PLAIN_LIVE_HEADROOM: usize = if cfg!(test) { 100 } else { 100_000 };
 
 /// Re-reads one directory and applies what changed to it and its ancestors.
 fn relist(lt: &LiveTarget, state: &mut TreeState, node: u32) -> Outcome {
@@ -694,8 +739,12 @@ fn relist(lt: &LiveTarget, state: &mut TreeState, node: u32) -> Outcome {
                     }
                     state.untracked.extend(sub.untracked_links.iter().copied());
                     if !fits {
-                        // Past the cap: counted, but without nodes, as a scan would.
+                        // Past the cap: counted, but without nodes, as a scan would. What it
+                        // counts stays on record, under this now sealed directory, for links
+                        // made to it later.
                         state.tree.nodes[node as usize].sealed = true;
+                        state.add_plain(node, sub.plain.iter().map(|&(key, _)| key));
+                        state.untracked.extend(sub.links.keys().copied());
                         j += 1;
                         continue;
                     }
@@ -732,7 +781,7 @@ fn relist(lt: &LiveTarget, state: &mut TreeState, node: u32) -> Outcome {
         }
     }
     // Entries of directories that died since the scan linger; past this, a scan rebuilds it.
-    if state.plain_live.len() > state.plain.len().max(PLAIN_LIVE_FLOOR) {
+    if state.plain_live.len() > state.plain.len() + PLAIN_LIVE_HEADROOM {
         lt.request_rescan();
     }
 
@@ -1616,6 +1665,96 @@ mod tests {
             settle(&store, &["/data/b"]);
             assert_eq!(rescans(&store), 1, "{case}");
         }
+    }
+
+    /// What a subtree too big to graft counts stays on record: a later link to one of its
+    /// files, made elsewhere, asks for a scan.
+    #[test]
+    fn links_into_a_rejected_subtree_ask_for_a_scan() {
+        for (prepare, case) in [
+            (
+                (|root: &Path| write(&root.join("b/new/file.bin"), 300_000)) as fn(&Path),
+                "plain file",
+            ),
+            (
+                |root: &Path| {
+                    write(&root.join("b/new/file.bin"), 300_000);
+                    fs::hard_link(root.join("b/new/file.bin"), root.join("b/new/twin.bin"))
+                        .unwrap();
+                },
+                "linked file",
+            ),
+        ] {
+            let temp = tempfile::tempdir().unwrap();
+            let root = temp.path();
+            let store = capped(root, 4, false);
+            prepare(root);
+            settle(&store, &["/data/b"]);
+            assert_eq!(rescans(&store), 0, "{case}: nothing to settle yet");
+            fs::hard_link(root.join("b/new/file.bin"), root.join("c/file.bin")).unwrap();
+            settle(&store, &["/data/c"]);
+            assert_eq!(rescans(&store), 1, "{case}");
+        }
+    }
+
+    /// A file linked while a scan ran, between the reads of its two directories, is counted
+    /// in both by the scan; installing the scan re-reads the one that saw it alone.
+    #[test]
+    fn a_link_made_during_a_scan_is_reconciled_when_the_scan_lands() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        write(&root.join("a/file.bin"), 300_000);
+        fs::create_dir_all(root.join("b")).unwrap();
+        fs::hard_link(root.join("a/file.bin"), root.join("b/file.bin")).unwrap();
+        let mut target = target(root);
+        target.collect_handles = true;
+        let store = started(&target);
+        *lock(&store.targets[0].source) = Some("fanotify");
+        let truth = tree_totals(&store);
+
+        // The scan as it would have come out: the other directory read the file while it had
+        // one link, and counted it too.
+        let mut tree = scan(&target);
+        let (inode, owner) = tree.links.iter().next().map(|(i, o)| (*i, o.node)).unwrap();
+        let other = ["/data/a", "/data/b"]
+            .iter()
+            .map(|path| tree.find(path).unwrap())
+            .find(|&node| node != owner)
+            .unwrap();
+        let size = Delta {
+            blocks: tree.links[&inode].blocks as i64,
+            apparent: tree.links[&inode].apparent as i64,
+            ..Delta::default()
+        };
+        tree.nodes[other as usize].direct.apply(&size);
+        tree.propagate(other, &size);
+        tree.plain.push((plain_key(inode.0, inode.1), other));
+        tree.plain.sort_unstable();
+        store.replace(0, tree, SystemTime::now(), Duration::ZERO);
+        assert_ne!(tree_totals(&store), truth, "counted twice as installed");
+
+        settle(&store, &[]);
+        assert_eq!(tree_totals(&store), truth);
+    }
+
+    /// A large directory re-read lists all of its files in the live index again; that alone
+    /// does not ask for a scan.
+    #[test]
+    fn a_large_directory_growing_does_not_ask_for_scans() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        for n in 0..PLAIN_LIVE_HEADROOM + 50 {
+            write(&root.join(format!("spool/{n}.tmp")), 10);
+        }
+        let mut target = target(root);
+        target.collect_handles = true;
+        let store = started(&target);
+        *lock(&store.targets[0].source) = Some("fanotify");
+        for n in 0..3 {
+            write(&root.join(format!("spool/new-{n}.tmp")), 10);
+            settle(&store, &["/data/spool"]);
+        }
+        assert_eq!(rescans(&store), 0);
     }
 
     /// A re-read replaces its directory's entries in the live index.
