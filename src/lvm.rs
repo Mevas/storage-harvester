@@ -941,26 +941,6 @@ fn graft_walk(tree: &mut DirTree, disk: &mut Disk, mut walked: DirTree) -> bool 
 }
 
 impl Pool {
-    /// A scan's pool replacing `older`: polls that ran during the scan read the I/O counters
-    /// after the scan did, so keep theirs. Counters must not go back.
-    pub fn keep_newer_counters(&mut self, older: &Pool) {
-        if older.sampled <= self.sampled {
-            return;
-        }
-        let newer: HashMap<&str, &Disk> = older
-            .guests
-            .iter()
-            .flat_map(|guest| &guest.disks)
-            .map(|disk| (disk.dm.as_str(), disk))
-            .collect();
-        for disk in self.guests.iter_mut().flat_map(|guest| &mut guest.disks) {
-            if let Some(seen) = newer.get(disk.dm.as_str()) {
-                (disk.read, disk.written) = (seen.read, seen.written);
-                (disk.read_rate, disk.write_rate) = (seen.read_rate, seen.write_rate);
-            }
-        }
-    }
-
     fn reindex(&mut self) {
         self.by_node.clear();
         for (g, guest) in self.guests.iter().enumerate() {
@@ -1099,6 +1079,42 @@ fn set_allocated(tree: &mut DirTree, disk: &mut Disk, allocated: u64) -> (Delta,
         tree.propagate(disk.node, &delta);
     }
     (delta, false)
+}
+
+/// A scan's tree replacing one whose pool polls read after the scan did: takes their newer
+/// allocation, pool usage and I/O counters, so installing the scan moves nothing back (and
+/// publishes no shrink a later poll would undo). Returns whether a walked disk went opaque.
+pub fn keep_newer_readings(tree: &mut DirTree, older: &Pool) -> bool {
+    let Some(mut pool) = tree.pool.take() else {
+        return false;
+    };
+    let mut opaque = false;
+    if older.sampled > pool.sampled {
+        pool.sampled = older.sampled;
+        (pool.used, pool.size) = (older.used, older.size);
+        (pool.meta_used, pool.meta_size) = (older.meta_used, older.meta_size);
+        let seen: HashMap<&str, &Disk> = older
+            .guests
+            .iter()
+            .flat_map(|guest| &guest.disks)
+            .map(|disk| (disk.dm.as_str(), disk))
+            .collect();
+        for disk in pool.guests.iter_mut().flat_map(|guest| &mut guest.disks) {
+            let Some(seen) = seen.get(disk.dm.as_str()) else {
+                continue;
+            };
+            disk.active = seen.active;
+            (disk.read, disk.written) = (seen.read, seen.written);
+            (disk.read_rate, disk.write_rate) = (seen.read_rate, seen.write_rate);
+            if let Some(allocated) = seen.allocated {
+                if disk.allocated != Some(allocated) {
+                    opaque |= set_allocated(tree, disk, allocated).1;
+                }
+            }
+        }
+    }
+    tree.pool = Some(pool);
+    opaque
 }
 
 /// The last I/O counters seen per device: `(when, sectors read, sectors written)`.
@@ -1617,9 +1633,9 @@ sata0: local-lvm:vm-103-disk-1,size=32G
     }
 
     /// A scan's reading is older than the polls that ran during it: installing it keeps the
-    /// polls' counters, which never go back.
+    /// polls' allocation, usage and counters, which never go back, and publishes no shrink.
     #[test]
-    fn a_rescan_never_moves_counters_back() {
+    fn a_rescan_never_moves_readings_back() {
         let target = target();
         let early = Instant::now();
         let (pool, mut tree) = build(&target, target.lvm.as_ref().unwrap(), &inputs()).unwrap();
@@ -1640,7 +1656,26 @@ sata0: local-lvm:vm-103-disk-1,size=32G
             .get_mut("pve-vm--100--disk--0")
             .unwrap()
             .written = 500;
+        // The disk grew by 1 GiB (2^21 sectors), and the pool with it (16384 chunks).
+        later.status.insert(
+            "pve-vm--100--disk--0".into(),
+            "0 536870912 thin 250443776 536870911".into(),
+        );
+        later.status.insert(
+            "pve-data-tpool".into(),
+            "0 3679920128 thin-pool 6479 44985/4161600 7333546/28749376 - rw".into(),
+        );
         assert!(apply(&store, lt, 1, &later, &mut Counters::new()));
+        let grown = lt
+            .state
+            .read()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .tree
+            .root()
+            .total_blocks();
+        let mut events = store.subscribe();
 
         // A scan that sampled before that poll.
         let mut scanned = inputs();
@@ -1649,8 +1684,15 @@ sata0: local-lvm:vm-103-disk-1,size=32G
         tree.pool = Some(Box::new(pool));
         store.replace(0, tree, SystemTime::now(), Duration::ZERO);
         let guard = lt.state.read().unwrap();
-        let pool = guard.as_ref().unwrap().tree.pool.as_ref().unwrap();
+        let state = guard.as_ref().unwrap();
+        let pool = state.tree.pool.as_ref().unwrap();
         assert_eq!(pool.guests[0].disks[0].written, 500 * 512);
+        assert_eq!(pool.guests[0].disks[0].allocated, Some(250443776 * 512));
+        assert_eq!(pool.used, 7333546 * 65536);
+        assert_eq!(state.tree.root().total_blocks(), grown);
+        while let Ok(message) = events.try_recv() {
+            assert_ne!(message.kind, "change", "nothing moved: {}", message.data);
+        }
     }
 
     #[test]
