@@ -9,6 +9,45 @@ use crate::fsinfo;
 use crate::live::LiveStore;
 use crate::scanner::NodeObservation;
 
+/// A thin pool: its usage as the target's filesystem, its metadata, and each disk's I/O.
+fn write_pool(out: &mut String, lt: &crate::live::LiveTarget, snapshot: &TargetSnapshot) {
+    let base_labels = labels(snapshot, None);
+    let guard = lt
+        .state
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let Some(tree) = guard.as_ref().map(|state| &state.tree) else {
+        return;
+    };
+    let Some(pool) = &tree.pool else {
+        return;
+    };
+    for (name, value) in [
+        ("filesystem_size", pool.size),
+        ("filesystem_used", pool.used),
+        ("filesystem_avail", pool.size.saturating_sub(pool.used)),
+        ("thin_metadata_size", pool.meta_size),
+        ("thin_metadata_used", pool.meta_used),
+        ("thin_provisioned", pool.provisioned),
+    ] {
+        writeln!(
+            out,
+            "storage_harvester_{name}_bytes{{{base_labels}}} {value}"
+        )
+        .unwrap();
+    }
+    for (path, disk) in pool.disks_with_paths(tree) {
+        let labels = labels_at(snapshot, &path, None);
+        for (name, value) in [("read", disk.read), ("written", disk.written)] {
+            writeln!(
+                out,
+                "storage_harvester_block_{name}_bytes_total{{{labels}}} {value}"
+            )
+            .unwrap();
+        }
+    }
+}
+
 pub fn render(snapshots: &[TargetSnapshot], live: Option<&LiveStore>) -> String {
     let mut out = String::new();
     write_headers(&mut out);
@@ -25,7 +64,9 @@ pub fn render(snapshots: &[TargetSnapshot], live: Option<&LiveStore>) -> String 
                 .clone()
         });
         if let Some(lt) = live_target {
-            if let Some(usage) = fsinfo::usage(&lt.target.scan_path) {
+            if lt.target.lvm.is_some() {
+                write_pool(&mut out, lt, snapshot);
+            } else if let Some(usage) = fsinfo::usage(&lt.target.scan_path) {
                 for (name, value) in [
                     ("size", usage.size),
                     ("used", usage.used),
@@ -300,6 +341,31 @@ fn write_headers(out: &mut String) {
             "Bytes available to unprivileged users on the filesystem the target is on.",
         ),
         (
+            "storage_harvester_thin_metadata_size_bytes",
+            "gauge",
+            "Metadata size of the thin pool (lvm_thin targets).",
+        ),
+        (
+            "storage_harvester_thin_metadata_used_bytes",
+            "gauge",
+            "Used metadata of the thin pool; a full metadata area stops the pool.",
+        ),
+        (
+            "storage_harvester_thin_provisioned_bytes",
+            "gauge",
+            "Sum of the virtual sizes of the thin pool's volumes.",
+        ),
+        (
+            "storage_harvester_block_read_bytes_total",
+            "counter",
+            "Bytes read from a thin volume since the host booted (lvm_thin targets).",
+        ),
+        (
+            "storage_harvester_block_written_bytes_total",
+            "counter",
+            "Bytes written to a thin volume since the host booted (lvm_thin targets).",
+        ),
+        (
             "storage_harvester_live_relists_total",
             "counter",
             "Directories re-read between scans after a change signal.",
@@ -511,10 +577,15 @@ fn write_issue(out: &mut String, snapshot: &TargetSnapshot, issue: &str, value: 
 }
 
 fn labels(snapshot: &TargetSnapshot, extra: Option<(&str, &str)>) -> String {
+    labels_at(snapshot, &snapshot.path, extra)
+}
+
+/// The target's labels with `path` set to `path` (a thin pool's disk, say).
+fn labels_at(snapshot: &TargetSnapshot, path: &str, extra: Option<(&str, &str)>) -> String {
     let mut labels = vec![
         ("target".to_string(), snapshot.target_name.clone()),
         ("target_type".to_string(), snapshot.target_type.clone()),
-        ("path".to_string(), snapshot.path.clone()),
+        ("path".to_string(), path.to_string()),
     ];
     labels.extend(
         snapshot

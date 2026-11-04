@@ -1,0 +1,16 @@
+{
+  "id": "/atlas",
+  "name": "Storage Atlas",
+  "short_name": "Atlas",
+  "description": "Live map of every disk, folder and VM, from storage-harvester.",
+  "start_url": "/atlas",
+  "scope": "/atlas",
+  "display": "standalone",
+  "background_color": "#0b0d10",
+  "theme_color": "#14171b",
+  "icons": [
+    { "src": "/atlas/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/atlas/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/atlas/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
