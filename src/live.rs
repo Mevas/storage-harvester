@@ -487,11 +487,16 @@ impl LiveStore {
     /// and replays the changes signalled while the scan ran.
     pub fn replace(&self, index: usize, tree: DirTree, started: SystemTime, duration: Duration) {
         let lt = &self.targets[index];
+        let mut tree = tree;
         let mut guard = lt.state.write().unwrap_or_else(PoisonError::into_inner);
         let (generation, mut changes) = match guard.as_ref() {
             Some(old) => (old.generation + 1, old.tree.diff(&tree)),
             None => (1, Vec::new()),
         };
+        let old_pool = guard.as_ref().and_then(|old| old.tree.pool.as_deref());
+        if let (Some(old), Some(new)) = (old_pool, tree.pool.as_deref_mut()) {
+            new.keep_newer_counters(old);
+        }
         let state = TreeState::new(tree, generation, started);
         let total = state.tree.root().total_blocks();
         let keys: Vec<StableKey> = lock(&lt.during_scan).drain().collect();
@@ -499,11 +504,8 @@ impl LiveStore {
         replay.extend(state.linked_during_scan());
         *guard = Some(state);
         lt.scanning.store(false, Ordering::Relaxed);
-        drop(guard);
-        for node in replay {
-            self.enqueue(index, node, generation);
-        }
-
+        // Published before the lock goes, so no poll's events can come between the tree and
+        // these.
         changes.sort_by_key(|(_, delta)| std::cmp::Reverse(delta.blocks.unsigned_abs()));
         changes.truncate(SCAN_CHANGES);
         let now = millis(SystemTime::now());
@@ -524,6 +526,10 @@ impl LiveStore {
                 "duration_s": duration.as_secs_f64(), "b": total,
             }),
         );
+        drop(guard);
+        for node in replay {
+            self.enqueue(index, node, generation);
+        }
     }
 
     /// The engine: waits for queued directories, re-reads each once its cooldown is over.

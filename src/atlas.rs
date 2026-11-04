@@ -320,30 +320,42 @@ fn strip_hop_by_hop(headers: &mut HeaderMap) {
     }
 }
 
-/// `body`, ended after `idle` without data, at `deadline`, or at shutdown. Holds `slot` until
-/// it ends.
+/// `body`, relayed by a task of its own that ends it after `idle` without progress (no data
+/// from upstream, or a reader that stopped reading), at `deadline`, or at shutdown, whether or
+/// not anyone is polling the answer. The task holds `slot` until it ends.
 fn bounded(
     body: Body,
     idle: Duration,
     deadline: Option<Instant>,
-    stop: watch::Receiver<bool>,
+    mut stop: watch::Receiver<bool>,
     slot: OwnedSemaphorePermit,
 ) -> Body {
-    let state = (body.into_data_stream(), stop, slot);
-    Body::from_stream(stream::unfold(
-        state,
-        move |(mut data, mut stop, slot)| async move {
-            let mut until = Instant::now() + idle;
-            if let Some(deadline) = deadline {
-                until = until.min(deadline);
-            }
-            let next = tokio::select! {
-                next = tokio::time::timeout_at(until, data.next()) => next.ok().flatten(),
-                _ = stop.wait_for(|stopping| *stopping) => None,
+    let (sender, mut receiver) = tokio::sync::mpsc::channel(16);
+    tokio::spawn(async move {
+        let _slot = slot;
+        let mut data = body.into_data_stream();
+        let limit = || {
+            let next = Instant::now() + idle;
+            deadline.map_or(next, |deadline| next.min(deadline))
+        };
+        loop {
+            let chunk = tokio::select! {
+                next = tokio::time::timeout_at(limit(), data.next()) => match next {
+                    Ok(Some(chunk)) => chunk,
+                    _ => break,
+                },
+                _ = stop.wait_for(|stopping| *stopping) => break,
             };
-            next.map(|chunk| (chunk, (data, stop, slot)))
-        },
-    ))
+            let sent = tokio::select! {
+                sent = tokio::time::timeout_at(limit(), sender.send(chunk)) => sent,
+                _ = stop.wait_for(|stopping| *stopping) => break,
+            };
+            if !matches!(sent, Ok(Ok(()))) {
+                break;
+            }
+        }
+    });
+    Body::from_stream(stream::poll_fn(move |context| receiver.poll_recv(context)))
 }
 
 fn error(status: StatusCode, message: &str) -> Response {
@@ -584,6 +596,29 @@ mod tests {
 
     async fn chunks(body: Body) -> usize {
         body.into_data_stream().count().await
+    }
+
+    /// A reader that stops reading (but stays connected) does not hold its slot: the relay
+    /// gives up on it after the idle time, and at shutdown, without being polled.
+    #[tokio::test]
+    async fn a_reader_that_stops_reading_releases_its_slot() {
+        for shutdown in [false, true] {
+            let (stop_tx, stop) = watch::channel(false);
+            let (slots, slot) = one_slot();
+            let endless = stream::repeat_with(|| Ok::<_, Infallible>(Bytes::from_static(b"x")));
+            let idle = if shutdown {
+                Duration::from_secs(30)
+            } else {
+                Duration::from_millis(100)
+            };
+            let body = bounded(Body::from_stream(endless), idle, None, stop, slot);
+            if shutdown {
+                stop_tx.send(true).unwrap();
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            assert_eq!(slots.available_permits(), 1, "shutdown: {shutdown}");
+            drop(body);
+        }
     }
 
     /// An upstream that sends headers and then nothing more is cut off, and its slot is free
