@@ -1,11 +1,15 @@
 use std::fmt::Write;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use std::sync::atomic::Ordering;
+
 use crate::cache::TargetSnapshot;
 use crate::config::SizeMode;
+use crate::fsinfo;
+use crate::live::LiveStore;
 use crate::scanner::NodeObservation;
 
-pub fn render(snapshots: &[TargetSnapshot]) -> String {
+pub fn render(snapshots: &[TargetSnapshot], live: Option<&LiveStore>) -> String {
     let mut out = String::new();
     write_headers(&mut out);
     write_build_info(&mut out);
@@ -13,6 +17,60 @@ pub fn render(snapshots: &[TargetSnapshot]) -> String {
     let now = SystemTime::now();
     for snapshot in snapshots {
         let base_labels = labels(snapshot, None);
+        let live_target = live.and_then(|live| live.target(&snapshot.target_name));
+        let sharing = live_target.and_then(|lt| {
+            lt.sharing
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone()
+        });
+        if let Some(lt) = live_target {
+            if let Some(usage) = fsinfo::usage(&lt.target.scan_path) {
+                for (name, value) in [
+                    ("size", usage.size),
+                    ("used", usage.used),
+                    ("avail", usage.avail),
+                ] {
+                    writeln!(
+                        out,
+                        "storage_harvester_filesystem_{name}_bytes{{{base_labels}}} {value}"
+                    )
+                    .unwrap();
+                }
+            }
+            writeln!(
+                out,
+                "storage_harvester_live_relists_total{{{base_labels}}} {}",
+                lt.relists.load(Ordering::Relaxed)
+            )
+            .unwrap();
+            writeln!(
+                out,
+                "storage_harvester_live_changes_total{{{base_labels}}} {}",
+                lt.changes.load(Ordering::Relaxed)
+            )
+            .unwrap();
+        }
+        if let Some(report) = &sharing {
+            writeln!(
+                out,
+                "storage_harvester_target_disk_bytes{{{base_labels}}} {}",
+                report.disk
+            )
+            .unwrap();
+            writeln!(
+                out,
+                "storage_harvester_sharing_duration_seconds{{{base_labels}}} {:.6}",
+                report.duration.as_secs_f64()
+            )
+            .unwrap();
+            writeln!(
+                out,
+                "storage_harvester_sharing_timestamp_seconds{{{base_labels}}} {}",
+                unix_seconds(report.at)
+            )
+            .unwrap();
+        }
         writeln!(out, "storage_harvester_target_info{{{base_labels}}} 1").unwrap();
         writeln!(
             out,
@@ -55,6 +113,17 @@ pub fn render(snapshots: &[TargetSnapshot]) -> String {
             for node in &result.observations {
                 write_node_sizes(&mut out, snapshot, node, &result.backend);
                 write_node_entries(&mut out, snapshot, node);
+                if let Some(bytes) = sharing
+                    .as_ref()
+                    .and_then(|report| report.by_ino.get(&node.ino))
+                {
+                    let labels = node_labels(snapshot, node, &[]);
+                    writeln!(
+                        out,
+                        "storage_harvester_exclusive_size_bytes{{{labels}}} {bytes}"
+                    )
+                    .unwrap();
+                }
             }
             // The sizes below are the last good scan's; success describes the latest attempt.
             writeln!(
@@ -154,6 +223,21 @@ pub fn render(snapshots: &[TargetSnapshot]) -> String {
         }
     }
 
+    if let Some(live) = live {
+        writeln!(
+            out,
+            "storage_harvester_live_signals_total {}",
+            live.signals.load(Ordering::Relaxed)
+        )
+        .unwrap();
+        writeln!(
+            out,
+            "storage_harvester_live_overflows_total {}",
+            live.overflows.load(Ordering::Relaxed)
+        )
+        .unwrap();
+    }
+
     out
 }
 
@@ -173,6 +257,61 @@ fn write_headers(out: &mut String) {
             "storage_harvester_children_size_bytes",
             "gauge",
             "Storage bytes under this reported node's child directories, including unreported descendants when configured.",
+        ),
+        (
+            "storage_harvester_exclusive_size_bytes",
+            "gauge",
+            "Bytes deleting this reported node would free: extents no directory outside it references (btrfs sharing pass; snapshots not counted).",
+        ),
+        (
+            "storage_harvester_target_disk_bytes",
+            "gauge",
+            "Unique bytes on disk the target's files reference (btrfs sharing pass).",
+        ),
+        (
+            "storage_harvester_sharing_duration_seconds",
+            "gauge",
+            "Duration of the last btrfs sharing pass.",
+        ),
+        (
+            "storage_harvester_sharing_timestamp_seconds",
+            "gauge",
+            "When the last btrfs sharing pass finished.",
+        ),
+        (
+            "storage_harvester_filesystem_size_bytes",
+            "gauge",
+            "Size of the filesystem the target is on.",
+        ),
+        (
+            "storage_harvester_filesystem_used_bytes",
+            "gauge",
+            "Used bytes of the filesystem the target is on.",
+        ),
+        (
+            "storage_harvester_filesystem_avail_bytes",
+            "gauge",
+            "Bytes available to unprivileged users on the filesystem the target is on.",
+        ),
+        (
+            "storage_harvester_live_relists_total",
+            "counter",
+            "Directories re-read between scans after a change signal.",
+        ),
+        (
+            "storage_harvester_live_changes_total",
+            "counter",
+            "Re-reads between scans that found a change.",
+        ),
+        (
+            "storage_harvester_live_signals_total",
+            "counter",
+            "Change signals received from fanotify or btrfs polling.",
+        ),
+        (
+            "storage_harvester_live_overflows_total",
+            "counter",
+            "fanotify queue overflows (changes lost until the next scan).",
         ),
         (
             "storage_harvester_own_entries",

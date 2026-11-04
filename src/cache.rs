@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
@@ -50,6 +50,14 @@ impl TargetSnapshot {
 }
 
 #[derive(Debug, Clone)]
+pub struct ScanSummary {
+    pub running: bool,
+    pub last_scan: Option<SystemTime>,
+    pub duration: Option<Duration>,
+    pub last_error: Option<String>,
+}
+
+#[derive(Debug, Clone)]
 pub struct SnapshotStore {
     inner: Arc<RwLock<BTreeMap<String, TargetSnapshot>>>,
 }
@@ -96,6 +104,26 @@ impl SnapshotStore {
             snapshot.scan_count += 1;
             snapshot.failure_count += 1;
         }
+    }
+
+    /// Scan state without the scan results, which are large to copy.
+    pub async fn summaries(&self) -> HashMap<String, ScanSummary> {
+        self.inner
+            .read()
+            .await
+            .values()
+            .map(|snapshot| {
+                (
+                    snapshot.target_name.clone(),
+                    ScanSummary {
+                        running: snapshot.scan_running,
+                        last_scan: snapshot.last_success.as_ref().map(|r| r.timestamp),
+                        duration: snapshot.last_success.as_ref().map(|r| r.duration),
+                        last_error: snapshot.last_error.clone(),
+                    },
+                )
+            })
+            .collect()
     }
 
     pub async fn snapshots(&self) -> Vec<TargetSnapshot> {

@@ -45,11 +45,31 @@ jobs:
           path: target/tmp/perf-report.json
           if-no-files-found: warn
 
+  # The btrfs sharing pass and generation polling need a btrfs filesystem and CAP_SYS_ADMIN:
+  # a loopback image, and the test binary run as root.
+  btrfs:
+    name: btrfs (sharing and polling)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master, 2026-10-16
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - run: sudo apt-get install -y -qq btrfs-progs
+      - run: |
+          truncate -s 1G "$RUNNER_TEMP/btrfs.img"
+          mkfs.btrfs -q "$RUNNER_TEMP/btrfs.img"
+          sudo mkdir -p /mnt/btrfs
+          sudo mount -o loop "$RUNNER_TEMP/btrfs.img" /mnt/btrfs
+      - run: cargo test --test btrfs --no-run
+      - run: sudo -E env "PATH=$PATH" HARVESTER_BTRFS_DIR=/mnt/btrfs cargo test --test btrfs -- --nocapture
+
   # Komodo redeploys the NUC whenever :latest changes, so main publishes only after both gates
   # pass. Pull requests build the image without pushing it, which tests the Dockerfile.
   image:
     name: image (publish on main)
-    needs: [test, perf]
+    needs: [test, perf, btrfs]
     runs-on: ubuntu-24.04
     permissions:
       contents: read
