@@ -108,6 +108,9 @@ pub struct TreeState {
     /// re-read replaces its directory's entries (`plain_by_node`).
     plain_live: BTreeSet<(u32, u32)>,
     plain_by_node: HashMap<u32, Vec<u32>>,
+    /// Multiply-linked files counted in untracked directories: not in `tree.links`, so a new
+    /// link to one cannot be settled against the tree.
+    untracked: HashSet<(u64, u64)>,
 }
 
 impl TreeState {
@@ -123,6 +126,9 @@ impl TreeState {
             .map(|(index, node)| (node.ino, index as u32))
             .collect();
         let plain = std::mem::take(&mut tree.plain);
+        let untracked = std::mem::take(&mut tree.untracked_links)
+            .into_iter()
+            .collect();
         Self {
             tree,
             generation,
@@ -133,6 +139,7 @@ impl TreeState {
             plain,
             plain_live: BTreeSet::new(),
             plain_by_node: HashMap::new(),
+            untracked,
         }
     }
 
@@ -144,21 +151,55 @@ impl TreeState {
         for index in from..self.tree.nodes.len() {
             self.inos.insert(self.tree.nodes[index].ino, index as u32);
         }
+        // Grafted directories are new, so they have no entries to replace.
+        let mut grafted: HashMap<u32, Vec<u32>> = HashMap::new();
         for (key, node) in self.tree.plain.drain(..) {
             self.plain_live.insert((key, node));
-            self.plain_by_node.entry(node).or_default().push(key);
+            grafted.entry(node).or_default().push(key);
+        }
+        for (node, mut keys) in grafted {
+            keys.sort_unstable();
+            keys.dedup();
+            self.plain_by_node.insert(node, keys);
         }
     }
 
-    /// What a re-read of `node` found singly linked in it, in place of what it had.
-    fn set_plain(&mut self, node: u32, keys: Vec<u32>) {
-        for key in self.plain_by_node.remove(&node).unwrap_or_default() {
-            self.plain_live.remove(&(key, node));
+    /// What a re-read of `node` found singly linked in it, in place of what it had. Only the
+    /// keys that came or went touch the index.
+    fn set_plain(&mut self, node: u32, mut keys: Vec<u32>) {
+        keys.sort_unstable();
+        keys.dedup();
+        let old = self.plain_by_node.remove(&node).unwrap_or_default();
+        for &gone in old.iter().filter(|key| keys.binary_search(key).is_err()) {
+            self.plain_live.remove(&(gone, node));
         }
-        self.plain_live.extend(keys.iter().map(|&key| (key, node)));
+        for &new in keys.iter().filter(|key| old.binary_search(key).is_err()) {
+            self.plain_live.insert((new, node));
+        }
         if !keys.is_empty() {
             self.plain_by_node.insert(node, keys);
         }
+    }
+
+    /// Whether the tree already counts this multiply-linked file: under a live owner, or in an
+    /// untracked directory.
+    fn already_counted(&self, inode: &(u64, u64)) -> bool {
+        self.untracked.contains(inode)
+            || self
+                .tree
+                .links
+                .get(inode)
+                .is_some_and(|owner| self.tree.nodes[owner.node as usize].alive)
+    }
+
+    /// Whether a link just adopted may already be counted where the tree cannot reach it: as
+    /// a plain file under a sealed directory, or as a link in an untracked one.
+    fn counted_out_of_reach(&self, inode: (u64, u64)) -> bool {
+        self.untracked.contains(&inode)
+            || self.plain_holders(inode).into_iter().any(|holder| {
+                let held = &self.tree.nodes[holder as usize];
+                held.alive && held.sealed
+            })
     }
 
     /// Directories that held a singly linked file with this inode, at the scan or since. Some
@@ -639,14 +680,19 @@ fn relist(lt: &LiveTarget, state: &mut TreeState, node: u32) -> Outcome {
                     // Links counted without a node (in the subtree's untracked part, or all of
                     // them past the cap) cannot be settled against the tree: if one may be
                     // counted elsewhere as a plain file, a scan has to settle it.
+                    // Links it counts in untracked directories are not settled by walk_new
+                    // either: one the tree already counts is counted twice.
                     let unsettled = sub
                         .untracked_links
                         .iter()
                         .chain(sub.links.keys().filter(|_| !fits))
-                        .any(|&inode| !state.plain_holders(inode).is_empty());
+                        .any(|inode| {
+                            !state.plain_holders(*inode).is_empty() || state.already_counted(inode)
+                        });
                     if unsettled {
                         lt.request_rescan();
                     }
+                    state.untracked.extend(sub.untracked_links.iter().copied());
                     if !fits {
                         // Past the cap: counted, but without nodes, as a scan would.
                         state.tree.nodes[node as usize].sealed = true;
@@ -675,14 +721,12 @@ fn relist(lt: &LiveTarget, state: &mut TreeState, node: u32) -> Outcome {
     // and it sees the file is now counted here.
     // A sealed directory is never re-read (it has untracked contents), so a scan settles it.
     for inode in adopted {
+        if state.counted_out_of_reach(inode) {
+            lt.request_rescan();
+        }
         for holder in state.plain_holders(inode) {
             let held = &state.tree.nodes[holder as usize];
-            if !held.alive || holder == node {
-                continue;
-            }
-            if held.sealed {
-                lt.request_rescan();
-            } else if !out.requeue.contains(&holder) {
+            if held.alive && !held.sealed && holder != node && !out.requeue.contains(&holder) {
                 out.requeue.push(holder);
             }
         }
@@ -1509,6 +1553,68 @@ mod tests {
             let guard = store.targets[0].state.read().unwrap();
             let grafted = guard.as_ref().unwrap().tree.find("/data/b/new").is_some();
             assert_eq!(grafted, !sealed, "{case}");
+        }
+    }
+
+    /// A new link to a file the tree counts where it cannot settle it (already linked, or in
+    /// an untracked directory) asks for a scan.
+    #[test]
+    fn links_to_files_counted_out_of_reach_ask_for_a_scan() {
+        // (cap, sealed, prepare before the scan, link from, link at, case)
+        type Prepare = fn(&Path);
+        let cases: [(usize, bool, Prepare, &str, &str, &str); 4] = [
+            (
+                5,
+                false,
+                |root| {
+                    write(&root.join("a/twin.bin"), 300_000);
+                    fs::hard_link(root.join("a/twin.bin"), root.join("a/twin2.bin")).unwrap();
+                },
+                "a/twin.bin",
+                "b/new/deep/twin.bin",
+                "linked file, new link in a grafted subtree's untracked part",
+            ),
+            (
+                4,
+                true,
+                |root| {
+                    write(&root.join("a/twin.bin"), 300_000);
+                    fs::hard_link(root.join("a/twin.bin"), root.join("a/twin2.bin")).unwrap();
+                },
+                "a/twin.bin",
+                "b/new/deep/twin.bin",
+                "linked file, new link past the cap",
+            ),
+            (
+                4,
+                true,
+                |root| write(&root.join("a/deep/orig.bin"), 300_000),
+                "a/deep/orig.bin",
+                "b/orig.bin",
+                "plain original in an untracked directory",
+            ),
+            (
+                4,
+                true,
+                |root| {
+                    write(&root.join("a/deep/x.bin"), 300_000);
+                    fs::hard_link(root.join("a/deep/x.bin"), root.join("a/deep/y.bin")).unwrap();
+                },
+                "a/deep/x.bin",
+                "b/z.bin",
+                "linked original counted in an untracked directory",
+            ),
+        ];
+        for (cap, sealed, prepare, from, at, case) in cases {
+            let temp = tempfile::tempdir().unwrap();
+            let root = temp.path();
+            prepare(root);
+            let store = capped(root, cap, sealed);
+            let at = root.join(at);
+            fs::create_dir_all(at.parent().unwrap()).unwrap();
+            fs::hard_link(root.join(from), &at).unwrap();
+            settle(&store, &["/data/b"]);
+            assert_eq!(rescans(&store), 1, "{case}");
         }
     }
 

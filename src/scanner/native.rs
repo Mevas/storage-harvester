@@ -427,7 +427,8 @@ struct Worker {
     arena: Vec<u8>,
     /// Every link of a multiply-linked file seen directly in a tracked directory.
     link_dirs: Vec<((u64, u64), u32)>,
-    /// `(plain_key, node)` per singly linked file directly in a tracked directory (fanotify).
+    /// `(plain_key, node)` per singly linked file, under its directory's node or, in an
+    /// untracked directory, its nearest tracked ancestor's (fanotify).
     plain: Vec<(u32, u32)>,
 }
 
@@ -704,7 +705,7 @@ impl Walk<'_> {
                     if job.tracked {
                         link_dirs.push(((stat.dev, stat.ino), job.node));
                     }
-                } else if self.for_fanotify && job.tracked && stat.kind == Kind::File {
+                } else if self.for_fanotify && stat.kind == Kind::File {
                     plain.push((plain_key(stat.dev, stat.ino), job.node));
                 }
             }
