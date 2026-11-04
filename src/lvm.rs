@@ -55,6 +55,8 @@ pub struct Pool {
     pub meta_used: u64,
     /// Sum of the thin volumes' virtual sizes.
     pub provisioned: u64,
+    /// When the device-mapper reading behind these numbers was taken.
+    pub sampled: Instant,
     /// Whole disks under the pool.
     pub disks: Vec<String>,
     pub guests: Vec<Guest>,
@@ -352,51 +354,72 @@ const COMMAND_DEADLINE: Duration = Duration::from_secs(15);
 
 /// Runs a read-only tool and returns its output, killing it past `deadline`.
 fn run(program: &str, args: &[&str], deadline: Duration) -> Result<String> {
+    use std::os::unix::process::CommandExt;
     use std::process::Stdio;
+    use std::sync::mpsc;
     let mut child = Command::new(program)
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
+        // Its own process group, so a timeout takes any children it left holding the pipes.
+        .process_group(0)
         .spawn()
         .with_context(|| format!("failed to run {program}"))?;
-    let stdout = drain(child.stdout.take());
-    let stderr = drain(child.stderr.take());
-    let started = Instant::now();
+    let group = child.id() as libc::pid_t;
+    let (sender, outputs) = mpsc::channel();
+    drain(child.stdout.take(), sender.clone(), true);
+    drain(child.stderr.take(), sender, false);
+    let ends = Instant::now() + deadline;
+    let timed_out = |child: &mut std::process::Child| {
+        // SAFETY: signals the process group `child` leads; no memory is involved.
+        unsafe { libc::kill(-group, libc::SIGKILL) };
+        let _ = child.wait();
+        anyhow::anyhow!("{program} {} took longer than {deadline:?}", args.join(" "))
+    };
     let status = loop {
         if let Some(status) = child.try_wait()? {
             break status;
         }
-        if started.elapsed() > deadline {
-            let _ = child.kill();
-            let _ = child.wait();
-            bail!("{program} {} took longer than {deadline:?}", args.join(" "));
+        if Instant::now() > ends {
+            return Err(timed_out(&mut child));
         }
         std::thread::sleep(Duration::from_millis(10));
     };
-    let stdout = stdout.join().unwrap_or_default();
+    let (mut stdout, mut stderr) = (None, None);
+    while stdout.is_none() || stderr.is_none() {
+        let left = ends.saturating_duration_since(Instant::now());
+        match outputs.recv_timeout(left) {
+            Ok((true, bytes)) => stdout = Some(bytes),
+            Ok((false, bytes)) => stderr = Some(bytes),
+            Err(_) => return Err(timed_out(&mut child)),
+        }
+    }
     if !status.success() {
-        let stderr = stderr.join().unwrap_or_default();
         bail!(
             "{program} {}: {}",
             args.join(" "),
-            String::from_utf8_lossy(&stderr).trim()
+            String::from_utf8_lossy(&stderr.unwrap_or_default()).trim()
         );
     }
-    Ok(String::from_utf8_lossy(&stdout).into_owned())
+    Ok(String::from_utf8_lossy(&stdout.unwrap_or_default()).into_owned())
 }
 
 /// Reads a child's pipe to its end (at most 16 MiB) on its own thread, so a chatty child never
-/// blocks on a full pipe while it is being waited for.
-fn drain(pipe: Option<impl std::io::Read + Send + 'static>) -> std::thread::JoinHandle<Vec<u8>> {
+/// blocks on a full pipe while it is being waited for, and sends it tagged `stdout`.
+fn drain(
+    pipe: Option<impl std::io::Read + Send + 'static>,
+    to: std::sync::mpsc::Sender<(bool, Vec<u8>)>,
+    stdout: bool,
+) {
     use std::io::Read;
     std::thread::spawn(move || {
         let mut bytes = Vec::new();
         if let Some(pipe) = pipe {
             let _ = pipe.take(16 << 20).read_to_end(&mut bytes);
         }
-        bytes
-    })
+        let _ = to.send((stdout, bytes));
+    });
 }
 
 /// An active device-mapper device, from sysfs.
@@ -565,7 +588,9 @@ impl Scanner for LvmScanner {
                     walks.add(&result);
                     if let Some(walked) = result.tree {
                         let disk = &mut pool.guests[guest_index].disks[disk_index];
-                        graft_walk(&mut tree, disk, walked);
+                        if !graft_walk(&mut tree, disk, walked) {
+                            warn!(target = %target.name, vmid, "container walk found more than its disk holds; not used");
+                        }
                     }
                 }
                 Err(error) => {
@@ -815,6 +840,7 @@ fn build(target: &Target, lvm: &LvmTarget, inputs: &Inputs) -> Result<(Pool, Dir
         meta_size,
         meta_used,
         provisioned,
+        sampled: inputs.sample.at,
         disks: Vec::new(),
         guests,
         by_node: HashMap::new(),
@@ -881,8 +907,13 @@ fn walk_container(
 
 /// Puts a container's walked tree in place of its root disk's opaque node, named after the
 /// disk, holding the container's directories plus the allocated blocks no file accounts for.
-/// The disk's node changes, so the pool needs [`Pool::reindex`] after.
-fn graft_walk(tree: &mut DirTree, disk: &mut Disk, mut walked: DirTree) {
+/// The disk's node changes, so the pool needs [`Pool::reindex`] after. A walk that found more
+/// than the disk holds (files came and went while it ran) is not used: the disk stays opaque
+/// until the next scan. Returns whether it was grafted.
+fn graft_walk(tree: &mut DirTree, disk: &mut Disk, mut walked: DirTree) -> bool {
+    if walked.root().total_blocks() > disk.allocated.unwrap_or(0) {
+        return false;
+    }
     let opaque = disk.node;
     let guest = tree.nodes[opaque as usize].parent;
     let gone = Delta::from(&tree.nodes[opaque as usize].sub).negate();
@@ -906,9 +937,30 @@ fn graft_walk(tree: &mut DirTree, disk: &mut Disk, mut walked: DirTree) {
     tree.propagate(guest, &added);
     disk.walked = true;
     disk.unaccounted = remainder;
+    true
 }
 
 impl Pool {
+    /// A scan's pool replacing `older`: polls that ran during the scan read the I/O counters
+    /// after the scan did, so keep theirs. Counters must not go back.
+    pub fn keep_newer_counters(&mut self, older: &Pool) {
+        if older.sampled <= self.sampled {
+            return;
+        }
+        let newer: HashMap<&str, &Disk> = older
+            .guests
+            .iter()
+            .flat_map(|guest| &guest.disks)
+            .map(|disk| (disk.dm.as_str(), disk))
+            .collect();
+        for disk in self.guests.iter_mut().flat_map(|guest| &mut guest.disks) {
+            if let Some(seen) = newer.get(disk.dm.as_str()) {
+                (disk.read, disk.written) = (seen.read, seen.written);
+                (disk.read_rate, disk.write_rate) = (seen.read_rate, seen.write_rate);
+            }
+        }
+    }
+
     fn reindex(&mut self) {
         self.by_node.clear();
         for (g, guest) in self.guests.iter().enumerate() {
@@ -1107,6 +1159,7 @@ fn apply(
     let Some(mut pool) = state.tree.pool.take() else {
         return false;
     };
+    pool.sampled = sample.at;
     if let Some((used, size, meta_used, meta_size)) = sample
         .status
         .get(&pool.dm)
@@ -1129,7 +1182,8 @@ fn apply(
         disk.active = mapped.is_some();
         if let Some(sectors) = mapped {
             let allocated = sectors * SECTOR;
-            if disk.allocated != Some(allocated) {
+            // A walked disk is checked every time: its files may outgrow the allocation.
+            if disk.allocated != Some(allocated) || disk.walked {
                 let (delta, opaque) = set_allocated(&mut state.tree, disk, allocated);
                 rescan |= opaque;
                 if !delta.is_zero() {
@@ -1424,7 +1478,7 @@ sata0: local-lvm:vm-103-disk-1,size=32G
             .unwrap();
         let files = walked.root().total_blocks();
         let before = tree.root().total_blocks();
-        graft_walk(&mut tree, &mut pool.guests[1].disks[0], walked);
+        assert!(graft_walk(&mut tree, &mut pool.guests[1].disks[0], walked));
         pool.reindex();
         let disk_node = pool.guests[1].disks[0].node;
         let allocated = 4180096 * 512;
@@ -1562,10 +1616,83 @@ sata0: local-lvm:vm-103-disk-1,size=32G
         assert_eq!(total(), before + 2000 * 512);
     }
 
+    /// A scan's reading is older than the polls that ran during it: installing it keeps the
+    /// polls' counters, which never go back.
+    #[test]
+    fn a_rescan_never_moves_counters_back() {
+        let target = target();
+        let early = Instant::now();
+        let (pool, mut tree) = build(&target, target.lvm.as_ref().unwrap(), &inputs()).unwrap();
+        tree.pool = Some(Box::new(pool));
+        let store = LiveStore::new(
+            "pve".into(),
+            std::slice::from_ref(&target),
+            Path::new("/"),
+            Duration::ZERO,
+        )
+        .unwrap();
+        store.replace(0, tree, SystemTime::now(), Duration::ZERO);
+        let lt = &store.targets[0];
+        let mut later = inputs().sample;
+        later.at = Instant::now() + Duration::from_secs(1);
+        later
+            .devices
+            .get_mut("pve-vm--100--disk--0")
+            .unwrap()
+            .written = 500;
+        assert!(apply(&store, lt, 1, &later, &mut Counters::new()));
+
+        // A scan that sampled before that poll.
+        let mut scanned = inputs();
+        scanned.sample.at = early;
+        let (pool, mut tree) = build(&target, target.lvm.as_ref().unwrap(), &scanned).unwrap();
+        tree.pool = Some(Box::new(pool));
+        store.replace(0, tree, SystemTime::now(), Duration::ZERO);
+        let guard = lt.state.read().unwrap();
+        let pool = guard.as_ref().unwrap().tree.pool.as_ref().unwrap();
+        assert_eq!(pool.guests[0].disks[0].written, 500 * 512);
+    }
+
+    #[test]
+    fn a_walk_bigger_than_its_disk_is_not_used() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::create_dir_all(temp.path().join("etc")).unwrap();
+        fs::write(temp.path().join("etc/big"), vec![1u8; 300_000]).unwrap();
+        let target = target();
+        let (mut pool, mut tree) = build(&target, target.lvm.as_ref().unwrap(), &inputs()).unwrap();
+        let mut walk = target.clone();
+        walk.lvm = None;
+        walk.scan_path = temp.path().to_path_buf();
+        walk.display_path = PathBuf::from(tree.display_path(pool.guests[1].disks[0].node));
+        walk.report_depth = 0;
+        let walked = NativeScanner::new(&walk)
+            .unwrap()
+            .scan(&walk, &AtomicBool::new(false))
+            .unwrap()
+            .tree
+            .unwrap();
+        let before = tree.root().total_blocks();
+        let disk = &mut pool.guests[1].disks[0];
+        disk.allocated = Some(100_000);
+        assert!(!graft_walk(&mut tree, disk, walked));
+        assert!(!disk.walked);
+        assert_eq!(tree.root().total_blocks(), before);
+    }
+
     #[test]
     fn commands_past_their_deadline_are_killed() {
         let started = Instant::now();
         let error = run("sleep", &["5"], Duration::from_millis(200)).unwrap_err();
+        assert!(error.to_string().contains("took longer"), "{error}");
+        assert!(started.elapsed() < Duration::from_secs(2));
+        // A child that exits but leaves a descendant holding its output open.
+        let started = Instant::now();
+        let error = run(
+            "sh",
+            &["-c", "sleep 5 & echo hi"],
+            Duration::from_millis(300),
+        )
+        .unwrap_err();
         assert!(error.to_string().contains("took longer"), "{error}");
         assert!(started.elapsed() < Duration::from_secs(2));
         assert_eq!(
