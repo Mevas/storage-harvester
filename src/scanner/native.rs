@@ -31,7 +31,7 @@ use globset::{Glob, GlobSet, GlobSetBuilder};
 
 use crate::config::{ReportMode, Target};
 use crate::scanner::{EntryObservation, EntryType, NodeObservation, ScanResult, Scanner};
-use crate::tree::{DirNode, DirTree, LinkOwner, Tally, NONE};
+use crate::tree::{plain_key, DirNode, DirTree, LinkOwner, Tally, NONE};
 
 #[derive(Debug)]
 pub struct NativeScanner {
@@ -69,7 +69,8 @@ pub(crate) struct Listing {
     /// Multiply-linked entries: `((dev, ino), blocks, apparent)`. Whose they are is the
     /// tree's call.
     pub links: Vec<((u64, u64), u64, u64)>,
-    /// The directory's own inode: `(blocks, apparent)`.
+    /// [`plain_key`]s of the singly linked files, when asked for (fanotify).
+    pub plain: Vec<u32>,
     /// The directory's own inode.
     pub own: Own,
 }
@@ -101,6 +102,7 @@ pub(crate) fn read_direct(
     scan_path: &[u8],
     display_path: &[u8],
     root_dev: u64,
+    record_plain: bool,
 ) -> io::Result<Listing> {
     let follow = target.follow_symlinks;
     let path = CString::new(scan_path).map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
@@ -160,6 +162,9 @@ pub(crate) fn read_direct(
                     .push(((stat.dev, stat.ino), stat.blocks, stat.size));
             } else {
                 direct.add_size(stat.blocks, stat.size);
+                if record_plain && stat.kind == Kind::File {
+                    listing.plain.push(plain_key(stat.dev, stat.ino));
+                }
             }
         }
     }
@@ -205,7 +210,7 @@ impl Scanner for NativeScanner {
             nodes: Mutex::new(Nodes::default()),
             tracked: AtomicUsize::new(1),
             cap: target.tree_max_directories,
-            handles: target.collect_handles,
+            for_fanotify: target.collect_handles,
             queue: Mutex::new(Queue::default()),
             ready: Condvar::new(),
             halted: AtomicBool::new(false),
@@ -216,7 +221,7 @@ impl Scanner for NativeScanner {
         match root.kind {
             Kind::Directory => {
                 first.counts.scanned_directories += 1;
-                let handle = if walk.handles {
+                let handle = if walk.for_fanotify {
                     sys::path_handle(&target.scan_path)
                 } else {
                     None
@@ -290,8 +295,9 @@ struct Walk<'a> {
     /// Directories offered a node so far, counted without the lock to apply `cap`.
     tracked: AtomicUsize,
     cap: usize,
-    /// Record each tracked directory's file handle (for fanotify).
-    handles: bool,
+    /// Record what fanotify needs: each tracked directory's file handle, and which tracked
+    /// directory each singly linked file is in.
+    for_fanotify: bool,
     queue: Mutex<Queue>,
     ready: Condvar,
     halted: AtomicBool,
@@ -421,6 +427,9 @@ struct Worker {
     arena: Vec<u8>,
     /// Every link of a multiply-linked file seen directly in a tracked directory.
     link_dirs: Vec<((u64, u64), u32)>,
+    /// `(plain_key, node)` per singly linked file, under its directory's node or, in an
+    /// untracked directory, its nearest tracked ancestor's (fanotify).
+    plain: Vec<(u32, u32)>,
 }
 
 impl Worker {
@@ -540,6 +549,7 @@ impl Walk<'_> {
             pending,
             arena,
             link_dirs,
+            plain,
             ..
         } = worker;
         let mut dir = match sys::Dir::open(&job.path, follow) {
@@ -629,7 +639,11 @@ impl Walk<'_> {
                         pending.push(PendingDir {
                             name: start..arena.len(),
                             stat,
-                            handle: if self.handles { dir.handle(name) } else { None },
+                            handle: if self.for_fanotify {
+                                dir.handle(name)
+                            } else {
+                                None
+                            },
                             descend,
                         });
                     } else if descend {
@@ -691,6 +705,8 @@ impl Walk<'_> {
                     if job.tracked {
                         link_dirs.push(((stat.dev, stat.ino), job.node));
                     }
+                } else if self.for_fanotify && stat.kind == Kind::File {
+                    plain.push((plain_key(stat.dev, stat.ino), job.node));
                 }
             }
         }
@@ -806,7 +822,9 @@ fn finish(
     let mut winners: HashMap<(u64, u64), (usize, Link)> = HashMap::new();
     let mut entry_offsets = Vec::with_capacity(workers.len());
     let mut holders: HashMap<(u64, u64), Vec<u32>> = HashMap::new();
+    let mut plain = Vec::with_capacity(workers.iter().map(|w| w.plain.len()).sum());
     for (index, worker) in workers.into_iter().enumerate() {
+        plain.extend(worker.plain);
         for (inode, node) in worker.link_dirs {
             holders.entry(inode).or_default().push(node);
         }
@@ -822,6 +840,7 @@ fn finish(
         entries.extend(worker.entries);
     }
     let mut owners = HashMap::new();
+    let mut untracked_links = Vec::new();
     for (inode, (worker, link)) in winners {
         tallies[link.node as usize]
             .part(link.direct)
@@ -840,6 +859,8 @@ fn finish(
                     others,
                 },
             );
+        } else if target.collect_handles {
+            untracked_links.push(inode);
         }
         if let Some(entry) = link.entry {
             let entry = &mut entries[entry_offsets[worker] + entry];
@@ -848,7 +869,11 @@ fn finish(
         }
     }
 
-    let tree = build_tree(target, nodes, &tallies, owners, root_dev);
+    plain.sort_unstable();
+    let tree = build_tree(target, nodes, &tallies, owners, plain, root_dev).map(|mut tree| {
+        tree.untracked_links = untracked_links;
+        tree
+    });
     let mut reported: Vec<(Vec<u8>, NodeObservation)> = tree
         .as_ref()
         .map(|tree| {
@@ -889,6 +914,7 @@ fn build_tree(
     nodes: Nodes,
     tallies: &[NodeTally],
     links: HashMap<(u64, u64), LinkOwner>,
+    plain: Vec<(u32, u32)>,
     root_dev: u64,
 ) -> Option<DirTree> {
     if nodes.list.is_empty() {
@@ -950,6 +976,8 @@ fn build_tree(
         nodes: tree_nodes,
         links,
         handles,
+        plain,
+        untracked_links: Vec::new(),
     })
 }
 

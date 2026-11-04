@@ -12,6 +12,9 @@ use crate::config::Target;
 use crate::live::{LiveStore, LiveTarget, SharingReport};
 use crate::scanner;
 
+/// The least time between the starts of two scans when the live engine asks for one early.
+const EARLY_RESCAN_GAP: Duration = Duration::from_secs(60);
+
 #[derive(Clone)]
 pub struct Scheduler {
     targets: Vec<Target>,
@@ -49,8 +52,19 @@ impl Scheduler {
             let live = Arc::clone(&self.live);
             tasks.push(tokio::spawn(async move {
                 loop {
+                    let started = time::Instant::now();
                     run_scan(&target, index, &store, &live).await;
-                    time::sleep(target.baseline_interval).await;
+                    let ended = time::Instant::now();
+                    let due = ended + target.baseline_interval;
+                    tokio::select! {
+                        _ = time::sleep_until(due) => {}
+                        _ = live.targets[index].rescan.notified() => {
+                            // Early, but not more than once a minute, nor scanning more than a
+                            // tenth of the time.
+                            let early = (started + EARLY_RESCAN_GAP).max(ended + (ended - started) * 9);
+                            time::sleep_until(early.min(due)).await;
+                        }
+                    }
                 }
             }));
         }
