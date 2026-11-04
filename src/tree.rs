@@ -171,6 +171,17 @@ pub struct DirTree {
     pub links: HashMap<(u64, u64), LinkOwner>,
     /// `(node, file handle)` per tracked directory, when the walk recorded them.
     pub handles: Vec<(u32, Box<[u8]>)>,
+    /// `(plain_key(dev, ino), node)` for every singly linked file in a tracked directory, sorted,
+    /// when the walk recorded them (fanotify). fanotify reports a new hard link only to the new
+    /// link's directory; this finds the directory that counted the file while it had one link.
+    pub plain: Vec<(u32, u32)>,
+}
+
+/// A singly linked file's key in [`DirTree::plain`]: its inode folded to 32 bits (exact for
+/// ext4's 32-bit inode numbers). Two files may share a key; a match only says which
+/// directories to re-read.
+pub fn plain_key(dev: u64, ino: u64) -> u32 {
+    (ino as u32 ^ (ino >> 32) as u32).wrapping_add((dev as u32).wrapping_mul(0x9E37_79B9))
 }
 
 impl std::fmt::Debug for DirTree {
@@ -330,6 +341,9 @@ impl DirTree {
         }
         for (node, handle) in other.handles {
             self.handles.push((node + offset, handle));
+        }
+        for (key, node) in other.plain {
+            self.plain.push((key, node + offset));
         }
         offset
     }
@@ -553,6 +567,7 @@ mod tests {
             nodes,
             links: HashMap::new(),
             handles: Vec::new(),
+            plain: Vec::new(),
         }
     }
 
