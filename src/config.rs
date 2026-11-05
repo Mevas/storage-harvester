@@ -83,6 +83,12 @@ pub struct LiveConfig {
         deserialize_with = "deserialize_duration"
     )]
     pub block_poll_interval: Duration,
+    /// On Synology DSM, also follow btrfs targets by synotify, Synology's own change events:
+    /// writes and deletions show at once rather than at writeback (~15 s) or commit (~30 s).
+    /// Needs root and CAP_SYS_ADMIN; in a container, `pid: host` and CAP_SYS_PTRACE as well,
+    /// to mark the other containers' mounts.
+    #[serde(default = "default_true")]
+    pub synotify: bool,
 }
 
 impl Default for LiveConfig {
@@ -92,6 +98,7 @@ impl Default for LiveConfig {
             btrfs_poll_interval: default_btrfs_poll_interval(),
             min_relist_interval: default_min_relist_interval(),
             block_poll_interval: default_block_poll_interval(),
+            synotify: true,
         }
     }
 }
@@ -588,6 +595,7 @@ fn parse_duration(value: &str) -> Result<Duration> {
         .with_context(|| format!("invalid duration number {number:?}"))?;
 
     match unit {
+        "ms" => Ok(Duration::from_millis(amount)),
         "s" | "sec" | "secs" => Ok(Duration::from_secs(amount)),
         "m" | "min" | "mins" => Ok(Duration::from_secs(amount * 60)),
         "h" | "hr" | "hrs" => Ok(Duration::from_secs(amount * 60 * 60)),
@@ -650,7 +658,7 @@ fn default_tree_max_directories() -> usize {
 }
 
 fn default_block_poll_interval() -> Duration {
-    Duration::from_secs(2)
+    Duration::from_secs(1)
 }
 
 fn default_btrfs_poll_interval() -> Duration {
@@ -658,7 +666,7 @@ fn default_btrfs_poll_interval() -> Duration {
 }
 
 fn default_min_relist_interval() -> Duration {
-    Duration::from_secs(1)
+    Duration::from_millis(250)
 }
 
 #[cfg(test)]
@@ -668,6 +676,7 @@ mod tests {
     #[test]
     fn parses_duration_units() {
         assert_eq!(parse_duration("30s").unwrap(), Duration::from_secs(30));
+        assert_eq!(parse_duration("250ms").unwrap(), Duration::from_millis(250));
         assert_eq!(parse_duration("5m").unwrap(), Duration::from_secs(300));
         assert_eq!(parse_duration("2h").unwrap(), Duration::from_secs(7200));
     }

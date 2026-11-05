@@ -12,6 +12,7 @@ mod lvm;
 mod registry;
 mod scanner;
 mod scheduler;
+mod synotify;
 mod tree;
 mod who;
 
@@ -67,11 +68,7 @@ async fn main() -> Result<()> {
         config.live.min_relist_interval,
     )?;
     // fanotify names directories by file handle, so those targets' walks record handles.
-    for index in live::start_sources(
-        &live,
-        config.live.btrfs_poll_interval,
-        config.live.block_poll_interval,
-    ) {
+    for index in live::start_sources(&live, &config.live) {
         targets[index].collect_handles = true;
     }
     let _scan_tasks = Scheduler::new(targets, store.clone(), Arc::clone(&live)).start();
