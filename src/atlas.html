@@ -1020,7 +1020,7 @@ async function loadCapacity(){
 const DIRTY={};let flushRaf=0;const FEEDQ=[];
 function invalidate(k){DIRTY[k]=true;if(!flushRaf)flushRaf=requestAnimationFrame(flush);}
 const ovFull=throttle(()=>{if(current()==='overview')renderOverview();},4000);
-const ovLive=throttle(()=>{if(current()==='overview')renderOvLive();},1500);
+const ovLive=throttle(()=>{if(current()==='overview')renderOvLive();},500);
 const hmNow=throttle(()=>{if(current()==='changes'){hmDraw();hmRefreshRowsNow();hmLiveDrawer();}},500);
 const sideLater=throttle(()=>{if(current()==='blockmap')renderBmSide();},3000);
 const shareLater=throttle(()=>{if(current()==='sharing')renderSharing();},5000);
@@ -1824,7 +1824,7 @@ function feedRow(e,fresh){
   const b=el('button',{type:'button',class:'ev'+(fresh?' fresh':'')+(e.replay?' old':''),title:e.kind==='scan'?'':maskPath(e.path),onclick:()=>goTo(e.H,e.O,e.path)},
     el('span',{class:'tm',text:fmtHMS(e.t)}),el('i',{class:'dot',style:`background:${hostColor(e.H)}`}),el('span',{class:'pa',text:p}),
     el('span',{class:'dv',style:e.db==null?'':`color:${e.db>=0?'var(--crit-ink)':'var(--accent-ink)'}`,text:e.kind==='scan'?fmtSpan(e.dur):fmtD(e.db)}),
-    el('span',{class:'src '+(e.src==='scan'?'scan':e.src==='btrfs'?'btrfs':e.src==='lvm'?'lvm':''),text:e.src==='fanotify'?'fan':e.src||'?'}));
+    el('span',{class:'src '+(e.src==='scan'?'scan':e.src==='btrfs'?'btrfs':e.src==='lvm'?'lvm':''),text:{fanotify:'fan',synotify:'syno'}[e.src]||e.src||'?'}));
   return b;}
 function goTo(H,O,path){const r=findDir(H,O,path);let n=r?r.node:null;if(n&&n.p&&n.p.kind==='dir'&&r.rest.length===0&&!(n.kids&&n.kids.length))n=n.p;if(n){if(current()!=='blockmap')location.hash='#blockmap';zoomTo(n);}}
 let FEED_PAUSE=false;
