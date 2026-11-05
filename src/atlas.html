@@ -1642,7 +1642,7 @@ function bmClickCell(r){const chain=[];for(let c=r;c;c=c.par)chain.unshift(c);co
 function bmUp(){if(BM.layout!=='cells'){if(BM.focus.p)zoomTo(BM.focus.p);return;}const cv=$('#bm-cv');if(!cv)return;const W=cv.clientWidth,H=cv.clientHeight;
   let p=BM.ctxCell;while(p&&p.d>0&&camFor(p,W,H).k>BM.cam.k*.8)p=p.par;if(p)flyCell(p);else if(BM.cam.k>1.001)flyCell(BM.cells[0]);}
 // the overview in a corner while zoomed in: machines and filesystems, and where the view is
-function miniBox(W,H){if(BM.layout!=='cells'||BM.wall||BM.cam.k<1.6)return null;const w=isPhone()?92:150,h=Math.round(w*H/W);return {x:10,y:H-h-10,w,h,s:w/W};}
+function miniBox(W,H){if(BM.layout!=='cells'||BM.wall||BM.cam.k<1.6)return null;let w=isPhone()?72:150,h=w*H/W;if(h>H*.24){h=H*.24;w=h*W/H;}w=Math.round(w);h=Math.round(h);return {x:10,y:H-h-10,w,h,s:w/W};}
 function inMini(x,y){const m=BM.mini;return !!m&&x>=m.x&&x<=m.x+m.w&&y>=m.y&&y<=m.y+m.h;}
 function miniJump(x,y){const m=BM.mini,cv=$('#bm-cv');if(!m||!cv)return;const W=cv.clientWidth,H=cv.clientHeight,k=BM.cam.k;BM.want=null;flyTo(camClamp({k,x:W/2-(x-m.x)/m.s*k,y:H/2-(y-m.y)/m.s*k},W,H));}
 function drawMini(ctx,W,H){const m=miniBox(W,H);BM.mini=m;if(!m)return;ctx.save();ctx.beginPath();if(ctx.roundRect)ctx.roundRect(m.x-1,m.y-1,m.w+2,m.h+2,6);else ctx.rect(m.x-1,m.y-1,m.w+2,m.h+2);
