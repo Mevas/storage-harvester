@@ -1032,7 +1032,7 @@ function flush(){
   if(D.info||D.conn||D.hist||D.tree)headerLater();
   if(D.feed)flushFeed();
   if(cur==='blockmap'){if(D.tree)BM.needLayout=true;if(D.hist)BM.needBase=true;if(D.info)FLEET_DIRTY=true;if(D.grow)BM.needLayout=true;bmSchedule();if(D.hist||D.info||D.grow)bmLegend();
-    if(D.live||D.io||D.feed)storiesLater();if((D.grow||D.hist)&&(BM.mode==='rings'||BM.mode==='time'))renderBmSide();if((D.hist||D.grow)&&BM.mode==='time')drawTimeChart();if(D.tree&&BM.mode==='reclaim'){RECL_AT=0;sideLater();}}
+    if(D.live||D.io||D.feed)storiesLater();if((D.grow||D.hist)&&(BM.mode==='rings'||BM.mode==='time'))renderBmSide();if((D.hist||D.grow)&&BM.mode==='time'){BM.needLayout=true;drawTimeChart();}if(D.tree&&BM.mode==='reclaim'){RECL_AT=0;sideLater();}}
   else if(cur==='overview'&&D.io)ovIoLater();
   else if(cur==='changes'){if(D.hist||(D.tree&&!HM.built))renderChanges();else if(D.live)hmNow();}
   else if(cur==='overview'){if(D.hist||D.info||D.tree)ovFull();else if(D.live)ovLive();}
@@ -1511,7 +1511,7 @@ function bmBuildBlocks(W,H){
     for(const s of sub){if(s.w<1.5||s.h<1.5)continue;rec(s.n,s.x,s.y,s.w,s.h,d+1);}
   })(BM.focus,0,0,W,H,0);
   BM.moving=false;return out;}
-function bmRelayout(step){
+function bmRelayout(step){SIZE_GEN++;
   const cv=$('#bm-cv');if(!cv)return;rollFleet();const W=cv.clientWidth,H=cv.clientHeight;if(!W||!H)return;
   if(BM.layout==='cells'&&(BM.csW!==W||BM.csH!==H||BM.csF!==BM.focus.id)){BM.cs.clear();BM.csW=W;BM.csH=H;BM.csF=BM.focus.id;}
   BM.cells=BM.layout==='cells'?bmBuildCells(W,H):bmBuildBlocks(W,H);BM.byNode=new Map(BM.cells.map(c=>[c.n,c]));
@@ -1578,11 +1578,11 @@ function forecast(n,s){if(n.kind==='unacc')return s;const t=BM.t,f=fsOf(n),m=f&&
   if(tc<0){const x=growRec(n);if(!x||!(x.r.now>0))return s;return s*Math.max(0,seriesAt(x.r,tc))/x.r.now;}
   return Math.max(s*0.02,s+growthOf(n)*tc);}
 // A filesystem keeps its capacity along the slider: its used part follows the df model, and the forecasts of the
-// blocks directly in it only share that out. Cached per slider position and preview set.
-let WHATIF_GEN=0;
-function usedScale(f){const m=fsModel(f);if(!m)return 1;const c=f._us;if(c&&c.t===BM.t&&c.g===WHATIF_GEN)return c.k;
+// blocks directly in it only share that out. Cached for one layout pass, per slider position and preview set.
+let WHATIF_GEN=0,SIZE_GEN=0;
+function usedScale(f){const m=fsModel(f);if(!m)return 1;const c=f._us;if(c&&c.t===BM.t&&c.g===WHATIF_GEN&&c.p===SIZE_GEN)return c.k;
   let now=0,fut=0;for(const k of f.kids){if(k.kind==='free'||k.kind==='reserved')continue;const s0=baseSize(k);now+=s0;fut+=forecast(k,s0);}
-  const k=fut>0?Math.max(0,now+m.avail-m.freeAt(BM.t))/fut:1;f._us={t:BM.t,g:WHATIF_GEN,k};return k;}
+  const k=fut>0?Math.max(0,now+m.avail-m.freeAt(BM.t))/fut:1;f._us={t:BM.t,g:WHATIF_GEN,p:SIZE_GEN,k};return k;}
 function fullNow(f){if(BM.mode!=='time'||!f||f.kind!=='fs')return false;const m=fsModel(f);return !!m&&BM.t>=m.tFull;}
 
 /* ---------------------------------------------------------------- reclaim (what-if) */
@@ -1619,7 +1619,7 @@ function recomputeWhatif(){WHATIF.clear();WHATIF_GEN++;for(const it of RECL){if(
 const STORY=new Map();
 const STORY_WIN=60000;
 function storyAdd(H,O,path,o){const k=H.key+'|'+O.name+'|'+path,now=Date.now();let s=STORY.get(k);
-  if(!s){s={H,O,path,ev:[],last:now,src:'',who:null,ctr:null,g:null};STORY.set(k,s);}
+  if(!s||now-s.last>STORY_WIN){s={H,O,path,ev:[],last:now,src:'',who:null,ctr:null,g:null};STORY.set(k,s);}
   s.ev.push([now,o.db,o.w,o.r||0]);if(s.ev.length>600)s.ev.splice(0,s.ev.length-600);
   if(o.db!=null&&o.src)s.src=o.src;if(o.w!=null&&o.g)s.g=o.g;s.last=now;if(o.who){s.who=o.who;s.ctr=o.ctr||null;}
   if(STORY.size>2500){for(const [kk,v] of STORY)if(now-v.last>STORY_WIN)STORY.delete(kk);if(STORY.size>2500){const old=[...STORY.entries()].sort((a,b)=>a[1].last-b[1].last).slice(0,800);for(const [kk] of old)STORY.delete(kk);}}}
