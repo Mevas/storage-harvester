@@ -249,6 +249,55 @@ svg .lbl{fill:var(--ink-2);font-size:11.5px}
 .conn div b{font-weight:500;color:var(--ink)}
 .conn div span:last-child{margin-left:auto;color:var(--muted);font-variant-numeric:tabular-nums}
 
+/* block map: lenses, stories, reclaim, time machine, wall mode */
+#bm-lens{flex-wrap:wrap}
+.bm-main{align-content:start}
+.bm-side{display:grid;align-content:start;gap:8px;align-self:start;max-height:min(90vh,1000px);overflow:auto}
+.bm-side .ph{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap}
+.story{display:grid;grid-template-columns:8px minmax(0,1fr) auto;gap:3px 8px;align-items:baseline;padding:6px 4px;border:0;border-bottom:1px solid var(--hair);background:none;text-align:left;width:100%;color:var(--ink)}
+.story:hover{background:var(--surface-2)}
+.story .dot{width:7px;height:7px;border-radius:50%;display:inline-block}
+.story .nm{font-family:var(--font-mono);font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.story .dv{font-family:var(--font-mono);font-size:12px;font-variant-numeric:tabular-nums;color:var(--ink-2);text-align:right}
+.story .dv.pos{color:var(--crit-ink)}.story .dv.neg{color:var(--accent-ink)}
+.story .sub{grid-column:2/4;display:flex;flex-wrap:wrap;gap:4px 8px;align-items:center;font-size:11.5px;color:var(--muted)}
+.story .who{font-family:var(--font-mono);color:var(--ink-2)}
+.src.st{text-transform:none;letter-spacing:0}
+.src.st.trim{background:var(--accent-wash);color:var(--accent-ink);box-shadow:none}
+.src.st.dl{background:color-mix(in srgb,var(--act) 16%,transparent);color:var(--act-ink);box-shadow:none}
+.list2{display:grid}
+.lrow2{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:0 10px;padding:6px 4px;border:0;border-bottom:1px solid var(--hair);background:none;text-align:left;width:100%;color:var(--ink);align-items:baseline}
+.lrow2:hover{background:var(--surface-2)}
+.lrow2 .nm{font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.lrow2 .v{font-family:var(--font-mono);font-size:12px;font-variant-numeric:tabular-nums;color:var(--ink-2);white-space:nowrap}
+.lrow2.pos .v{color:var(--crit-ink)}.lrow2.neg .v{color:var(--accent-ink)}.lrow2.full .v{color:var(--crit-ink);font-weight:600}.lrow2.link .v{color:var(--share)}
+.lrow2 .sub{grid-column:1/3;font-size:11.5px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.rc-sum b{font-size:24px;font-weight:600;letter-spacing:-.01em;color:var(--good-ink);margin-right:6px}
+.rc-sum span{color:var(--ink-2)}
+.rc{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:3px 10px;padding:9px 8px;border-radius:8px;box-shadow:inset 0 0 0 1px var(--hair);align-items:start}
+.rc.on{box-shadow:inset 0 0 0 1.5px var(--good)}
+.rc input{margin:2px 0 0;accent-color:var(--good)}
+.rc label{font-size:13px;font-weight:600;cursor:pointer;min-width:0;overflow-wrap:anywhere}
+.rc .v{font-family:var(--font-mono);font-size:12px;color:var(--good-ink);font-variant-numeric:tabular-nums;white-space:nowrap}
+.rc .sub{grid-column:2/4;font-size:12px;color:var(--muted);display:flex;flex-wrap:wrap;gap:4px 8px;align-items:center;min-width:0}
+.rc .cmd{grid-column:2/4;display:flex;gap:6px;align-items:center;min-width:0}
+.rc code{flex:1;min-width:0;overflow-x:auto;white-space:nowrap;font-family:var(--font-mono);font-size:11px;background:var(--surface-2);border-radius:5px;padding:3px 6px}
+.basis{font-size:10.5px;font-weight:600;letter-spacing:.03em;text-transform:uppercase;padding:1px 6px;border-radius:999px;box-shadow:inset 0 0 0 1px var(--hair)}
+.basis.m{color:var(--good-ink)}.basis.e{color:var(--warn-ink)}
+.bm-time{display:grid;gap:4px}.bm-time[hidden]{display:none}
+.bm-trow{display:grid;grid-template-columns:auto minmax(0,1fr);gap:10px;align-items:center}
+.bm-tcol{display:grid;gap:2px;min-width:0}
+.bm-time input[type=range]{width:100%;accent-color:var(--crit);margin:0}
+#bm-tchart{width:100%;height:96px;display:block}
+.bm-time .play{width:34px;height:34px;border-radius:50%;padding:0;display:grid;place-items:center}
+.bm-stamp b{font-size:18px;font-weight:600;letter-spacing:-.01em}
+.bm-stamp small{font-size:12px;color:var(--muted);margin-left:8px}
+.bm-wall-exit{display:none}
+body.bm-wall .bar,body.bm-wall .view-head,body.bm-wall .bm-side,body.bm-wall .bm-ctl,body.bm-wall #bm-legend,body.bm-wall .bm-nav,body.bm-wall .bm-time{display:none!important}
+body.bm-wall #bm-cv{position:fixed;inset:0;width:100vw;height:100vh;height:100dvh;min-height:0;border-radius:0;z-index:40;cursor:default}
+body.bm-wall .bm-wall-exit{display:inline-block;position:fixed;right:max(12px,env(safe-area-inset-right,0px));bottom:max(12px,env(safe-area-inset-bottom,0px));z-index:41;opacity:.3}
+body.bm-wall .bm-wall-exit:hover,body.bm-wall .bm-wall-exit:focus-visible{opacity:1}
+
 /* sharing */
 .sh-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px}
 .sh-big{font-size:34px;font-weight:600;letter-spacing:-.02em;line-height:1.05}
@@ -599,7 +648,6 @@ const HOTS=new Map();                          // event path -> {H,O,path,n,net,
 const PAGE_T0=Date.now()/1000;
 let METRICS=null,METRICS_SHOWN=null,METRICS_HOW='none',PEERS_HOW='none',SELF_HOW='none';
 const IOD=new Map();                           // disk fleet id -> {H,O,path,w,r,at,poll}: block I/O from `io` events
-const ACT=new Map(),ACT_TAU=3000;              // fleet id -> {v,t}: bytes changed, leaking with ACT_TAU (change events)
 let HIST={status:'idle'},HIST_SEQ=0,HIST_FIRST=Infinity;   // earliest sample seen by any range query
 const CAP=new Map();                           // host|fsid -> capacity history
 let BOOTED=false,FATAL=null;
@@ -696,7 +744,7 @@ function attachNest(){
 function rollFleet(){if(!FLEET_DIRTY)return;nestPass();for(const H of HARV)rollHost(H);attachNest();rebuildRoot();let t=0;for(const h of ROOT.kids)t+=h.t;ROOT.t=t;FLEET_DIRTY=false;}
 
 function buildDir(raw,parent,H,T,path,depth){
-  const n={id:H.key+'|'+T.name+'|'+path,kind:'dir',name:String(raw.n),path,p:parent,H,T,depth,t:+raw.t||0,a:+raw.a||0,f:+raw.f||0,d:+raw.d||0,l:+raw.l||0,o:+raw.o||0,x:raw.x==null?null:+raw.x,k:+raw.k||0,r:+raw.r||0,c:[],ph:null,byName:null};
+  const n={id:H.key+'|'+T.name+'|'+path,kind:'dir',name:String(raw.n),path,p:parent,H,T,depth,t:+raw.t||0,a:+raw.a||0,f:+raw.f||0,d:+raw.d||0,l:+raw.l||0,o:+raw.o||0,x:raw.x==null?null:+raw.x,m:raw.m==null?null:+raw.m,k:+raw.k||0,r:+raw.r||0,c:[],ph:null,byName:null};
   if(raw.v)vfields(n,raw);
   if(Array.isArray(raw.c))for(const rc of raw.c){if(!rc||rc.n==null)continue;n.c.push(buildDir(rc,n,H,T,joinPath(path,String(rc.n)),depth+1));}
   n.byName=new Map(n.c.map(c=>[c.name,c]));
@@ -772,7 +820,7 @@ async function deepen(n){
 }
 function graft(n,raw,ts){
   if(!raw)return;const old=n.t;
-  n.t=+raw.t||0;n.a=+raw.a||0;n.f=+raw.f||0;n.d=+raw.d||0;n.l=+raw.l||0;n.o=+raw.o||0;n.x=raw.x==null?null:+raw.x;n.k=+raw.k||0;n.r=+raw.r||0;if(raw.v)vfields(n,raw);
+  n.t=+raw.t||0;n.a=+raw.a||0;n.f=+raw.f||0;n.d=+raw.d||0;n.l=+raw.l||0;n.o=+raw.o||0;n.x=raw.x==null?null:+raw.x;n.m=raw.m==null?null:+raw.m;n.k=+raw.k||0;n.r=+raw.r||0;if(raw.v)vfields(n,raw);
   n.c=[];n.ph=null;if(Array.isArray(raw.c))for(const rc of raw.c)n.c.push(buildDir(rc,n,n.H,n.T,joinPath(n.path,String(rc.n)),n.depth+1));
   n.byName=new Map(n.c.map(c=>[c.name,c]));n.full=n.r<=0&&n.c.every(c=>c.full)&&n.k<=n.c.length;n.ts=ts;syncDir(n);
   const diff=n.t-old;if(diff)for(let a=n.p;a&&a.kind==='dir';a=a.p){a.t+=diff;}
@@ -812,13 +860,15 @@ function onChange(H,ev){
   if(!replay){
     H.evLive++;const mi=Math.floor(tms/60000);H.minutes.set(mi,(H.minutes.get(mi)||0)+1);
     const ids=liveIds(H,O,path);liveAdd(ids,db,tms/1000,true);
-    if(ev.src!=='lvm'&&ev.src!=='scan'){const now=Date.now(),b=Math.abs(db);actBump(ids,b,now);actBump([ids[ids.length-1]+'|~here'],b,now);}
+    if(ev.src!=='lvm'&&ev.src!=='scan'){const now=Date.now(),b=Math.abs(db);heatBump(ids,b,now);heatBump([ids[ids.length-1]+'|~here'],b,now);}
+    storyAdd(H,O,path,{db,src:ev.src||'',who:typeof ev.who==='string'?ev.who:null,ctr:typeof ev.ctr==='string'?ev.ctr:null});
     EVLOG.push({H,O,path,db,t:tms,ids,src:ev.src});if(EVLOG.length>120000)EVLOG.splice(0,20000);
     const hk=H.key+'|'+O.name+'|'+path;let h=HOTS.get(hk);if(!h){h={H,O,path,n:0,net:0,abs:0,last:0};HOTS.set(hk,h);}h.n++;h.net+=db;h.abs+=Math.abs(db);h.last=tms/1000;
     if(HOTS.size>6000){const arr=[...HOTS.entries()].sort((a,b)=>a[1].abs-b[1].abs).slice(0,2000);for(const [k] of arr)HOTS.delete(k);}
     const dot=document.querySelector(`#hosts [data-h="${H.idx}"] .cdot`);if(dot){dot.classList.remove('pulse');void dot.offsetWidth;dot.classList.add('pulse');}
   }
   applyToTree(H,O,path,ev,db,tms);
+  if(!replay&&typeof ev.who==='string'){const r=findDir(H,O,path);if(r){r.node.who=ev.who;r.node.ctr=typeof ev.ctr==='string'?ev.ctr:null;r.node.whoAt=tms/1000;}}
   invalidate('live');
 }
 function applyToTree(H,O,path,ev,db,tms){
@@ -845,6 +895,8 @@ function applyToTree(H,O,path,ev,db,tms){
     node.t+=diff;target=ph;syncDir(node);
   }
   if(diff)for(let a=node.p;a&&a.kind==='dir';a=a.p)a.t+=diff;
+  // the newest change inside a folder (frost, cold folders): a live change makes the folder and its ancestors warm
+  if(ev.src!=='lvm'){const ts=tms/1000;for(let a=target;a&&a.kind==='dir';a=a.p)if(!a.v&&!(a.m>=ts))a.m=ts;}
   FLEET_DIRTY=true;BM.sizesDirty=true;
   if(BM.on&&!REDUCED){BM.pulses.push({node:target,d:db,t0:performance.now()});if(BM.pulses.length>240)BM.pulses.splice(0,BM.pulses.length-240);}
 }
@@ -855,23 +907,18 @@ function onScan(H,ev){
   if(isOuter(H,T)){clearTimeout(T._rt);T._rt=setTimeout(()=>loadTree(H,H.targets.get(T.name)||T),800);}
   invalidate('info');
 }
-/* activity: block I/O per disk (io events, held for a poll and then fading) plus bytes changed per folder
-   (change events, leaking over a few seconds). Both are bytes/s. */
-function actBump(ids,b,now){for(const id of ids){const a=ACT.get(id);if(a){a.v=a.v*Math.exp(-(now-a.t)/ACT_TAU)+b;a.t=now;}else ACT.set(id,{v:b,t:now});}}
-function actBucket(id,now){const a=ACT.get(id);if(!a)return 0;const v=a.v*Math.exp(-(now-a.t)/ACT_TAU);return v<1?0:v/(ACT_TAU/1000);}
+/* block I/O per disk (io events, held for a poll and then fading), in bytes/s. The block map adds bytes changed per
+   folder (HEAT) to it. */
 function ioFade(e,now){const dt=now-e.at,hold=e.poll*1.3;const f=dt<=hold?1:Math.exp(-(dt-hold)/1500);return f<0.02?0:f;}
 // every ancestor's write and read rate (disk → guest → pool → filesystem → host → fleet)
 function ioAgg(){const now=Date.now(),m=new Map();for(const e of IOD.values()){const f=ioFade(e,now);if(!f)continue;const w=e.w*f,r=e.r*f;for(const a of liveIds(e.H,e.O,e.path)){const x=m.get(a);if(x){x.w+=w;x.r+=r;}else m.set(a,{w,r});}}return m;}
-function actOf(n,agg,now){
-  switch(n.kind){case 'free':case 'reserved':case 'unacc':case 'more':case 'gap':return null;case 'here':return actBucket(n.p.id+'|~here',now);}
-  const io=agg.get(n.id);return actBucket(n.id,now)+(io?io.w:0);
-}
 function seedIo(H,T,root){const now=Date.now(),poll=(+T.poll_s||2)*1000;(function w(n){if(n.v==='disk'){if((n.wr||n.rdr)&&!IOD.has(n.id))IOD.set(n.id,{H,O:T,path:n.path,w:n.wr||0,r:n.rdr||0,at:now,poll});return;}for(const c of n.c)w(c);})(root);}
 function onIo(H,ev){
   const T=H.targets.get(ev.target);if(!T||!Array.isArray(ev.disks))return;const O=H.outer.get(T.name)||T,now=Date.now(),poll=(+T.poll_s||2)*1000;
   H.ioN=(H.ioN||0)+1;H.lastIo=now/1000;
   for(const d of ev.disks){if(!d||typeof d.path!=='string')continue;const path=O===T?d.path:mapPath(T,O,d.path);if(!path)continue;
     const w=Math.max(0,+d.w||0),r=Math.max(0,+d.r||0);IOD.set(H.key+'|'+O.name+'|'+path,{H,O,path,w,r,at:now,poll});
+    if(w+r>=64*KiB){const fd=findDir(H,O,path),gn=fd&&!fd.rest.length&&fd.node.p;storyAdd(H,O,path,{w,r,src:'io',g:gn&&gn.g||null});}
     // pulse the disk like a change; quiet disks (< 16 KiB/s) do not flash every poll
     if(BM.on&&!REDUCED&&w+r>=16*KiB){const f=findDir(H,O,path);if(f&&!f.rest.length)BM.pulses.push({node:f.node,io:true,k:actTr(w+r),t0:performance.now()});}}
   if(BM.pulses.length>240)BM.pulses.splice(0,BM.pulses.length-240);
@@ -975,6 +1022,7 @@ function invalidate(k){DIRTY[k]=true;if(!flushRaf)flushRaf=requestAnimationFrame
 const ovFull=throttle(()=>{if(current()==='overview')renderOverview();},4000);
 const ovLive=throttle(()=>{if(current()==='overview')renderOvLive();},1500);
 const hmNow=throttle(()=>{if(current()==='changes'){hmDraw();hmRefreshRowsNow();hmLiveDrawer();}},500);
+const sideLater=throttle(()=>{if(current()==='blockmap')renderBmSide();},3000);
 const shareLater=throttle(()=>{if(current()==='sharing')renderSharing();},5000);
 const srcLater=throttle(()=>{if(current()==='sources')renderSources();},2000);
 const headerLater=throttle(renderHeader,1000);
@@ -983,7 +1031,8 @@ function flush(){
   flushRaf=0;const D=Object.assign({},DIRTY);for(const k in DIRTY)delete DIRTY[k];const cur=current();
   if(D.info||D.conn||D.hist||D.tree)headerLater();
   if(D.feed)flushFeed();
-  if(cur==='blockmap'){if(D.tree)BM.needLayout=true;if(D.hist)BM.needBase=true;if(D.info)FLEET_DIRTY=true;bmSchedule();if(D.hist||D.info)bmLegend();}
+  if(cur==='blockmap'){if(D.tree)BM.needLayout=true;if(D.hist)BM.needBase=true;if(D.info)FLEET_DIRTY=true;if(D.grow)BM.needLayout=true;bmSchedule();if(D.hist||D.info||D.grow)bmLegend();
+    if(D.live||D.io||D.feed)storiesLater();if((D.grow||D.hist)&&(BM.mode==='rings'||BM.mode==='time'))renderBmSide();if((D.hist||D.grow)&&BM.mode==='time')drawTimeChart();if(D.tree&&BM.mode==='reclaim'){RECL_AT=0;sideLater();}}
   else if(cur==='overview'&&D.io)ovIoLater();
   else if(cur==='changes'){if(D.hist||(D.tree&&!HM.built))renderChanges();else if(D.live)hmNow();}
   else if(cur==='overview'){if(D.hist||D.info||D.tree)ovFull();else if(D.live)ovLive();}
@@ -1342,9 +1391,99 @@ function hmLiveDrawer(){
 }
 
 /* ======================================================================= BLOCK MAP */
-const BM={on:false,focus:ROOT,mode:'change',cushion:true,free:true,equal:false,rects:[],byNode:new Map(),pulses:[],hov:null,anim:null,needLayout:true,needBase:true,sizesDirty:false,lastLayout:0,base:null,sc:{lo:16*KiB,hi:256*MiB}};
+/* Block map: two layouts (cells: a weighted Voronoi treemap whose cells settle and then hold still; blocks: the
+   squarified treemap) and lenses that say what is happening to the bytes: live heat, change, growth rings, a
+   time machine, hard links, reclaim, kind, machine. Static fills go to a cached base canvas; heat, ripples,
+   threads, labels and the hover outline are composed on top every frame. */
+const BM={on:false,focus:ROOT,mode:'live',layout:'cells',size:'balanced',cushion:true,free:true,cells:[],byNode:new Map(),pulses:[],hov:null,hl:null,tap:null,anim:null,needLayout:true,needBase:true,sizesDirty:false,lastLayout:0,base:null,sc:{lo:16*KiB,hi:256*MiB},cs:new Map(),moving:false,t:0,playing:false,applied:new Set(),wall:false,side:'stories',drawAt:0,baseAt:0};
 const REDUCED=matchMedia('(prefers-reduced-motion: reduce)').matches;
-function bmKids(n){if(n.kind==='fs'&&!BM.free)return n.kids.filter(k=>k.kind!=='free'&&k.kind!=='reserved');if(n.kind==='root')return n.kids.filter(h=>BM.equal||h.t>0);return n.kids||[];}
+const LENSES=[['live','Live'],['change','Change'],['rings','Growth rings'],['time','Time machine'],['links','Hard links'],['reclaim','Reclaim'],['kind','Kind'],['host','Machine']];
+(()=>{const m={activity:'live',share:'links'}[store.get('bmMode')]||store.get('bmMode');if(m&&m!=='time'&&LENSES.some(l=>l[0]===m))BM.mode=m;
+  const l=store.get('bmLayout');if(l==='cells'||l==='blocks')BM.layout=l;const s=store.get('bmSize');if(['true','balanced','equal'].includes(s))BM.size=s;})();
+function bmKids(n){if(n.kind==='fs'&&!BM.free)return n.kids.filter(k=>k.kind!=='free'&&k.kind!=='reserved');if(n.kind==='root')return n.kids.filter(h=>BM.size==='equal'||h.t>0);return n.kids||[];}
+const STATIC_LENS=new Set(['live','rings','time','links','reclaim']);
+const whatifOn=()=>WHATIF.size>0&&(BM.mode==='reclaim'||BM.mode==='time');
+// what a block weighs: its size, shrunk by reclaim previews and moved along the time machine's slider
+function sizeOf(n){let s=n.t||0;if(whatifOn()){const w=WHATIF.get(n.id);if(w)s=Math.max(0,s+w);}if(BM.mode==='time'&&BM.t)s=timeSize(n,s);return s;}
+// machines at the top level: true bytes, the cube root of their bytes (a small busy machine stays visible), or equal
+function weightOf(par,k){const s=sizeOf(k);if(par.kind!=='root')return s;if(BM.size==='equal')return 1;if(BM.size==='balanced')return Math.cbrt(Math.max(0,s));return s;}
+
+/* ---------------------------------------------------------------- geometry (convex polygons, power diagrams) */
+function pArea(P){let a=0;for(let i=0,n=P.length;i<n;i++){const p=P[i],q=P[(i+1)%n];a+=p[0]*q[1]-q[0]*p[1];}return a/2;}
+function pCen(P){let a=0,x=0,y=0;for(let i=0,n=P.length;i<n;i++){const p=P[i],q=P[(i+1)%n],f=p[0]*q[1]-q[0]*p[1];a+=f;x+=(p[0]+q[0])*f;y+=(p[1]+q[1])*f;}
+  if(Math.abs(a)<1e-9){let sx=0,sy=0;for(const p of P){sx+=p[0];sy+=p[1];}return [sx/P.length,sy/P.length];}return [x/(3*a),y/(3*a)];}
+function pBox(P){let a=Infinity,b=Infinity,c=-Infinity,d=-Infinity;for(const p of P){if(p[0]<a)a=p[0];if(p[1]<b)b=p[1];if(p[0]>c)c=p[0];if(p[1]>d)d=p[1];}return [a,b,c,d];}
+// keep the points with nx·x + ny·y ≤ c
+function pClip(P,nx,ny,c){const out=[],n=P.length;for(let i=0;i<n;i++){const a=P[i],b=P[(i+1)%n],da=nx*a[0]+ny*a[1]-c,db=nx*b[0]+ny*b[1]-c;
+  if(da<=0)out.push(a);if((da<=0)!==(db<=0)){const t=da/(da-db);out.push([a[0]+(b[0]-a[0])*t,a[1]+(b[1]-a[1])*t]);}}return out;}
+function powerCells(poly,S,W){const n=S.length,out=new Array(n);for(let i=0;i<n;i++){let P=poly;const si=S[i],qi=si[0]*si[0]+si[1]*si[1];
+  for(let j=0;j<n&&P.length>2;j++){if(j===i)continue;const sj=S[j];P=pClip(P,2*(sj[0]-si[0]),2*(sj[1]-si[1]),sj[0]*sj[0]+sj[1]*sj[1]-qi-W[j]+W[i]);}
+  out[i]=P.length>2?P:null;}return out;}
+function pInset(P,d){if(!P||P.length<3)return null;if(d<=0)return P;const c=pCen(P);let Q=P;
+  for(let i=0,n=P.length;i<n&&Q.length>2;i++){const a=P[i],b=P[(i+1)%n];let nx=b[1]-a[1],ny=a[0]-b[0];const L=Math.hypot(nx,ny);if(L<1e-9)continue;nx/=L;ny/=L;
+    if(nx*(c[0]-a[0])+ny*(c[1]-a[1])>0){nx=-nx;ny=-ny;}Q=pClip(Q,nx,ny,nx*a[0]+ny*a[1]-d);}return Q.length>2?Q:null;}
+function pScale(P,c,k){return P.map(p=>[c[0]+(p[0]-c[0])*k,c[1]+(p[1]-c[1])*k]);}
+function pIn(P,x,y){let r=false;for(let i=0,j=P.length-1;i<P.length;j=i++){const a=P[i],b=P[j];if((a[1]>y)!==(b[1]>y)&&x<(b[0]-a[0])*(y-a[1])/(b[1]-a[1])+a[0])r=!r;}return r;}
+function rng(seed){let a=seed>>>0;return ()=>{a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296;};}
+function pRand(P,rnd){const b=pBox(P);for(let t=0;t<60;t++){const x=b[0]+rnd()*(b[2]-b[0]),y=b[1]+rnd()*(b[3]-b[1]);if(pIn(P,x,y))return [x,y];}return pCen(P);}
+function pPull(P,s){if(pIn(P,s[0],s[1]))return s;const c=pCen(P);for(let t=.95;t>0;t-=.05){const q=[c[0]+(s[0]-c[0])*t,c[1]+(s[1]-c[1])*t];if(pIn(P,q[0],q[1]))return q;}return c;}
+// a site must stay inside its own cell: cap a weight that out-weighs a neighbour by more than their squared distance
+function overweight(S,W){for(let guard=0;guard<80;guard++){let fixed=false;
+  for(let i=0;i<S.length&&!fixed;i++)for(let j=i+1;j<S.length;j++){const dx=S[i][0]-S[j][0],dy=S[i][1]-S[j][1],d2=dx*dx+dy*dy,hi=W[i]>W[j]?i:j,lo=hi===i?j:i;
+    if(d2<W[hi]-W[lo]){W[hi]=Math.max(d2+W[lo]/2,1e-9);fixed=true;break;}}
+  if(!fixed)return;}}
+// One group: children K ({site,w,tgt}) inside convex P. Lloyd steps move sites to their cells' centroids, weights
+// grow or shrink by the ratio of wanted to actual area (Nocaj & Brandes). Returns the worst area error, of P's area.
+function relaxGroup(P,K,iters,flick,damp,rnd){const n=K.length;if(!n)return 0;if(n===1){K[0].poly=P;return 0;}
+  const A=Math.abs(pArea(P));let tot=0;for(const k of K)tot+=k.tgt;if(tot<=0)tot=1;
+  const S=K.map(k=>k.site?pPull(P,k.site):pRand(P,rnd)),W=K.map(k=>k.w>0?k.w:A/n/2);overweight(S,W);let C;
+  for(let it=0;it<iters;it++){
+    C=powerCells(P,S,W);
+    for(let i=0;i<n;i++){if(C[i]){const c=pCen(C[i]);S[i]=[S[i][0]+(c[0]-S[i][0])*damp,S[i][1]+(c[1]-S[i][1])*damp];}else{S[i]=pRand(P,rnd);W[i]=A*1e-4;}}
+    overweight(S,W);C=powerCells(P,S,W);
+    for(let i=0;i<n;i++){const want=K[i].tgt/tot*A,have=C[i]?Math.abs(pArea(C[i])):A*1e-6;const r=Math.max(1-flick,Math.min(1+flick,want/have));W[i]=Math.max(W[i]*r,A*1e-7);}
+    overweight(S,W);}
+  C=powerCells(P,S,W);let err=0;
+  for(let i=0;i<n;i++){K[i].site=S[i];K[i].w=W[i];K[i].poly=C[i];const have=C[i]?Math.abs(pArea(C[i])):0;err=Math.max(err,Math.abs(have-K[i].tgt/tot*A)/A);}
+  return err;}
+// rounded outline; `wob` px of wobble, `rev` traces it backwards (a hole for an even-odd fill)
+function pRound(ctx,P,r,wob,time,seed,rev,cont){
+  const n=P.length;let Q=rev?[...P].reverse():P;if(wob>0)Q=Q.map((p,i)=>[p[0]+Math.sin(time*2.3+seed+i*1.91)*wob,p[1]+Math.cos(time*1.9+seed*1.3+i*2.37)*wob]);
+  if(!cont)ctx.beginPath();const mid=(a,b)=>[(a[0]+b[0])/2,(a[1]+b[1])/2],m0=mid(Q[n-1],Q[0]);ctx.moveTo(m0[0],m0[1]);
+  for(let i=0;i<n;i++){const v=Q[i],pv=Q[(i-1+n)%n],nx=Q[(i+1)%n],ax=pv[0]-v[0],ay=pv[1]-v[1],bx=nx[0]-v[0],by=nx[1]-v[1],la=Math.hypot(ax,ay),lb=Math.hypot(bx,by);
+    let rr=0;if(r>0&&la>.01&&lb>.01){const cos=Math.max(-1,Math.min(1,(ax*bx+ay*by)/(la*lb)));rr=Math.min(r,Math.sqrt((1-cos)/(1+cos+1e-9))*Math.min(la,lb)*.48);}
+    const m=mid(v,nx);if(rr>.3)ctx.arcTo(v[0],v[1],m[0],m[1],rr);else ctx.lineTo(v[0],v[1]);}
+  ctx.closePath();}
+function chordAt(P,y){let lo=Infinity,hi=-Infinity;for(let i=0,n=P.length;i<n;i++){const a=P[i],b=P[(i+1)%n];if((a[1]-y)*(b[1]-y)<=0&&a[1]!==b[1]){const x=a[0]+(b[0]-a[0])*(y-a[1])/(b[1]-a[1]);lo=Math.min(lo,x);hi=Math.max(hi,x);}}return hi>lo?[lo,hi]:null;}
+function rgba(c,a){const v=rgbOf(c);return `rgba(${v[0]},${v[1]},${v[2]},${a})`;}
+
+/* ---------------------------------------------------------------- layouts */
+const MAXD=4,RAD=[0,12,9,6,4,3,3,3],GAP=[2,5,3,2,1.4,1.2,1.2,1.2],MAXK=24;
+function cellOf(n,poly,d){const bb=pBox(poly);return {n,poly,d,bb,cen:pCen(poly),A:Math.abs(pArea(poly))};}
+// cells: each group relaxes while its sizes move, then freezes (a frozen group only re-fits its parent's outline)
+function bmBuildCells(W,H){
+  const out=[],f=BM.focus,root=cellOf(f,[[2,2],[W-2,2],[W-2,H-2],[2,H-2]],0);root.box=true;out.push(root);let moving=false;
+  (function rec(c){const n=c.n,ks=bmKids(n);
+    if(!ks.length||c.d>=MAXD||(c.d>0&&c.A<1600)){c.leaf=true;c.box=false;return;}
+    const inner=c.d===0?pInset(c.poly,1):pInset(c.poly,GAP[c.d]||1.2);if(!inner||Math.abs(pArea(inner))<240){c.leaf=true;c.box=false;return;}
+    let kids=[];for(const k of ks){const v=weightOf(n,k);if(v>0)kids.push({n:k,v});}if(!kids.length){c.leaf=true;c.box=false;return;}
+    c.box=true;kids.sort((a,b)=>b.v-a.v);
+    if(kids.length>MAXK){const rest=kids.slice(MAXK-1);kids=kids.slice(0,MAXK-1);kids.push({n:restNode(n,rest),v:rest.reduce((a,b)=>a+b.v,0)});}
+    let sum=0;for(const k of kids)sum+=k.v;let s2=0;for(const k of kids){k.f=Math.max(k.v/sum,.007);s2+=k.f;}
+    const K=kids.map(k=>{let st=BM.cs.get(k.n.id);if(!st){st={site:null,w:0,lastTgt:null};BM.cs.set(k.n.id,st);}st.tgt=k.f/s2;return st;});
+    let g=BM.cs.get(n.id+'|g');if(!g){g={frozen:false,budget:90};BM.cs.set(n.id+'|g',g);}
+    let moved=0,fresh=false;for(const st of K){if(!st.site)fresh=true;moved=Math.max(moved,Math.abs(st.tgt-(st.lastTgt??st.tgt)));st.lastTgt=st.tgt;}
+    const rnd=rng(hash(n.id));
+    if(fresh){g.err=relaxGroup(inner,K,140,.5,1,rnd);g.frozen=REDUCED;g.budget=90;}
+    else if(REDUCED){g.err=relaxGroup(inner,K,moved>2e-5?60:0,.3,1,rnd);g.frozen=true;}
+    else if(g.frozen&&moved<=2e-5){g.err=relaxGroup(inner,K,0,0,1,rnd);if(g.err>.015){g.frozen=false;g.budget=90;}}
+    else{if(moved>2e-5)g.budget=90;g.err=relaxGroup(inner,K,BM.mode==='time'?2:1,moved>2e-5?.12:.06,moved>2e-5?.5:.35,rnd);if(moved<=2e-5&&(g.err<.005||--g.budget<=0))g.frozen=true;}
+    if(!g.frozen)moving=true;
+    kids.forEach((k,i)=>{const P=K[i].poly;if(!P)return;const cc=cellOf(k.n,P,c.d+1);out.push(cc);rec(cc);});
+  })(root);
+  BM.moving=moving;return out;}
+function restNode(par,rest){const id=par.id+'|~rest';let r=BM.cs.get(id+'|n');if(!r){r={kind:'more',id,p:par,H:par.H,T:par.T,kids:[],rest:true};BM.cs.set(id+'|n',r);}
+  r.name=rest.length+' smaller';r.t=rest.reduce((a,b)=>a+sizeOf(b.n),0);r.parts=rest.map(x=>x.n);return r;}
 function squarify(items,x,y,w,h,out){
   const total=items.reduce((a,b)=>a+b.v,0);if(total<=0||w<=0||h<=0)return;const sc=w*h/total;let row=[],i=0;
   const worst=(r,side)=>{let s=0,mx=0,mn=Infinity;for(const it of r){const a=it.v*sc;s+=a;if(a>mx)mx=a;if(a<mn)mn=a;}const s2=s*s,w2=side*side;return Math.max(w2*mx/s2,s2/(w2*mn));};
@@ -1352,194 +1491,505 @@ function squarify(items,x,y,w,h,out){
   while(i<items.length){const side=Math.min(w,h),it=items[i];if(!row.length||worst([...row,it],side)<=worst(row,side)){row.push(it);i++;}else{lay(row);row=[];}}
   if(row.length)lay(row);
 }
-function bmLayout(W,H){
+function bmBuildBlocks(W,H){
   const out=[];
-  (function rec(n,x,y,w,h,d){const r={n,x,y,w,h,d};out.push(r);
+  (function rec(n,x,y,w,h,d){const r=cellOf(n,[[x,y],[x+w,y],[x+w,y+h],[x,y+h]],d);r.x=x;r.y=y;r.w=w;r.h=h;out.push(r);
     const ks=bmKids(n);if(!ks.length||w<12||h<12){r.leaf=true;return;}
-    const head=d===0?0:(w>=64&&h>=40?18:0),pad=d===0?0:2;
-    const ix=x+pad,iy=y+(head||pad),iw=w-2*pad,ih=h-(head||pad)-pad;
+    const head=d===0?0:(w>=64&&h>=40?18:0),pad=d===0?0:2,ix=x+pad,iy=y+(head||pad),iw=w-2*pad,ih=h-(head||pad)-pad;
     if(iw<6||ih<6){r.leaf=true;return;}
-    const items=[];for(const c of ks){const v=(BM.equal&&n.kind==='root')?1:Math.max(0,c.t);if(v>0)items.push({n:c,v});}
-    if(!items.length){r.leaf=true;return;}
-    r.head=head;r.box=true;items.sort((a,b)=>b.v-a.v);
-    const sub=[];squarify(items,ix,iy,iw,ih,sub);
+    const items=[];for(const c of ks){const v=weightOf(n,c);if(v>0)items.push({n:c,v});}if(!items.length){r.leaf=true;return;}
+    r.head=head;r.box=true;items.sort((a,b)=>b.v-a.v);const sub=[];squarify(items,ix,iy,iw,ih,sub);
     for(const s of sub){if(s.w<1.5||s.h<1.5)continue;rec(s.n,s.x,s.y,s.w,s.h,d+1);}
   })(BM.focus,0,0,W,H,0);
-  return out;
-}
-// Δ for colouring: VictoriaMetrics over the range where a folder has a series, plus live changes after the newest sample;
-// live changes since the page opened everywhere else.
-function bmDelta(n){
-  switch(n.kind){
-    case 'free':case 'reserved':case 'unacc':case 'gap':return null;
-    case 'here':{const L=LIVE.get(n.p.id);return L?L.own:0;}
-    case 'more':return 0;
-  }
-  const L=LIVE.get(n.id),hd=HIST.status==='ok'?HIST.histD.get(n.id):undefined;
-  if(hd!=null)return hd+(L?L.lh:0);
-  if(n.kind==='dir')return L?L.ld:0;
-  let s=0;for(const k of n.kids||[]){const d=bmDelta(k);if(d)s+=d;}return s;
-}
-function bmBasis(n){const hd=HIST.status==='ok'&&HIST.histD.get(n.id)!=null;return hd?`over ${fmtSpan(HIST.t1-HIST.t0)} (history) and live since ${fmtHM(HIST.t1)}`:`live since the page opened at ${fmtHM(PAGE_T0)}`;}
-function fillFor(ctx,n){
-  if(n.kind==='free')return pattern(ctx,'free');if(n.kind==='reserved')return pattern(ctx,'reserved');if(n.kind==='unacc'||n.kind==='gap')return pattern(ctx,'dark');
-  if(n.kind==='host'&&n.offline)return pattern(ctx,'reserved');if(n.pending)return pattern(ctx,'pending');
-  if(BM.mode==='activity')return actColor(actTr(actOf(n,BM.agg,BM.now)||0));
-  if(BM.mode==='kind')return kindColor(kindOf(n)||'other');
-  if(BM.mode==='host')return hostColor(n.H);
-  if(BM.mode==='share'){if(n.kind==='dir'&&n.x!=null&&n.t>0)return shareColor(1-Math.min(1,n.x/n.t));return pattern(ctx,'unknown');}
-  const d=bmDelta(n);return divColor(d==null?0:divTr(d,BM.sc.lo,BM.sc.hi));
-}
-function baseColor(n,f){if(typeof f==='string')return f;if(n.kind==='free')return C.free;if(n.kind==='reserved'||n.pending||n.offline)return C.s2;if(BM.mode==='share')return C.mid;return C.dark;}
+  BM.moving=false;return out;}
+function bmRelayout(step){
+  const cv=$('#bm-cv');if(!cv)return;rollFleet();const W=cv.clientWidth,H=cv.clientHeight;if(!W||!H)return;
+  if(BM.layout==='cells'&&(BM.csW!==W||BM.csH!==H||BM.csF!==BM.focus.id)){BM.cs.clear();BM.csW=W;BM.csH=H;BM.csF=BM.focus.id;}
+  BM.cells=BM.layout==='cells'?bmBuildCells(W,H):bmBuildBlocks(W,H);BM.byNode=new Map(BM.cells.map(c=>[c.n,c]));
+  if(BM.mode==='change'){const vals=[];for(const c of BM.cells)if(!c.box){const d=bmDelta(c.n);if(d)vals.push(d);}BM.sc=scaleFor(vals,64*MiB);}
+  BM.lastLayout=performance.now();BM.needLayout=false;BM.sizesDirty=false;BM.needBase=true;
+  if(!step){renderCrumbs();bmLegend();}}
+
+/* ---------------------------------------------------------------- heat (live lens) */
+// bytes changed per folder, leaking over 20 s (change events), plus block writes per disk (io events): bytes/s
+const HEAT=new Map(),HEAT_TAU=20000,HEAT_REF=Math.log10(1+256*MiB/(32*KiB));
+function heatBump(ids,b,now){for(const id of ids){const a=HEAT.get(id);if(a){a.v=a.v*Math.exp(-(now-a.t)/HEAT_TAU)+b;a.t=now;}else HEAT.set(id,{v:b,t:now});}
+  if(HEAT.size>20000){for(const [k,a] of HEAT)if(a.v*Math.exp(-(now-a.t)/HEAT_TAU)<1)HEAT.delete(k);}}
+function heatBucket(id,now){const a=HEAT.get(id);if(!a)return 0;const v=a.v*Math.exp(-(now-a.t)/HEAT_TAU);return v<1?0:v/(HEAT_TAU/1000);}
+function rateOf(n,agg,now){switch(n.kind){case 'free':case 'reserved':case 'unacc':case 'more':case 'gap':return 0;case 'here':return heatBucket(n.p.id+'|~here',now);}
+  const io=agg.get(n.id);return heatBucket(n.id,now)+(io?io.w:0);}
+function heatOf(rate){return rate>0?Math.min(1,Math.log10(1+rate/(32*KiB))/HEAT_REF):0;}
+const COLD=30*DAY;
+function frosty(n,h){return n.kind==='dir'&&n.m>0&&Date.now()/1000-n.m>=COLD&&h<.15;}
+
+/* ---------------------------------------------------------------- growth history (rings, time machine) */
+let GROW={status:'idle'},GROW_SEQ=0;
+async function loadGrowth(force){
+  if(!METRICS){GROW={status:'none'};invalidate('grow');return;}
+  const nowS=Date.now()/1000;if(!force&&(GROW.status==='loading'||(GROW.fetchedAt&&nowS-GROW.fetchedAt<900&&GROW.status!=='error')))return;
+  const seq=++GROW_SEQ;GROW=Object.assign({},GROW,{status:GROW.status==='ok'?'ok':'loading',fetchedAt:nowS});invalidate('grow');
+  try{
+    let first=Infinity;
+    try{const d=await vmQuery('/api/v1/query',{query:'min(tfirst_over_time(storage_harvester_own_size_bytes{size_mode="blocks"}[30d]))',time:nowS.toFixed(0)});const r=d.result&&d.result[0];if(r)first=+r.value[1];}catch(e){}
+    const start=Math.max(nowS-30*DAY,isFinite(first)?first:nowS-30*DAY),step=pickStep(nowS-start,160),t1=Math.floor(nowS/step)*step,n=Math.max(2,Math.ceil((t1-start)/step)),t0=t1-n*step;
+    const d=await vmQuery('/api/v1/query_range',{query:Q_SIZE,start:t0,end:t1,step},45000);if(seq!==GROW_SEQ)return;
+    const by=new Map();
+    for(const s of d.result){const m=s.metric,H=HARV.find(h=>h.key===m.host);if(!H)continue;const T=H.targets.get(m.target);if(!T)continue;const O=H.outer.get(T.name)||T,p=mapPath(T,O,m.path);if(!p)continue;
+      const id=H.key+'|'+O.name+'|'+p;if(by.has(id)&&O!==T)continue;
+      const S=new Float64Array(n+1).fill(NaN);for(const [ts,v] of s.values){const i=Math.round((+ts-t0)/step);if(i>=0&&i<=n)S[i]=+v;}
+      let i0=-1,last=NaN;for(let i=0;i<=n;i++){if(isFinite(S[i])){if(i0<0)i0=i;last=S[i];}else if(isFinite(last))S[i]=last;}if(i0<0)continue;
+      const now=S[n],at=days=>S[Math.max(i0,Math.round(n-days*DAY/step))],span=(n-i0)*step/DAY,w=Math.min(7,span);
+      by.set(id,{S,i0,now,d1:now-at(1),d7:now-at(7),d30:now-at(30),slope:w>=0.25?(now-at(w))/w:0,span});}
+    GROW={status:'ok',t0,t1,step,n,by,first:isFinite(first)?first:t0,fetchedAt:nowS};
+  }catch(e){if(seq!==GROW_SEQ)return;GROW={status:'error',err:errText(e),fetchedAt:nowS};}
+  BM.needLayout=true;BM.needBase=true;invalidate('grow');}
+function growRec(n){for(let a=n;a;a=a.p){if(a.kind==='fs'||a.kind==='host'||a.kind==='root')return null;const r=GROW.by&&GROW.by.get(a.id);if(r)return {r,a};}return null;}
+// bytes/day: a folder's own trend, or its share of the nearest ancestor's that has history; a filesystem's df trend
+function growthOf(n){if(n.kind==='fs'){const m=fsModel(n);return m&&m.slope?m.slope:0;}if(n.kind==='free'||n.kind==='reserved'||n.kind==='unacc')return 0;
+  const x=growRec(n);if(!x||!x.a.t)return 0;return x.r.slope*(n===x.a?1:(n.t||0)/x.a.t);}
+function seriesAt(r,days){const g=GROW,i=(g.t1+days*DAY-g.t0)/g.step;if(i<=r.i0)return r.S[r.i0];if(i>=g.n)return r.S[g.n];const a=Math.floor(i),b=Math.min(g.n,a+1),f=i-a,va=r.S[a],vb=r.S[b];return isFinite(va)&&isFinite(vb)?va+(vb-va)*f:isFinite(va)?va:vb;}
+// Δ over the last `days` (as much as history holds) for rings: folders from their series, filesystems from df
+function deltaOver(n,days){if(n.kind==='fs'){const m=fsModel(n);if(!m||!m.cap||m.cap.status!=='ok')return null;const ts=m.cap.t,vs=m.cap.v,tn=ts[ts.length-1];return vs[vs.length-1]-interp(ts,vs,Math.max(ts[0],tn-days*DAY));}
+  const r=GROW.by&&GROW.by.get(n.id);if(!r)return null;return days<=1?r.d1:days<=7?r.d7:r.d30;}
+function interp(ts,vs,x){if(x<=ts[0])return vs[0];const L=ts.length-1;if(x>=ts[L])return vs[L];let lo=0,hi=L;while(hi-lo>1){const m=(lo+hi)>>1;if(ts[m]<=x)lo=m;else hi=m;}const f=(x-ts[lo])/((ts[hi]-ts[lo])||1);return vs[lo]+(vs[hi]-vs[lo])*f;}
+// a filesystem along the slider: free space drains at its df trend (90 days of capacity history, fit over 30).
+// `actual`: without the reclaim previews.
+function fsModel(f,actual){if(!f||f.kind!=='fs'||!f.fs||f.fs.synthetic)return null;const fs=f.fs,cap=CAP.get(f.H.key+'|'+fs.id),extra=!actual&&whatifOn()&&f.free?(WHATIF.get(f.free.id)||0):0;
+  const size=+fs.size||0,used=+fs.used||0,res=fs.reserved!=null?+fs.reserved:Math.max(0,size-used-(+fs.avail||0)),avail=Math.max(0,(+fs.avail||0)+extra);
+  const ok=cap&&cap.status==='ok',slope=ok&&cap.span>=12*3600?cap.slope:null,tFull=slope>0?avail/slope:Infinity;
+  return {size,res,avail,slope,tFull,cap:ok?cap:null,freeAt(t){if(t>=0)return slope?Math.max(0,avail-slope*Math.min(t,tFull)):avail;
+    if(ok&&cap.t.length){const u=interp(cap.t,cap.v,Date.now()/1000+t*DAY);return Math.max(0,size-res-u+extra);}return avail;},
+    usedAt(t){return size?Math.min(1,Math.max(0,(size-res-this.freeAt(t))/size)):0;}};}
+function timeSize(n,s){const t=BM.t;
+  switch(n.kind){case 'free':{const m=fsModel(n.p);return m?m.freeAt(t):s;}case 'reserved':case 'unacc':return s;
+    case 'host':{let x=0;for(const k of n.kids)x+=sizeOf(k);return x;}case 'fs':{let x=0;for(const k of n.kids)x+=sizeOf(k);return x;}case 'root':return s;}
+  const f=fsOf(n),m=f&&fsModel(f),tc=m&&isFinite(m.tFull)?Math.min(t,m.tFull):t;
+  if(tc<0){const x=growRec(n);if(!x||!(x.r.now>0))return s;return s*Math.max(0,seriesAt(x.r,tc))/x.r.now;}
+  return Math.max(s*0.02,s+growthOf(n)*tc);}
+function fullNow(f){if(BM.mode!=='time'||!f||f.kind!=='fs')return false;const m=fsModel(f);return !!m&&BM.t>=m.tFull;}
+
+/* ---------------------------------------------------------------- reclaim (what-if) */
+const WHATIF=new Map();let RECL=[],RECL_AT=0;
+function reclaimItems(){
+  const out=[],now=Date.now()/1000;
+  for(const H of HARV){if(H.status!=='ok')continue;
+    for(const T of H.info.targets){if(T.kind!=='lvm_thin'||!Array.isArray(T.guests)||!isOuter(H,T))continue;const f=H.fsNodes.get(T.fs);
+      for(const g of T.guests){if(!g||!g.path)continue;const r=findDir(H,T,g.path),gn=r&&!r.rest.length?r.node:null;if(!gn)continue;
+        if(g.type==='lxc'&&g.running){const ds=gn.c.filter(d=>d.v==='disk'&&d.u>0&&d.c.length),u=ds.reduce((a,d)=>a+d.u,0);
+          if(u>=512*MiB)out.push({key:'trim|'+H.key+'|'+g.vmid,title:'Trim '+guestLabel(g),where:hostName(H)+' · '+(f?maskPath(f.fs.mount):tgName(T.name)),basis:'m',basisText:'measured',bytes:u,
+            cmd:'pct fstrim '+(HIDE?'<id>':g.vmid),why:'Allocated blocks no file in the container accounts for: blocks freed inside it and not trimmed yet, plus some filesystem metadata.',parts:ds.map(d=>({n:d,db:-d.u}))});}
+        const N=HARV.find(h=>h.nestIn&&h.nestIn.P===H&&h.nestIn.g.vmid===g.vmid);
+        if(N&&g.type==='qemu'){let used=0;for(const id of N.nestIn.place.keys()){const x=N.info.filesystems.find(y=>y.id===id);if(x)used+=+x.used||0;}const recl=gn.t-used;
+          if(recl>=GiB){const gaps=gn.c.filter(d=>d.v==='disk'&&d.gap&&d.gap.t>0).map(d=>d.gap),gs=gaps.reduce((a,x)=>a+x.t,0);
+            out.push({key:'vmtrim|'+H.key+'|'+g.vmid,title:'Run fstrim inside '+guestLabel(g),where:hostName(H)+' · '+guestLabel(g),basis:'m',basisText:'measured',bytes:recl,cmd:'sudo fstrim -av   # on '+hostName(N),
+              why:`The VM holds ${fmtB(recl)} more than its filesystems use. With discard on, a trim inside it returns those blocks to the pool.`,parts:gs>0?gaps.map(x=>({n:x,db:-Math.min(x.t,recl*x.t/gs)})):[{n:gn,db:-recl}]});}}}}}
+  // big folders nothing touched for months (newest mtime in the subtree); download and cache folders after a month
+  const cold=[];
+  for(const H of HARV){if(H.status!=='ok')continue;for(const root of H.roots.values()){const f=H.fsNodes.get(root.T.fs),min=Math.max(8*GiB,(f&&f.fs?+f.fs.size||0:0)*0.004);
+    (function w(n){if(n.t<min)return;if(!n.v&&!n.isRoot&&n.m>0){const age=(now-n.m)/DAY,tmp=/incomplete|partial|^te?mp$|cache|trash|recycle/i.test(n.name);if(age>=120||(tmp&&age>=30)){cold.push({n,age});return;}}for(const c of n.c)w(c);})(root);}}
+  cold.sort((a,b)=>b.n.t-a.n.t);
+  for(const {n,age} of cold.slice(0,8)){const b=n.x!=null?n.x:n.t;
+    out.push({key:'cold|'+n.id,title:'Review '+nameOf(n),where:hostName(n.H)+' · '+tail(maskPath(n.path),3),basis:'e',basisText:'unchanged '+Math.round(age)+' days',bytes:b,cmd:maskPath(n.path),
+      why:'Nothing in it changed since '+new Date(n.m*1000).toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'})+'.'+(n.x!=null&&n.x<n.t?` Deleting it frees ${fmtB(n.x)}: the rest is shared with other folders.`:''),parts:[{n,db:-b}]});}
+  return out;}
+function refreshReclaim(force){const now=Date.now();if(!force&&now-RECL_AT<15000)return;RECL_AT=now;RECL=reclaimItems();for(const k of [...BM.applied])if(!RECL.some(r=>r.key===k))BM.applied.delete(k);recomputeWhatif();}
+// a preview moves bytes from the folders to their filesystem's free space: ancestors shrink, the filesystem does not
+function recomputeWhatif(){WHATIF.clear();for(const it of RECL){if(!BM.applied.has(it.key))continue;for(const p of it.parts)for(let a=p.n;a;a=a.p){if(a.kind==='fs'){if(a.free)WHATIF.set(a.free.id,(WHATIF.get(a.free.id)||0)-p.db);break;}WHATIF.set(a.id,(WHATIF.get(a.id)||0)+p.db);}}}
+
+/* ---------------------------------------------------------------- story stream */
+// raw change and io events folded into one line per folder over the last minute, with an inferred reason
+const STORY=new Map();
+function storyAdd(H,O,path,o){const k=H.key+'|'+O.name+'|'+path,now=Date.now();let s=STORY.get(k);
+  if(!s||now-s.last>90000){s={H,O,path,db:0,n:0,io:0,rd:0,ioN:0,last:now,src:'',who:null,ctr:null,g:null};STORY.set(k,s);}
+  if(o.db!=null){s.db+=o.db;s.n++;if(o.src)s.src=o.src;}if(o.w!=null){s.io+=o.w;s.rd+=o.r||0;s.ioN++;if(o.g)s.g=o.g;}s.last=now;if(o.who){s.who=o.who;s.ctr=o.ctr||null;}
+  if(STORY.size>2500){for(const [kk,v] of STORY)if(now-v.last>90000)STORY.delete(kk);if(STORY.size>2500){const old=[...STORY.entries()].sort((a,b)=>a[1].last-b[1].last).slice(0,800);for(const [kk] of old)STORY.delete(kk);}}}
+function storyReason(s){const p=s.path.toLowerCase();
+  if(s.ioN&&!s.n)return s.io>=s.rd?(s.g==='lxc'?'container writes':'VM writes'):'reads';
+  if(s.src==='lvm')return s.db<0?'fstrim returned':'thin alloc';
+  if(s.src==='scan')return 'found by a scan';
+  if(/\/logs?(\/|$)|\.log$|journal/.test(p))return 'log append';
+  if(/victoria|prometheus|tsdb|loki|influx|mimir|thanos/.test(p))return s.db<0?'compaction':'TSDB writes';
+  if(/incomplete|torrent|download|usenet|nzb|sabnzbd|qbit|transmission|deluge/.test(p))return s.db<0?'moved or removed':'download';
+  if(/transcode|cache|\/tmp|\/temp/.test(p))return s.db<0?'cache cleanup':'cache';
+  if(/backup|snapshot|\/pbs|chunks|borg|restic|kopia/.test(p))return 'backup';
+  if(/postgres|mysql|maria|sqlite|redis|mongo|\.db$|database/.test(p))return 'database';
+  if(/photo|immich|camera|dcim/.test(p))return 'photo sync';
+  if(/media|movies|\/tv|series|anime|music/.test(p))return s.db>0?'import':'removed';
+  if(/docker|overlay|containers/.test(p))return 'container data';
+  return s.db<0?'shrank':'grew';}
+
+/* ---------------------------------------------------------------- painting */
+function neutral(n){return mix(C.s3,hostColor(n.H),0.10);}
+function membraneOf(n){return mix(C.bg,hostColor(n.H),0.16);}
 const opaqueDisk=n=>n.kind==='dir'&&n.v==='disk'&&!n.kids.length;   // a VM disk nothing was scanned inside
 const cfs=px=>isPhone()?Math.max(12,px):px;
 function fit(ctx,s,max){if(max<=0)return '';if(ctx.measureText(s).width<=max)return s;let lo=0,hi=s.length;while(lo<hi){const m=(lo+hi+1)>>1;if(ctx.measureText(s.slice(0,m)+'…').width<=max)lo=m;else hi=m-1;}return lo>0?s.slice(0,lo)+'…':'';}
-function bmRelayout(){
-  const cv=$('#bm-cv');if(!cv)return;rollFleet();
-  const W=cv.clientWidth,H=cv.clientHeight;if(!W||!H)return;
-  BM.rects=bmLayout(W,H);BM.byNode=new Map(BM.rects.map(r=>[r.n,r]));
-  if(BM.mode==='change'){const vals=[];for(const r of BM.rects)if(!r.box){const d=bmDelta(r.n);if(d)vals.push(d);}BM.sc=scaleFor(vals,64*MiB);}
-  BM.lastLayout=performance.now();BM.needLayout=false;BM.sizesDirty=false;BM.needBase=true;renderCrumbs();bmLegend();
-}
+function leafFill(ctx,n){
+  if(n.kind==='free')return pattern(ctx,'free');if(n.kind==='reserved')return pattern(ctx,'reserved');if(n.kind==='unacc'||n.kind==='gap')return pattern(ctx,'dark');
+  if(n.kind==='host'&&n.offline)return pattern(ctx,'reserved');if(n.pending)return pattern(ctx,'pending');
+  if(STATIC_LENS.has(BM.mode))return neutral(n);return fillFor(ctx,n);}
+function fillFor(ctx,n){
+  if(BM.mode==='kind')return kindColor(kindOf(n)||'other');if(BM.mode==='host')return hostColor(n.H);
+  const d=bmDelta(n);return divColor(d==null?0:divTr(d,BM.sc.lo,BM.sc.hi));}
+function baseColor(n,f){if(typeof f==='string')return f;if(n.kind==='free')return C.free;if(n.kind==='reserved'||n.pending||n.offline)return C.s2;return C.dark;}
+// Δ for colouring: VictoriaMetrics over the range where a folder has a series, plus live changes after the newest sample;
+// live changes since the page opened everywhere else.
+function bmDelta(n){
+  switch(n.kind){case 'free':case 'reserved':case 'unacc':case 'gap':return null;case 'here':{const L=LIVE.get(n.p.id);return L?L.own:0;}case 'more':return 0;}
+  const L=LIVE.get(n.id),hd=HIST.status==='ok'?HIST.histD.get(n.id):undefined;
+  if(hd!=null)return hd+(L?L.lh:0);if(n.kind==='dir')return L?L.ld:0;
+  let s=0;for(const k of n.kids||[]){const d=bmDelta(k);if(d)s+=d;}return s;}
+function bmBasis(n){const hd=HIST.status==='ok'&&HIST.histD.get(n.id)!=null;return hd?`over ${fmtSpan(HIST.t1-HIST.t0)} (history) and live since ${fmtHM(HIST.t1)}`:`live since the page opened at ${fmtHM(PAGE_T0)}`;}
+function lensPattern(ctx,kind){const k='lens-'+kind;if(PAT[k])return PAT[k];const c=document.createElement('canvas'),s=kind==='frost'?9:7;c.width=c.height=s;const x=c.getContext('2d');
+  const col=kind==='link'?C.share:kind==='reclaim'?C.good:kind==='crit'?C.crit:C.ink;
+  if(kind==='frost'){x.strokeStyle=rgba(C.ink,.22);x.lineWidth=.9;x.beginPath();x.moveTo(2,2);x.lineTo(5,5);x.moveTo(5,2);x.lineTo(2,5);x.stroke();x.fillStyle=rgba(C.ink,.22);x.fillRect(6.5,6.5,1,1);}
+  else{x.strokeStyle=rgba(col,kind==='crit'?.55:.8);x.lineWidth=1.2;x.beginPath();x.moveTo(-1,s+1);x.lineTo(s+1,-1);x.moveTo(-1,1);x.lineTo(1,-1);x.moveTo(s-1,s+1);x.lineTo(s+1,s-1);x.stroke();}
+  return PAT[k]=ctx.createPattern(c,'repeat');}
+function shape(ctx,c,P){if(BM.layout==='cells')pRound(ctx,P,RAD[c.d]||3,0,0,0);else{ctx.beginPath();ctx.rect(P[0][0],P[0][1],P[2][0]-P[0][0],P[2][1]-P[0][1]);}}
+function leafPoly(c){if(BM.layout==='cells')return pInset(c.poly,.7)||c.poly;const {x,y,w,h}=c;return [[x+1,y+1],[x+w-1,y+1],[x+w-1,y+h-1],[x+1,y+h-1]];}
+function ringsData(){let mx=1;for(const c of BM.cells){if(c.box||!c.dp)continue;const d30=deltaOver(c.n,30);c.rg=d30==null?null:{d1:deltaOver(c.n,1)||0,d7:deltaOver(c.n,7)||0,d30};if(c.rg)mx=Math.max(mx,Math.abs(d30));}return mx;}
 function bmPaintBase(){
   const cv=$('#bm-cv');if(!cv)return;const dpr=devicePixelRatio||1,W=cv.clientWidth,H=cv.clientHeight;
-  if(!BM.base)BM.base=document.createElement('canvas');const b=BM.base;
-  if(b.width!==Math.round(W*dpr)||b.height!==Math.round(H*dpr)){b.width=Math.round(W*dpr);b.height=Math.round(H*dpr);}
+  if(!BM.base)BM.base=document.createElement('canvas');const b=BM.base;if(b.width!==Math.round(W*dpr)||b.height!==Math.round(H*dpr)){b.width=Math.round(W*dpr);b.height=Math.round(H*dpr);}
   const ctx=b.getContext('2d');ctx.setTransform(dpr,0,0,dpr,0,0);ctx.fillStyle=C.surface;ctx.fillRect(0,0,W,H);
-  const font=getComputedStyle(document.body).fontFamily,f1=cfs(11.5),f2=cfs(11),act=BM.mode==='activity';BM.agg=ioAgg();BM.now=Date.now();
-  for(const r of BM.rects){const {n,x,y,w,h}=r;if(r.d===0&&r.box)continue;
-    if(r.box){ctx.fillStyle=C.s3;ctx.fillRect(x+1,y+1,w-2,h-2);
-      if(n.v==='disk'){ctx.fillStyle=pattern(ctx,'vmgrid');ctx.fillRect(x+1,y+1,w-2,h-2);}
-      const a=act&&n.v?actOf(n,BM.agg,BM.now):0,at=actTr(a);
-      if(at>0){ctx.strokeStyle=actColor(at);ctx.lineWidth=1+2.5*at;ctx.strokeRect(x+1.5,y+1.5,w-3,h-3);}
-      if(r.head){ctx.fillStyle=C.ink;ctx.font=`600 ${f1}px ${font}`;ctx.textBaseline='middle';const nm0=nameOf(n);let sz=fmtB(n.t)+(at>0?' · '+fmtRate(a):'');
-        // the name wins over the figures: drop the rate, then the size, before the name shrinks below a few letters
-        const room=()=>w-16-ctx.measureText(sz).width-8,need=ctx.measureText(nm0.slice(0,6)+'…').width;if(room()<need)sz=fmtB(n.t);if(room()<need)sz='';const nm=fit(ctx,nm0,room());ctx.fillText(nm,x+7,y+10);ctx.fillStyle=C.ink2;ctx.font=`${f2}px ${font}`;ctx.fillText(sz,x+w-7-ctx.measureText(sz).width,y+10);}
+  const cells=BM.layout==='cells',m=BM.mode,agg=ioAgg(),now=Date.now();
+  if(m==='reclaim'){refreshReclaim();for(const c of BM.cells)c.rc=0;for(const it of RECL){if(BM.applied.has(it.key))continue;for(const p of it.parts){const c=BM.byNode.get(drawnNode(p.n));if(c&&c.d>0)c.rc+=-p.db;}}}
+  for(const c of BM.cells){const n=c.n;if(c.d===0)continue;
+    if(c.box){c.dp=c.poly;
+      if(cells){shape(ctx,c,c.poly);ctx.fillStyle=fullNow(n)?mix(membraneOf(n),C.crit,.7):membraneOf(n);ctx.fill();if(n.v==='disk'){ctx.fillStyle=pattern(ctx,'vmgrid');ctx.fill();}}
+      else{const {x,y,w,h}=c;ctx.fillStyle=fullNow(n)?mix(C.s3,C.crit,.5):C.s3;ctx.fillRect(x+1,y+1,w-2,h-2);if(n.v==='disk'){ctx.fillStyle=pattern(ctx,'vmgrid');ctx.fillRect(x+1,y+1,w-2,h-2);}}
       continue;}
-    const f=fillFor(ctx,n);ctx.fillStyle=f;ctx.fillRect(x+1,y+1,Math.max(0,w-2),Math.max(0,h-2));
-    if(opaqueDisk(n)&&w>4&&h>4){ctx.fillStyle=pattern(ctx,'vmgrid');ctx.fillRect(x+1,y+1,w-2,h-2);}
-    if(BM.cushion&&w>6&&h>6&&n.kind!=='free'&&n.kind!=='reserved'){const g=ctx.createLinearGradient(x,y,x+w,y+h);g.addColorStop(0,'rgba(255,255,255,0.20)');g.addColorStop(0.55,'rgba(255,255,255,0)');g.addColorStop(1,'rgba(0,0,0,0.13)');ctx.fillStyle=g;ctx.fillRect(x+1,y+1,w-2,h-2);}
-    if(w>46&&h>22){ctx.fillStyle=inkOn(baseColor(n,f));ctx.font=`500 ${f1}px ${font}`;ctx.textBaseline='top';const nm=fit(ctx,nameOf(n),w-12);if(nm)ctx.fillText(nm,x+6,y+5);
-      if(h>38){ctx.font=`${f2}px ${font}`;ctx.globalAlpha=0.85;let s=fmtB(n.t)+(n.prov?' of '+fmtB(n.prov):'');if(BM.mode==='change'){const d=bmDelta(n);if(d&&Math.abs(d)>=1)s+='  '+fmtD(d);}else if(act){const a=actOf(n,BM.agg,BM.now);if(a>=1)s+='  '+fmtRate(a);}else if(BM.mode==='share'&&n.x!=null)s+='  frees '+fmtB(n.x);else if(n.pending)s+='  loading…';ctx.fillText(fit(ctx,s,w-12),x+6,y+6+f1+3);ctx.globalAlpha=1;}}
-    if(n.kind==='dir'&&!n.full&&!n.pending&&w>14&&h>14&&n===BM.focus){} // (focus is never a leaf rect)
+    const P=leafPoly(c);c.dp=P;c.cen=pCen(P);c.A=Math.abs(pArea(P));if(c.A<1)continue;
+    const f=leafFill(ctx,n);c.fill=baseColor(n,f);shape(ctx,c,P);ctx.fillStyle=f;ctx.fill();
+    if(opaqueDisk(n)){ctx.fillStyle=pattern(ctx,'vmgrid');ctx.fill();}
+    if(BM.cushion&&typeof f==='string'&&c.A>40){const R=Math.sqrt(c.A/Math.PI)*1.3,[cx,cy]=c.cen;
+      const g=cells?ctx.createRadialGradient(cx,cy-R*.2,0,cx,cy,R):ctx.createLinearGradient(c.bb[0],c.bb[1],c.bb[2],c.bb[3]);
+      g.addColorStop(0,'rgba(255,255,255,0.16)');g.addColorStop(.55,'rgba(255,255,255,0)');g.addColorStop(1,'rgba(0,0,0,0.13)');ctx.fillStyle=g;ctx.fill();}
+    if(m==='live'&&frosty(n,heatOf(rateOf(n,agg,now)))){ctx.fillStyle=lensPattern(ctx,'frost');ctx.fill();}
+    if(m==='time'&&fullNow(fsOf(n))&&n.kind!=='free'){ctx.fillStyle=lensPattern(ctx,'crit');ctx.fill();}
+    if(m==='links'){const sh=n.kind==='dir'&&n.x!=null&&n.t>0?1-Math.min(1,n.x/n.t):0;c.sh=sh;
+      if(sh<.01){ctx.fillStyle=rgba(C.surface,.6);ctx.fill();}else{const ex=1-sh;shape(ctx,c,P);if(ex>.01)pRound(ctx,pScale(P,c.cen,Math.sqrt(ex)),5,0,0,0,true,true);ctx.fillStyle=lensPattern(ctx,'link');ctx.fill('evenodd');
+        if(ex>.01){pRound(ctx,pScale(P,c.cen,Math.sqrt(ex)),5,0,0,0);ctx.strokeStyle=C.share;ctx.lineWidth=1.2;ctx.stroke();}}}
+    if(m==='reclaim'){if(!(c.rc>0)&&!(n.kind==='free'&&WHATIF.get(n.id))){ctx.fillStyle=rgba(C.surface,.6);ctx.fill();}
+      if(c.rc>0){const k=Math.max(.2,Math.sqrt(Math.min(1,c.rc/Math.max(1,sizeOf(n))))),Q=pScale(P,c.cen,k);pRound(ctx,Q,5,0,0,0);ctx.fillStyle=lensPattern(ctx,'reclaim');ctx.fill();ctx.strokeStyle=C.good;ctx.lineWidth=1.5;ctx.stroke();}
+      if(n.kind==='free'&&WHATIF.get(n.id)>0){shape(ctx,c,P);ctx.strokeStyle=C.good;ctx.lineWidth=2;ctx.stroke();}}
   }
-  BM.needBase=false;
-}
-function bmCompose(){
+  if(m==='rings'){const mx=ringsData();
+    for(const c of BM.cells){if(c.box||!c.rg||!c.dp)continue;const g=c.rg,tot=Math.abs(g.d30);if(tot<1)continue;const r=Math.sqrt(c.A/Math.PI),T=Math.min(r*.55,26*Math.sqrt(tot/mx)+2),sh=x=>Math.min(1,Math.abs(x)/tot);
+      const t1=Math.max(1.6,T*Math.sqrt(sh(g.d1))),t7=Math.max(Math.min(T,t1+1.2),T*Math.sqrt(sh(g.d7))),col=g.d30<0?C.neg:C.pos;
+      for(const [d0,d1,a] of [[t7,T,.28],[t1,t7,.55],[0,t1,.95]]){if(d1-d0<.4)continue;const A=pInset(c.dp,d0),B=pInset(c.dp,d1);if(!A)continue;
+        if(cells)pRound(ctx,A,RAD[c.d]||3,0,0,0);else{ctx.beginPath();ctx.rect(A[0][0],A[0][1],A[2][0]-A[0][0],A[2][1]-A[0][1]);}
+        if(B)pRound(ctx,B,cells?Math.max(0,(RAD[c.d]||3)-(d1-d0)):0,0,0,0,true,true);ctx.fillStyle=rgba(col,a);ctx.fill('evenodd');}}}
+  bmLabels(ctx,W,H);BM.needBase=false;}
+// labels are laid out with the base and drawn on top of the live layers every frame
+function bmLabels(ctx,W,H){
+  const font=getComputedStyle(document.body).fontFamily,mono=getComputedStyle(document.documentElement).getPropertyValue('--font-mono')||'ui-monospace,monospace',f1=cfs(11.5),f2=cfs(11),labs=[],placed=[],agg=ioAgg(),now=Date.now(),hideLeaves=BM.wall;
+  const over=r=>placed.some(q=>r[0]<q[2]&&r[2]>q[0]&&r[1]<q[3]&&r[3]>q[1]);
+  if(BM.layout==='cells'){
+    const regions=BM.cells.filter(c=>c.box&&c.d>0&&c.d<=2).sort((a,b)=>b.A-a.A);
+    for(const c of regions){const n=c.n,big=c.d===1,F1=`600 ${cfs(big?13:11.5)}px ${font}`,F2=`${f2}px ${mono}`;const t=nameOf(n).toUpperCase(),sub=regionSub(n,agg,now);
+      ctx.font=F1;const w1=ctx.measureText(t).width+t.length*1.1;ctx.font=F2;const w2=ctx.measureText(sub).width;const y=c.bb[1]+(big?18:15),ch=chordAt(c.poly,y-8),ch2=chordAt(c.poly,y+22);if(!ch||!ch2)continue;
+      const lo=Math.max(ch[0],ch2[0])+8,hi=Math.min(ch[1],ch2[1])-8;if(hi-lo<w1+4)continue;const showSub=hi-lo>=w2,pw=Math.max(w1,showSub?w2:0)+16,x=(lo+hi)/2,r=[x-pw/2,y-11,x+pw/2,y+(showSub?24:10)];if(over(r))continue;placed.push(r);
+      labs.push({pill:r,full:fullNow(n),items:[{t,x,y,font:F1,col:big?C.ink:C.ink2,sp:true},showSub?{t:sub,x,y:y+14.5,font:F2,col:fullNow(n)?C.crit:C.muted}:null]});}
+    if(!hideLeaves){const leaves=BM.cells.filter(c=>!c.box&&c.dp&&c.A>900).sort((a,b)=>b.A-a.A);
+      for(const c of leaves){const n=c.n,big=c.A>6000,F1=`600 ${cfs(big?12:11)}px ${font}`,F2=`${f2}px ${mono}`,name=nameOf(n),val=leafValue(n,c,agg,now);
+        ctx.font=F1;const w1=ctx.measureText(name).width;ctx.font=F2;const w2=ctx.measureText(val).width;const [cx,cy]=c.cen;
+        const fits=(w,h)=>[cy-h/2,cy,cy+h/2].every(y=>{const ch=chordAt(c.dp,y);return ch&&ch[0]<=cx-w/2-3&&ch[1]>=cx+w/2+3;});
+        let lines=0;if(fits(Math.max(w1,w2),30))lines=2;else if(fits(w1,15))lines=1;if(!lines)continue;
+        const ww=lines===2?Math.max(w1,w2):w1,r=[cx-ww/2,cy-(lines===2?15:8),cx+ww/2,cy+(lines===2?15:8)];if(over(r))continue;placed.push(r);
+        const col=dimmed(c)?C.muted:inkOn(c.fill||C.s3);
+        labs.push({halo:BM.mode==='live',items:[{t:name,x:cx,y:lines===2?cy-7:cy,font:F1,col},lines===2?{t:val,x:cx,y:cy+8,font:F2,col,a:.8}:null]});}}}
+  else{
+    for(const c of BM.cells){const n=c.n,{x,y,w,h}=c;if(c.d===0)continue;
+      if(c.box){if(!c.head)continue;const F1=`600 ${f1}px ${font}`,F2=`${f2}px ${font}`;ctx.font=F1;const nm0=nameOf(n),a=BM.mode==='live'&&n.v?rateOf(n,agg,now):0;let sz=fmtB(sizeOf(n))+(a>=1?' · '+fmtRate(a):'');
+        ctx.font=F2;const szw=()=>ctx.measureText(sz).width;ctx.font=F1;const need=ctx.measureText(nm0.slice(0,6)+'…').width;if(w-16-szw()-8<need)sz=fmtB(sizeOf(n));if(w-16-szw()-8<need)sz='';const nm=fit(ctx,nm0,w-16-szw()-8);
+        labs.push({items:[{t:nm,x:x+7,y:y+10,font:F1,col:C.ink,al:'left'},{t:sz,x:x+w-7,y:y+10,font:F2,col:C.ink2,al:'right'}]});continue;}
+      if(hideLeaves||!(w>46&&h>22))continue;const F1=`500 ${f1}px ${font}`,F2=`${f2}px ${font}`;ctx.font=F1;const nm=fit(ctx,nameOf(n),w-12);if(!nm)continue;
+      const col=dimmed(c)?C.muted:inkOn(c.fill||C.s3),items=[{t:nm,x:x+6,y:y+11,font:F1,col,al:'left'}];
+      if(h>38){ctx.font=F2;items.push({t:fit(ctx,leafValue(n,c,agg,now),w-12),x:x+6,y:y+11+f1+3,font:F2,col,a:.85,al:'left'});}
+      labs.push({halo:BM.mode==='live',items});}}
+  BM.labs=labs;}
+// greyed out by the Hard links and Reclaim lenses: nothing shared, or nothing to reclaim
+function dimmed(c){return (BM.mode==='links'&&!(c.sh>=.01))||(BM.mode==='reclaim'&&!(c.rc>0)&&c.n.kind!=='free');}
+function regionSub(n,agg,now){
+  if(n.kind==='host'){if(n.offline)return 'offline';if(BM.mode==='live'){const H=n.H;return liveRate(H).toFixed(0)+'/min · '+(H.info&&H.info.live&&H.info.live.source||'scans');}return fmtB(sizeOf(n));}
+  if(n.kind==='fs'){const m=fsModel(n);if(!m)return fmtB(sizeOf(n));const t=BM.mode==='time'?BM.t:0;if(BM.mode==='time'&&t>=m.tFull)return 'FULL since '+fmtDay(m.tFull);
+    return pct(m.usedAt(t))+' used'+(isFinite(m.tFull)&&m.tFull-t<240?' · full '+fmtDay(m.tFull):'');}
+  if(BM.mode==='live'){const a=rateOf(n,agg,now);if(a>=KiB)return fmtB(sizeOf(n))+' · '+fmtRate(a);}return fmtB(sizeOf(n));}
+function leafValue(n,c,agg,now){const s=sizeOf(n);
+  switch(BM.mode){
+    case 'live':{if(n.kind==='free')return fmtB(s);const a=rateOf(n,agg,now);return fmtB(s)+(a>=KiB?'  '+fmtRate(a):'');}
+    case 'change':{const d=bmDelta(n);return fmtB(s)+(d&&Math.abs(d)>=1?'  '+fmtD(d):'');}
+    case 'rings':{if(!c.rg)return fmtB(s);const d=c.rg.d7;return Math.abs(d)<GiB/20?'flat':fmtD(d)+(GROW.status==='ok'&&growSpan()<7?' since '+fmtDay(-growSpan()):' · 7 d');}
+    case 'links':return c.sh>=.01?'frees '+fmtB(n.x)+' of '+fmtB(n.t):fmtB(s);
+    case 'reclaim':return c.rc>0?fmtD(-c.rc)+' possible':fmtB(s);
+    case 'time':return fmtB(s);}
+  return fmtB(s);}
+function growSpan(){return GROW.status==='ok'?(GROW.t1-GROW.first)/DAY:0;}
+function fmtDay(days){return new Date(Date.now()+days*DAY*1000).toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'});}
+
+/* ---------------------------------------------------------------- composing (every frame) */
+function bmCompose(now){
   const cv=$('#bm-cv');if(!cv||!BM.base)return;const dpr=devicePixelRatio||1,W=cv.clientWidth,H=cv.clientHeight;
   if(cv.width!==Math.round(W*dpr)||cv.height!==Math.round(H*dpr)){cv.width=Math.round(W*dpr);cv.height=Math.round(H*dpr);}
   const ctx=cv.getContext('2d');ctx.setTransform(1,0,0,1,0,0);ctx.fillStyle=C.surface;ctx.fillRect(0,0,cv.width,cv.height);
-  const now=performance.now();
-  if(BM.anim){const k=Math.min(1,(now-BM.anim.t0)/320),e=1-Math.pow(1-k,3),a=BM.anim.from;const cx=a.x*(1-e),cy=a.y*(1-e),cw=a.w+(W-a.w)*e,ch=a.h+(H-a.h)*e;ctx.globalAlpha=0.35+0.65*e;ctx.drawImage(BM.base,cx*dpr,cy*dpr,cw*dpr,ch*dpr);ctx.globalAlpha=1;if(k>=1)BM.anim=null;}
-  else ctx.drawImage(BM.base,0,0);
-  ctx.setTransform(dpr,0,0,dpr,0,0);
-  if(!BM.anim){
-    BM.pulses=BM.pulses.filter(p=>now-p.t0<1700);
-    const seen=new Map();
-    for(const p of BM.pulses){let t=p.node,r=null;while(t&&!(r=BM.byNode.get(t)))t=t.p;if(!r||r.d===0)continue;seen.set(r,p);}
-    for(const [r,p] of seen){const q=(now-p.t0)/1700,col=p.io?C.act:p.d>=0?C.pos:C.neg,amp=p.io?0.3+0.7*p.k:1;
-      if(r.box){ctx.globalAlpha=(1-q)*0.8*amp;ctx.strokeStyle=col;ctx.lineWidth=1.5;ctx.strokeRect(r.x+1.5,r.y+1.5,r.w-3,r.h-3);ctx.globalAlpha=1;continue;}
-      ctx.globalAlpha=(1-q)*0.45*amp;ctx.fillStyle=col;ctx.fillRect(r.x+1,r.y+1,r.w-2,r.h-2);ctx.globalAlpha=(1-q)*amp;ctx.strokeStyle=col;ctx.lineWidth=2;const o=q*6;ctx.strokeRect(r.x+1-o,r.y+1-o,r.w-2+2*o,r.h-2+2*o);ctx.globalAlpha=1;}
-    if(BM.hov){const r=BM.byNode.get(BM.hov);if(r){ctx.strokeStyle=C.ink;ctx.lineWidth=2;ctx.strokeRect(r.x+1,r.y+1,r.w-2,r.h-2);}}
-  }
+  if(BM.anim){const k=Math.min(1,(now-BM.anim.t0)/320),e=1-Math.pow(1-k,3),a=BM.anim.from;const cx=a.x*(1-e),cy=a.y*(1-e),cw=a.w+(W-a.w)*e,ch=a.h+(H-a.h)*e;ctx.globalAlpha=0.35+0.65*e;ctx.drawImage(BM.base,cx*dpr,cy*dpr,cw*dpr,ch*dpr);ctx.globalAlpha=1;if(k>=1)BM.anim=null;return;}
+  // wall mode drifts slowly, so a screen left on does not hold one image
+  let sx=1,tx=0,ty=0;if(BM.wall&&!REDUCED){const s=now/1000;sx=1.018;tx=Math.sin(s/41)*W*.008-W*.009;ty=Math.cos(s/53)*H*.008-H*.009;}
+  ctx.setTransform(dpr*sx,0,0,dpr*sx,tx*dpr,ty*dpr);ctx.drawImage(BM.base,0,0,W,H);
+  const time=now/1000,cells=BM.layout==='cells',agg=ioAgg(),wall=Date.now();
+  if(BM.mode==='live'){
+    for(const c of BM.cells){if(c.d===0||!c.dp)continue;const h=heatOf(rateOf(c.n,agg,wall));c.h=h;if(h<.03)continue;
+      if(c.box){if(h>.45&&cells){shape(ctx,c,c.poly);ctx.strokeStyle=rgba(C.act,Math.min(.75,(h-.45)*1.4));ctx.lineWidth=1+2*h;ctx.stroke();}continue;}
+      if(c.A<20)continue;const R=Math.sqrt(c.A/Math.PI)*1.3,rr=Math.min(R*1.05,24+170*h),a=Math.min(1,.3+h*.8),col=actColor(h),[cx,cy]=c.cen;
+      ctx.save();shape(ctx,c,c.dp);ctx.clip();const g=ctx.createRadialGradient(cx,cy,0,cx,cy,rr);g.addColorStop(0,rgba(col,a));g.addColorStop(.5,rgba(col,a*.6));g.addColorStop(1,rgba(col,0));ctx.fillStyle=g;ctx.fillRect(c.bb[0],c.bb[1],c.bb[2]-c.bb[0],c.bb[3]-c.bb[1]);ctx.restore();
+      if(cells&&!REDUCED&&h>.12){pRound(ctx,c.dp,RAD[c.d]||3,Math.min(1.6,h*1.8),time,hash(c.n.id)%997);ctx.strokeStyle=rgba(col,.35+.5*h);ctx.lineWidth=1.2;ctx.stroke();}}}
+  // ripples (cells) or flashes (blocks) for changes and disk writes as they arrive
+  BM.pulses=BM.pulses.filter(p=>now-p.t0<1700);const seen=new Map();
+  const rip=BM.mode==='live'||BM.mode==='change';for(const p of BM.pulses){if(!rip&&!p.ui)continue;const c=BM.byNode.get(drawnNode(p.node));if(!c||c.d===0||!c.dp)continue;seen.set(c,p);}
+  for(const [c,p] of seen){const q=(now-p.t0)/1700,col=p.io?C.act:p.d>=0?(BM.mode==='live'?C.act:C.pos):C.neg,amp=p.io?.3+.7*p.k:1;
+    if(cells){ctx.save();shape(ctx,c,c.dp);ctx.clip();const R=Math.sqrt(c.A/Math.PI)*1.1,rad=p.d<0?R*(1-q):R*(.08+q);ctx.beginPath();ctx.arc(c.cen[0],c.cen[1],Math.max(1,rad),0,7);ctx.lineWidth=1.5+2.5*(1-q);ctx.strokeStyle=rgba(col,(1-q)*.75*amp);ctx.stroke();ctx.restore();continue;}
+    if(c.box){ctx.globalAlpha=(1-q)*.8*amp;ctx.strokeStyle=col;ctx.lineWidth=1.5;ctx.strokeRect(c.x+1.5,c.y+1.5,c.w-3,c.h-3);ctx.globalAlpha=1;continue;}
+    ctx.globalAlpha=(1-q)*.45*amp;ctx.fillStyle=col;ctx.fillRect(c.x+1,c.y+1,c.w-2,c.h-2);ctx.globalAlpha=(1-q)*amp;ctx.strokeStyle=col;ctx.lineWidth=2;const o=q*6;ctx.strokeRect(c.x+1-o,c.y+1-o,c.w-2+2*o,c.h-2+2*o);ctx.globalAlpha=1;}
+  let pairs=null;if(BM.mode==='links'){pairs=linkPairs();let mx=1;for(const p of pairs)mx=Math.max(mx,p.bytes);
+    for(const p of pairs){const a=p.a.cen,b=p.b.cen,k=ctrl(a,b);ctx.beginPath();ctx.moveTo(a[0],a[1]);ctx.quadraticCurveTo(k[0],k[1],b[0],b[1]);ctx.lineCap='round';
+      ctx.lineWidth=2+7*Math.sqrt(p.bytes/mx);ctx.strokeStyle=rgba(C.surface,.55);ctx.stroke();ctx.lineWidth=1+5*Math.sqrt(p.bytes/mx);ctx.strokeStyle=C.share;if(!REDUCED){ctx.setLineDash([10,7]);ctx.lineDashOffset=-time*24;}ctx.stroke();ctx.setLineDash([]);
+      for(const e of [a,b]){ctx.beginPath();ctx.arc(e[0],e[1],3.5,0,7);ctx.fillStyle=C.share;ctx.fill();}p.mid=bez(a,b,.5);}}
+  // labels
+  ctx.textBaseline='middle';
+  for(const L of BM.labs||[]){if(L.pill){ctx.beginPath();const [x0,y0,x1,y1]=L.pill;if(ctx.roundRect)ctx.roundRect(x0,y0,x1-x0,y1-y0,7);else ctx.rect(x0,y0,x1-x0,y1-y0);ctx.fillStyle=rgba(C.surface,.86);ctx.fill();if(L.full){ctx.strokeStyle=C.crit;ctx.lineWidth=1;ctx.stroke();}}
+    for(const it of L.items){if(!it||!it.t)continue;ctx.font=it.font;ctx.textAlign=it.al||'center';if('letterSpacing' in ctx)ctx.letterSpacing=it.sp?'1.1px':'0px';ctx.globalAlpha=it.a||1;
+      if(L.halo){ctx.lineWidth=3;ctx.lineJoin='round';ctx.strokeStyle=rgba(lum(it.col)>.36?'#000':'#fff',.35);ctx.strokeText(it.t,it.x,it.y);}ctx.fillStyle=it.col;ctx.fillText(it.t,it.x,it.y);ctx.globalAlpha=1;}}
+  if('letterSpacing' in ctx)ctx.letterSpacing='0px';ctx.textAlign='left';
+  if(pairs){ctx.font=`500 11px ${getComputedStyle(document.documentElement).getPropertyValue('--font-mono')||'monospace'}`;ctx.textAlign='center';
+    for(const p of pairs){if(!p.mid)continue;const t=fmtB(p.bytes)+' shared',w=ctx.measureText(t).width;ctx.beginPath();if(ctx.roundRect)ctx.roundRect(p.mid[0]-w/2-6,p.mid[1]-9,w+12,18,9);else ctx.rect(p.mid[0]-w/2-6,p.mid[1]-9,w+12,18);ctx.fillStyle=rgba(C.surface,.92);ctx.fill();ctx.strokeStyle=C.share;ctx.lineWidth=1;ctx.stroke();ctx.fillStyle=C.share;ctx.fillText(t,p.mid[0],p.mid[1]+.5);}ctx.textAlign='left';}
+  const hl=BM.hl||BM.hov,hc=hl&&BM.byNode.get(hl);if(hc&&hc.d>0&&!BM.wall){shape(ctx,hc,hc.dp||hc.poly);ctx.strokeStyle=C.ink;ctx.lineWidth=2;ctx.stroke();}
 }
+function ctrl(a,b){const mx=(a[0]+b[0])/2,my=(a[1]+b[1])/2,dx=b[0]-a[0],dy=b[1]-a[1];return [mx-dy*.22,my+dx*.22];}
+function bez(a,b,t){const k=ctrl(a,b),u=1-t;return [u*u*a[0]+2*u*t*k[0]+t*t*b[0],u*u*a[1]+2*u*t*k[1]+t*t*b[1]];}
+// btrfs sharing pairs (folders that reference the same blocks), joined between the blocks drawn now
+function linkPairs(){const out=new Map();
+  for(const H of HARV){if(H.status!=='ok')continue;for(const T of H.info.targets){const sh=T.sharing;if(!sh||!Array.isArray(sh.pairs))continue;const O=H.outer.get(T.name)||T;
+    for(const p of sh.pairs){const a=drawnAt(H,O,mapPath(T,O,String(p.a))),b=drawnAt(H,O,mapPath(T,O,String(p.b)));if(!a||!b||a===b)continue;
+      const k=a.n.id<b.n.id?a.n.id+'\n'+b.n.id:b.n.id+'\n'+a.n.id,o=out.get(k)||{a,b,bytes:0};o.bytes+=+p.bytes||0;out.set(k,o);}}}
+  return [...out.values()].filter(p=>p.a.cen&&p.b.cen);}
+function drawnAt(H,O,path){if(!path)return null;const r=findDir(H,O,path),c=r&&BM.byNode.get(drawnNode(r.node));return c&&c.d>0?c:null;}
+
+/* ---------------------------------------------------------------- frame loop, hit testing, zoom */
 let bmRaf=0;function bmSchedule(){if(!bmRaf)bmRaf=requestAnimationFrame(bmFrame);}
 function bmFrame(){bmRaf=0;if(current()!=='blockmap'||!$('#bm-cv'))return;const now=performance.now();
-  if(BM.needLayout||(BM.sizesDirty&&now-BM.lastLayout>600))bmRelayout();
-  if(BM.mode==='activity'&&now-(BM.actAt||0)>240)BM.needBase=true;    // rates decay: repaint ~4 times a second
-  if(BM.needBase){bmPaintBase();BM.actAt=now;}
-  bmCompose();
-  if(BM.pulses.length||BM.anim||BM.sizesDirty)bmSchedule();else if(BM.mode==='activity'&&!BM.actTm)BM.actTm=setTimeout(()=>{BM.actTm=0;bmSchedule();},250);}
-function bmHit(e){const cv=$('#bm-cv'),bb=cv.getBoundingClientRect(),x=e.clientX-bb.left,y=e.clientY-bb.top;let best=null;for(const r of BM.rects){if(x>=r.x&&x<r.x+r.w&&y>=r.y&&y<r.y+r.h)best=r;}return best;}
+  if(BM.playing){const dt=Math.min(.1,(now-(BM.playAt||now))/1000);BM.t=Math.min(180,BM.t+dt*15);if(BM.t>=180)BM.playing=false;BM.sizesDirty=true;timeUi();}BM.playAt=now;
+  const live=BM.mode==='live'||BM.mode==='links'||BM.wall;
+  if(live&&!BM.anim&&now-BM.drawAt<32){bmSchedule();return;}    // ~30 frames a second is plenty for heat and ripples
+  if(BM.needLayout)bmRelayout();else if(BM.layout==='cells'&&BM.moving)bmRelayout(true);else if(BM.sizesDirty&&now-BM.lastLayout>(BM.mode==='time'?0:600))bmRelayout(true);
+  if(BM.mode==='live'&&now-BM.baseAt>1000)BM.needBase=true;
+  if(BM.needBase){bmPaintBase();BM.baseAt=now;}
+  bmCompose(now);BM.drawAt=now;
+  if(live||BM.pulses.length||BM.anim||BM.sizesDirty||BM.moving||BM.playing)bmSchedule();}
+function bmHit(e){const cv=$('#bm-cv'),bb=cv.getBoundingClientRect(),x=e.clientX-bb.left,y=e.clientY-bb.top;let best=null;
+  for(const c of BM.cells){if(c.d===0)continue;const b=c.bb;if(x<b[0]||x>b[2]||y<b[1]||y>b[3])continue;if(BM.layout==='blocks'||pIn(c.poly,x,y))best=c;}return best;}
+function cellRect(c){return c?{x:c.bb[0],y:c.bb[1],w:c.bb[2]-c.bb[0],h:c.bb[3]-c.bb[1]}:null;}
 function zoomTo(n,fromRect){if(!n)return;untip();BM.focus=n;BM.tap=null;BM.anim=fromRect&&!REDUCED?{from:fromRect,t0:performance.now()}:null;BM.needLayout=true;BM.hov=null;bmSchedule();renderCrumbs();if(n.kind==='dir')deepen(n);}
 function renderCrumbs(){const c=$('#bm-crumbs');if(!c)return;c.replaceChildren();const chain=[];let t=BM.focus;while(t){chain.unshift(t);t=t.p;}
   const up=$('#bm-up');if(up){up.disabled=!BM.focus.p;up.title=BM.focus.p?'Up to '+nameOf(BM.focus.p)+' (Esc)':'';}requestAnimationFrame(()=>{c.scrollLeft=c.scrollWidth;});
-  chain.forEach((n,i)=>{if(i)c.append(el('span',{class:'sep',text:'›'}));if(i===chain.length-1)c.append(el('b',{text:`${nameOf(n)} · ${fmtB(n.t)}`}));else c.append(el('button',{type:'button',text:nameOf(n),onclick:()=>zoomTo(n)}));});
+  chain.forEach((n,i)=>{if(i)c.append(el('span',{class:'sep',text:'›'}));if(i===chain.length-1)c.append(el('b',{text:`${nameOf(n)} · ${fmtB(sizeOf(n))}`}));else c.append(el('button',{type:'button',text:nameOf(n),onclick:()=>zoomTo(n)}));});
   if(BM.focus.loading)c.append(el('span',{class:'ld',text:'loading deeper folders…'}));else if(BM.focus.deepErr)c.append(el('span',{class:'ld err',text:'could not load deeper: '+maskText(BM.focus.deepErr)}));}
+
+/* ---------------------------------------------------------------- side panel: stories, raw stream, lens lists */
 function feedRow(e,fresh){
   const p=e.kind==='scan'?tgName(e.O.name)+' · scan':tail(maskPath(e.path),2);
-  const b=el('button',{type:'button',class:'ev'+(fresh?' fresh':'')+(e.replay?' old':''),title:e.kind==='scan'?'':maskPath(e.path),onclick:()=>{const r=findDir(e.H,e.O,e.path);let n=r?r.node:null;if(n&&n.p&&n.p.kind==='dir'&&r.rest.length===0&&!(n.kids&&n.kids.length))n=n.p;if(n){if(current()!=='blockmap')location.hash='#blockmap';zoomTo(n);}}},
+  const b=el('button',{type:'button',class:'ev'+(fresh?' fresh':'')+(e.replay?' old':''),title:e.kind==='scan'?'':maskPath(e.path),onclick:()=>goTo(e.H,e.O,e.path)},
     el('span',{class:'tm',text:fmtHMS(e.t)}),el('i',{class:'dot',style:`background:${hostColor(e.H)}`}),el('span',{class:'pa',text:p}),
     el('span',{class:'dv',style:e.db==null?'':`color:${e.db>=0?'var(--crit-ink)':'var(--accent-ink)'}`,text:e.kind==='scan'?fmtSpan(e.dur):fmtD(e.db)}),
     el('span',{class:'src '+(e.src==='scan'?'scan':e.src==='btrfs'?'btrfs':e.src==='lvm'?'lvm':''),text:e.src==='fanotify'?'fan':e.src||'?'}));
-  return b;
-}
+  return b;}
+function goTo(H,O,path){const r=findDir(H,O,path);let n=r?r.node:null;if(n&&n.p&&n.p.kind==='dir'&&r.rest.length===0&&!(n.kids&&n.kids.length))n=n.p;if(n){if(current()!=='blockmap')location.hash='#blockmap';zoomTo(n);}}
 let FEED_PAUSE=false;
-function flushFeed(){const f=$('#bm-feed');if(!f||FEED_PAUSE){if(!f)FEEDQ.length=0;return;}if(!FEEDQ.length)return;
+function flushFeed(){const f=$('#bm-feed');if(!f||FEED_PAUSE||BM.side!=='raw'){if(!f||BM.side!=='raw')FEEDQ.length=0;return;}if(!FEEDQ.length)return;
   const take=FEEDQ.splice(0,FEEDQ.length).slice(-80);const frag=document.createDocumentFragment();for(let i=take.length-1;i>=0;i--)frag.append(feedRow(take[i],!take[i].replay&&take.length<20));
   f.prepend(frag);while(f.children.length>150)f.lastChild.remove();renderConn();}
 function renderConn(){const c=$('#bm-conn');if(!c)return;c.replaceChildren();for(const H of HARV){if(H.status==='duplicate')continue;const st=H.status!=='ok'?'down':H.sse==='open'?'open':'wait';c.append(el('div',null,el('i',{class:'cdot '+st}),el('b',{text:hostName(H)}),el('span',{text:H.status!=='ok'?'offline':H.sse==='open'?(H.info.live&&H.info.live.source||'live'):H.sse}),el('span',{text:liveRate(H).toFixed(1)+'/min'})));}}
+function hlNode(H,O,path){const r=findDir(H,O,path);return r?drawnNode(r.node):null;}
+function storyRow(s){const now=Date.now(),ago=Math.round((now-s.last)/1000),rate=!s.n&&s.ioN>0,val=rate?(s.io>=s.rd?fmtRate(s.io/s.ioN):fmtRate(s.rd/s.ioN)+' read'):fmtD(s.db);
+  const why=storyReason(s),cls=why==='fstrim returned'?'trim':/download|import/.test(why)?'dl':'',who=s.who?(HIDE?'a process':s.who)+(s.ctr&&!HIDE?' · '+s.ctr:''):null;
+  const b=el('button',{type:'button',class:'story',onclick:()=>goTo(s.H,s.O,s.path),onpointerenter:()=>{BM.hl=hlNode(s.H,s.O,s.path);bmSchedule();},onpointerleave:()=>{BM.hl=null;bmSchedule();}},
+    el('i',{class:'dot',style:`background:${hostColor(s.H)}`}),el('span',{class:'nm',text:tail(maskPath(s.path),2)}),el('span',{class:'dv'+(rate?'':s.db>0?' pos':s.db<0?' neg':''),text:val}),
+    el('span',{class:'sub'},el('span',{class:'src st '+cls,text:why}),who?el('span',{class:'who',text:who}):null,el('span',{text:(s.n+s.ioN)+' event'+(s.n+s.ioN===1?'':'s')}),el('span',{text:ago<2?'now':ago+' s ago'})));
+  return b;}
+function renderStories(){const box=$('#bm-stories');if(!box||FEED_PAUSE)return;const now=Date.now(),rows=[...STORY.values()].filter(s=>now-s.last<60000).sort((a,b)=>b.last-a.last).slice(0,16);
+  box.replaceChildren(...(rows.length?rows.map(storyRow):[el('p',{class:'side-note',text:'Nothing changed in the last minute. Lines appear here as change and disk-write events arrive.'})]));renderConn();}
+const storiesLater=throttle(()=>{if(current()==='blockmap'&&BM.side==='stories')renderStories();},1000);
+function lensRow(name,val,sub,cls,onclick,onenter){return el('button',{type:'button',class:'lrow2'+(cls?' '+cls:''),onclick,onpointerenter:onenter,onpointerleave:()=>{BM.hl=null;bmSchedule();}},el('span',{class:'nm',text:name}),el('span',{class:'v',text:val}),sub?el('span',{class:'sub',text:sub}):null);}
+function renderBmSide(){const box=$('#bm-side');if(!box)return;box.replaceChildren();const m=BM.mode,ph=(t,s)=>el('div',{class:'ph'},el('h2',{text:t}),s?el('span',{class:'sub',text:s}):null);
+  if(m==='rings'){box.append(ph('Fastest growing','7 days'));
+    if(GROW.status!=='ok'){box.append(el('p',{class:'side-note',text:GROW.status==='none'?'Rings need history: this atlas has no metrics_url.':GROW.status==='error'?'History failed: '+maskText(GROW.err):'Loading 30 days of folder history…'}));return;}
+    const recs=[];for(const [id,r] of GROW.by){const n=findById(id);if(n&&n.kind==='dir'&&!n.isRoot&&n.depth>0)recs.push({n,r});}
+    recs.sort((a,b)=>b.r.d7-a.r.d7);box.append(el('p',{class:'side-note',text:'Ring thickness is bytes added, on a square-root scale; the outer ring is the last day, then the week, then the month. History since '+fmtSince(GROW.first)+'.'}));
+    const list=el('div',{class:'list2'});for(const {n,r} of recs.slice(0,12))list.append(lensRow(nameOf(n),fmtD(r.d7),maskPath(n.p&&n.p.path||'')+' · '+fmtD(r.slope)+'/day',r.d7<0?'neg':'pos',()=>zoomTo(n.p&&n.p.kind!=='root'?n.p:n),()=>{BM.hl=drawnNode(n);bmSchedule();}));box.append(list);
+    const shr=recs.filter(x=>x.r.d7<-GiB/20).sort((a,b)=>a.r.d7-b.r.d7).slice(0,5);if(shr.length){box.append(ph('Shrinking','7 days'));const l2=el('div',{class:'list2'});for(const {n,r} of shr)l2.append(lensRow(nameOf(n),fmtD(r.d7),maskPath(n.p&&n.p.path||''),'neg',()=>zoomTo(n.p||n),()=>{BM.hl=drawnNode(n);bmSchedule();}));box.append(l2);}
+    return;}
+  if(m==='time'){box.append(ph('When disks fill','at the current pace'));
+    const rows=fsRows().filter(r=>!(r.f.nested));const ms=rows.map(r=>({r,m:fsModel(r.f)})).filter(x=>x.m).sort((a,b)=>a.m.tFull-b.m.tFull);
+    box.append(el('p',{class:'side-note',text:'Drag the slider or press play. Free space drains at each filesystem’s df trend and folders grow at theirs; a full filesystem turns red.'+(BM.applied.size?` Includes ${BM.applied.size} reclaim preview${BM.applied.size>1?'s':''}.`:'')}));
+    const list=el('div',{class:'list2'});for(const {r,m} of ms){const full=BM.t>=m.tFull;list.append(lensRow(hostName(r.H)+' · '+maskPath(r.fs.mount),m.slope==null?'no trend yet':m.slope<=0?'not filling':isFinite(m.tFull)&&m.tFull<3650?fmtDay(m.tFull):'over 10 years',
+      pct(m.usedAt(BM.t))+' used on the slider date'+(m.slope?' · '+fmtD(m.slope)+'/day':''),full?'full':'',()=>zoomTo(r.f),()=>{BM.hl=BM.byNode.has(r.f)?r.f:null;bmSchedule();}));}box.append(list);return;}
+  if(m==='links'){box.append(ph('Blocks held twice','btrfs sharing pass'));
+    const pairs=[];for(const H of HARV){if(H.status!=='ok')continue;for(const T of H.info.targets)if(T.sharing&&Array.isArray(T.sharing.pairs))for(const p of T.sharing.pairs)pairs.push({H,T,p});}
+    if(!pairs.length){box.append(el('p',{class:'side-note',text:'No target has a sharing pass. Turn it on for a btrfs target to see which folders share blocks.'}));return;}
+    box.append(el('p',{class:'side-note',text:'du counts a shared block in every folder that references it, so these folders add up to more than the disk holds. Solid is what only that folder holds: what deleting it frees.'}));
+    pairs.sort((a,b)=>b.p.bytes-a.p.bytes);const list=el('div',{class:'list2'});
+    for(const {H,T,p} of pairs.slice(0,16)){const O=H.outer.get(T.name)||T;list.append(lensRow(tail(maskPath(String(p.a)),2)+' ↔ '+tail(maskPath(String(p.b)),2),fmtB(+p.bytes||0),hostName(H)+' · '+tgName(T.name),'link',()=>goTo(H,O,mapPath(T,O,String(p.a))),()=>{BM.hl=hlNode(H,O,mapPath(T,O,String(p.a)));bmSchedule();}));}
+    box.append(list);return;}
+  if(m==='reclaim'){refreshReclaim(true);box.append(ph('What you could get back',RECL.length+' candidates'));
+    const sel=RECL.filter(r=>BM.applied.has(r.key)),tot=(sel.length?sel:RECL).reduce((a,r)=>a+r.bytes,0);
+    box.append(el('p',{class:'side-note',text:'Tick an item to preview it on the map and in the time machine. Nothing runs from here.'}));
+    const big=el('div',{class:'rc-sum'},el('b',{text:fmtB(tot)}),el('span',{text:sel.length?' selected':' across '+RECL.length+' candidates'}));box.append(big);
+    for(const f of new Set(sel.flatMap(it=>it.parts.map(p=>fsOf(p.n))).filter(Boolean))){const m1=fsModel(f);if(!m1||!isFinite(m1.tFull))continue;const m0=fsModel(f,true);
+      box.append(el('p',{class:'side-note',text:`${hostName(f.H)} ${maskPath(f.fs.mount)} fills on ${fmtDay(m1.tFull)}`+(m0&&isFinite(m0.tFull)?` instead of ${fmtDay(m0.tFull)}.`:'.')}));}
+    if(!RECL.length)box.append(el('p',{class:'side-note',text:'Nothing to reclaim: no untrimmed thin-pool blocks over 512 MiB, no VM slack over 1 GiB, and no big folder untouched for 120 days.'}));
+    for(const it of RECL){const id='rc-'+hash(it.key).toString(36),on=BM.applied.has(it.key);
+      const cb=el('input',{type:'checkbox',id,checked:on?true:null,onchange:e=>{if(e.target.checked)BM.applied.add(it.key);else BM.applied.delete(it.key);recomputeWhatif();BM.sizesDirty=true;BM.needBase=true;
+        for(const p of it.parts){const t=drawnNode(p.n);if(t)BM.pulses.push({node:t,d:e.target.checked?-1:1,ui:true,t0:performance.now()});}bmSchedule();renderBmSide();}});
+      const copy=el('button',{type:'button',class:'btn sm',text:'Copy',onclick:e=>{const b=e.currentTarget,done=t=>{b.textContent=t;setTimeout(()=>b.textContent='Copy',1400);};try{navigator.clipboard.writeText(it.cmd).then(()=>done('Copied'),()=>{selectCode(b);done('Select');});}catch(_){selectCode(b);done('Select');}}});
+      box.append(el('div',{class:'rc'+(on?' on':''),onpointerenter:()=>{BM.hl=it.parts[0]?drawnNode(it.parts[0].n):null;bmSchedule();},onpointerleave:()=>{BM.hl=null;bmSchedule();}},
+        cb,el('label',{for:id,text:it.title}),el('span',{class:'v',text:fmtB(it.bytes)}),
+        el('span',{class:'sub'},el('span',{class:'basis '+it.basis,text:it.basisText}),el('span',{text:it.where})),el('span',{class:'sub',text:it.why}),
+        el('span',{class:'cmd'},el('code',{text:it.cmd}),copy)));}
+    return;}
+  // live, change, kind, machine: the event stream, as stories or raw
+  const tabs=seg('Stream',[['stories','Stories'],['raw','Raw']],BM.side,k=>{BM.side=k;store.set('bmSide',k);renderBmSide();});
+  box.append(el('div',{class:'ph'},el('h2',{text:'What’s happening'}),tabs),el('div',{class:'conn',id:'bm-conn'}));
+  if(BM.side==='stories'){box.append(el('p',{class:'side-note',text:'Changes and disk writes folded into one line per folder over the last minute. Reasons are guessed from the path and the kind of event; the process is named where the harvester can see it.'}),
+    el('div',{class:'feed',id:'bm-stories','aria-live':'off',onpointerenter:()=>{FEED_PAUSE=true;},onpointerleave:()=>{FEED_PAUSE=false;renderStories();}}));renderStories();}
+  else{const feed=el('div',{class:'feed',id:'bm-feed','aria-live':'off',onpointerenter:()=>{FEED_PAUSE=true;},onpointerleave:()=>{FEED_PAUSE=false;flushFeed();}});
+    box.append(el('p',{class:'side-note',text:'Folders whose size changed, newest first, from every harvester’s event stream. Dimmed rows were replayed from before this page opened. Click a row to zoom to it.'}),feed);
+    FEEDQ.length=0;const frag=document.createDocumentFragment();for(const e of FEED.slice(0,150))frag.append(feedRow(e,false));feed.append(frag);}
+  renderConn();}
+// the block drawn for a node: itself, or its nearest ancestor on screen
+function drawnNode(n){for(let t=n;t;t=t.p)if(BM.byNode.has(t))return t;return null;}
+function selectCode(b){const code=b.parentElement.querySelector('code');if(!code)return;const r=document.createRange();r.selectNodeContents(code);const s=getSelection();s.removeAllRanges();s.addRange(r);}
+
+/* ---------------------------------------------------------------- time machine UI */
+function timeUi(){const s=$('#bm-tslider');if(s&&+s.value!==Math.round(BM.t))s.value=Math.round(BM.t);const st=$('#bm-stamp');
+  if(st){const full=fsRows().filter(r=>!r.f.nested).map(r=>({r,m:fsModel(r.f)})).filter(x=>x.m&&BM.t>=x.m.tFull).map(x=>hostName(x.r.H)+' '+maskPath(x.r.fs.mount));
+    st.replaceChildren(el('b',{text:BM.t===0?'Today':fmtDay(BM.t)}),el('small',{text:(BM.t===0?'':(BM.t>0?'+':'−')+Math.abs(Math.round(BM.t))+' days')+(full.length?' · full: '+full.join(', '):'')}));}
+  const cur=$('#bm-tcur');if(cur&&BM.tX){const x=BM.tX(BM.t);cur.setAttribute('x1',x);cur.setAttribute('x2',x);}
+  const pb=$('#bm-play');if(pb){pb.setAttribute('aria-label',BM.playing?'Pause':'Play');pb.textContent=BM.playing?'❚❚':'▶';}
+  timeSideLater();}
+const timeSideLater=throttle(()=>{if(BM.mode==='time')renderBmSide();},600);
+function drawTimeChart(){const svg=$('#bm-tchart');if(!svg)return;const w=Math.max(220,svg.clientWidth||600),h=96,pl=34,pr=10,pt=8,pb=16,X0=-30,X1=180;
+  svg.setAttribute('viewBox',`0 0 ${w} ${h}`);const X=d=>pl+(d-X0)/(X1-X0)*(w-pl-pr),Y=u=>pt+(1-u)*(h-pt-pb);BM.tX=X;svg.replaceChildren();
+  for(const u of [0,.5,1]){svg.append(sv('line',{x1:pl,x2:w-pr,y1:Y(u),y2:Y(u),stroke:'var(--hair)','stroke-dasharray':u===1?'':'2 3'}),sv('text',{x:pl-5,y:Y(u)+3.5,'text-anchor':'end',class:'lbl','font-size':10},(u*100)+'%'));}
+  for(const d of [0,60,120,180])svg.append(sv('text',{x:X(d),y:h-3,'text-anchor':d===180?'end':'middle',class:'lbl','font-size':10},d===0?'today':fmtDay(d).replace(/ \d{4}$/,'')));
+  const labels=[];
+  for(const r of fsRows()){if(r.f.nested)continue;const m=fsModel(r.f);if(!m||!m.slope)continue;let dp='';for(let d=X0;d<=X1;d+=2)dp+=(d===X0?'M':'L')+X(d).toFixed(1)+' '+Y(m.usedAt(d)).toFixed(1);
+    svg.append(sv('path',{d:dp,fill:'none',stroke:hostColor(r.H),'stroke-width':1.6,opacity:.9}));if(m.tFull<=X1){svg.append(sv('circle',{cx:X(m.tFull),cy:Y(1),r:3.5,fill:'var(--crit)'}));labels.push({x:X(m.tFull),t:maskPath(r.fs.mount)+' · '+fmtDay(m.tFull).replace(/ \d{4}$/,'')});}}
+  labels.sort((a,b)=>a.x-b.x);let end=-1e9,row=0;for(const l of labels){const est=l.t.length*5.8,anchor=l.x+est+6>w?'end':'start',x=anchor==='end'?l.x-6:l.x+6,st=anchor==='end'?x-est:x;row=st<end+4?row+1:0;end=st+est;
+    svg.append(sv('text',{x,y:Y(1)+13+row*12,'text-anchor':anchor,fill:'var(--crit-ink)','font-size':10},l.t));}
+  svg.append(sv('line',{x1:X(0),x2:X(0),y1:pt,y2:h-pb,stroke:'var(--muted)','stroke-dasharray':'2 2'}),sv('line',{id:'bm-tcur',x1:X(BM.t),x2:X(BM.t),y1:pt-4,y2:h-pb,stroke:'var(--ink)','stroke-width':1.5}));}
+
+/* ---------------------------------------------------------------- wall mode */
+let WAKE=null;
+async function setWall(on){BM.wall=on;document.body.classList.toggle('bm-wall',on);
+  if(on){BM.wallPrev=BM.mode;if(BM.mode!=='live')setMode('live');try{await document.documentElement.requestFullscreen?.();}catch(e){}try{WAKE=await navigator.wakeLock?.request('screen');}catch(e){WAKE=null;}}
+  else{if(BM.wallPrev&&BM.wallPrev!==BM.mode)setMode(BM.wallPrev);try{if(document.fullscreenElement)await document.exitFullscreen();}catch(e){}try{await WAKE?.release();}catch(e){}WAKE=null;}
+  BM.needLayout=true;BM.base=null;bmSchedule();}
+document.addEventListener('fullscreenchange',()=>{if(!document.fullscreenElement&&BM.wall)setWall(false);});
+document.addEventListener('visibilitychange',async()=>{if(BM.wall&&document.visibilityState==='visible'&&!WAKE){try{WAKE=await navigator.wakeLock?.request('screen');}catch(e){}}});
+
+/* ---------------------------------------------------------------- the view */
+function setMode(k){BM.mode=k;store.set('bmMode',k);if(k!=='time'){BM.t=0;BM.playing=false;}
+  for(const b of document.querySelectorAll('#bm-lens button'))b.setAttribute('aria-pressed',String(b.dataset.k===k));
+  const tb=$('#bm-timebar');if(tb)tb.hidden=k!=='time';if(k==='rings'||k==='time')loadGrowth();if(k==='reclaim')refreshReclaim(true);
+  BM.needLayout=true;BM.base=null;bmSchedule();bmLegend();renderBmSide();if(k==='time')requestAnimationFrame(()=>{drawTimeChart();timeUi();});}
 function renderBlockmap(){
   const v=$('#v-blockmap');untip();v.replaceChildren();
   if(FATAL){v.append(FATAL());return;}
-  v.append(el('div',{class:'view-head'},el('div',null,el('h1',{text:'Block map of every disk'}),el('p',{text:'Every block is a folder, sized by the blocks it holds, nested machine › filesystem › target › folder. A hypervisor’s thin pool nests pool › guest › disk, and a VM that runs its own harvester is drawn inside its disks. Click a block to zoom in (on a touch screen: tap to inspect, tap again to zoom). Up, Esc, right-click or the trail zoom out. Blocks flash as changes and disk writes arrive.'}),el('p',{class:'ps',text:'Tap a block to inspect it, tap it again to zoom in. ↑ Up goes back.'})),el('span',{class:'vh-chip'},histChip())));
+  BM.side=store.get('bmSide')==='raw'?'raw':'stories';
+  v.append(el('div',{class:'view-head'},el('div',null,el('h1',{text:'Block map of every disk'}),el('p',{text:'Every block is a folder, sized by the blocks it holds: machine › filesystem › target › folder, with a hypervisor’s thin pool as pool › guest › disk and a VM that runs its own harvester drawn inside its disks. Lenses show what is happening: heat for writes, rings for growth, a time machine, hard links and what you could reclaim. Click a block to zoom in (on a touch screen: tap to inspect, tap again to zoom). Up, Esc, right-click or the trail zoom out.'}),el('p',{class:'ps',text:'Tap a block to inspect it, tap it again to zoom in. ↑ Up goes back.'})),el('span',{class:'vh-chip'},histChip())));
   const legend=el('div',{class:'legend',id:'bm-legend'});
-  const ctl=el('div',{class:'bm-ctl'},
-    el('span',{class:'eyebrow',text:'Colour'}),seg('Colour',[['change','Change'],['activity','Activity'],['kind','Kind'],['host','Machine'],['share','Sharing']],BM.mode,k=>{BM.mode=k;BM.needLayout=true;bmSchedule();bmLegend();}),
-    el('span',{class:'eyebrow',text:'Size'}),seg('Size',[['true','True size'],['equal','Equal machines']],BM.equal?'equal':'true',k=>{BM.equal=k==='equal';BM.needLayout=true;bmSchedule();}),
-    check('Free space',BM.free,c=>{BM.free=c;BM.needLayout=true;bmSchedule();}),
+  const lens=seg('Lens',LENSES,BM.mode,k=>setMode(k));lens.id='bm-lens';for(const b of lens.children)b.dataset.k=LENSES[[...lens.children].indexOf(b)][0];
+  const ctl=el('div',{class:'bm-ctl'},lens,
+    seg('Layout',[['cells','Cells'],['blocks','Blocks']],BM.layout,k=>{BM.layout=k;store.set('bmLayout',k);BM.cs.clear();BM.needLayout=true;BM.base=null;bmSchedule();}),
+    seg('Machines',[['balanced','Balanced'],['true','True size'],['equal','Equal']],BM.size,k=>{BM.size=k;store.set('bmSize',k);BM.needLayout=true;bmSchedule();}),
+    check('Free space',BM.free,c=>{BM.free=c;BM.cs.clear();BM.needLayout=true;bmSchedule();}),
     check('Cushions',BM.cushion,c=>{BM.cushion=c;BM.needBase=true;bmSchedule();}));
-  const cv=el('canvas',{id:'bm-cv',role:'img','aria-label':'Treemap of all storage. Use the trail above to navigate.'});
+  const cv=el('canvas',{id:'bm-cv',role:'img','aria-label':'Map of all storage. Use the trail above to navigate.'});
   const up=el('button',{type:'button',class:'btn sm',id:'bm-up','aria-label':'Zoom out one level',onclick:()=>{if(BM.focus.p)zoomTo(BM.focus.p);}},'↑ Up');
-  const main=el('div',{class:'panel bm-main'},el('div',{class:'bm-nav'},up,el('nav',{class:'crumbs',id:'bm-crumbs','aria-label':'Zoom trail'})),cv,ctl,legend);
-  const feed=el('div',{class:'feed',id:'bm-feed','aria-live':'off',onpointerenter:()=>{FEED_PAUSE=true;},onpointerleave:()=>{FEED_PAUSE=false;flushFeed();}});
-  const side=el('div',{class:'panel'},el('div',{class:'ph'},el('h2',{text:'Change stream'}),el('span',{class:'sub',text:'hover to pause'})),el('div',{class:'conn',id:'bm-conn'}),
-    el('p',{class:'side-note',text:'Folders whose size changed, newest first, from every harvester’s event stream. Dimmed rows were replayed from before this page opened. Click a row to zoom to it.'}),feed);
+  const wallBtn=el('button',{type:'button',class:'btn sm',title:'Full screen, live, names off, screen kept awake',onclick:()=>setWall(!BM.wall)},'Wall mode');
+  const exitWall=el('button',{type:'button',class:'btn sm bm-wall-exit',onclick:()=>setWall(false)},'Exit wall mode');
+  const slider=el('input',{type:'range',id:'bm-tslider',min:-30,max:180,step:1,value:Math.round(BM.t),'aria-label':'Days from today',oninput:e=>{BM.t=+e.target.value;BM.playing=false;BM.sizesDirty=true;bmSchedule();timeUi();}});
+  const play=el('button',{type:'button',class:'btn sm play',id:'bm-play','aria-label':'Play',onclick:()=>{BM.playing=!BM.playing;if(BM.playing&&BM.t>=179)BM.t=-30;BM.playAt=performance.now();bmSchedule();timeUi();}},'▶');
+  const timebar=el('div',{class:'bm-time',id:'bm-timebar',hidden:BM.mode!=='time'},el('div',{class:'bm-stamp',id:'bm-stamp'}),el('div',{class:'bm-trow'},play,el('div',{class:'bm-tcol'},slider,sv('svg',{id:'bm-tchart',role:'img','aria-label':'Used space per filesystem from 30 days ago to 180 days ahead'}))));
+  const main=el('div',{class:'panel bm-main'},el('div',{class:'bm-nav'},up,el('nav',{class:'crumbs',id:'bm-crumbs','aria-label':'Zoom trail'}),wallBtn),cv,exitWall,timebar,ctl,legend);
+  const side=el('div',{class:'panel bm-side',id:'bm-side'});
   v.append(el('div',{class:'bm-layout'},main,side));
-  FEEDQ.length=0;const frag=document.createDocumentFragment();for(const e of FEED.slice(0,150))frag.append(feedRow(e,false));feed.append(frag);renderConn();
   BM.on=true;BM.needLayout=true;BM.base=null;if(!BM.focus||(BM.focus!==ROOT&&!findById(BM.focus.id)))BM.focus=ROOT;
-  renderCrumbs();bmLegend();bmSchedule();
-  cv.addEventListener('pointermove',e=>{if(e.pointerType==='touch')return;const r=bmHit(e);if(!r){untip();return;}if(BM.hov!==r.n){BM.hov=r.n;bmSchedule();}tip(e,bmTip(r.n));});
+  renderCrumbs();bmLegend();renderBmSide();bmSchedule();if(BM.mode==='rings'||BM.mode==='time')loadGrowth();if(BM.mode==='time')requestAnimationFrame(()=>{drawTimeChart();timeUi();});
+  cv.addEventListener('pointermove',e=>{if(e.pointerType==='touch'||BM.wall)return;const r=bmHit(e);if(!r){if(BM.hov){BM.hov=null;bmSchedule();}untip();return;}if(BM.hov!==r.n){BM.hov=r.n;bmSchedule();}tip(e,bmTip(r.n));});
   cv.addEventListener('pointerleave',e=>{if(e.pointerType==='touch')return;BM.hov=null;bmSchedule();untip();});
-  cv.addEventListener('click',e=>{const r=bmHit(e);if(!r)return;
+  cv.addEventListener('click',e=>{if(BM.wall)return;const r=bmHit(e);if(!r)return;
     // touch: the first tap on a block shows its card, a second tap on the same block zooms
     const te=tapEv(e);if(te.pointerType==='touch'&&BM.tap!==r.n){BM.tap=r.n;BM.hov=r.n;bmSchedule();tip(te,bmTip(r.n),cv);return;}BM.tap=null;
     let t=r.n;while(t.p&&t.p!==BM.focus)t=t.p;if(t===BM.focus)return;untip();
-    if(t.kind==='more'||t.kind==='here'){const rr=BM.byNode.get(t.p)||BM.byNode.get(t);if(t.p!==BM.focus)zoomTo(t.p,rr&&rr.n===t.p?rr:null);else deepen(Object.assign(t.p,{deepAt:0}));return;}
-    const canZoom=(t.kids&&t.kids.length)||(t.kind==='dir'&&!t.full&&!t.pending);if(!canZoom)return;const rr=BM.byNode.get(t);zoomTo(t,rr?{x:rr.x,y:rr.y,w:rr.w,h:rr.h}:null);});
-  cv.addEventListener('contextmenu',e=>{if(BM.focus.p){e.preventDefault();zoomTo(BM.focus.p);}});
+    if(t.kind==='more'||t.kind==='here'){if(t.rest)return;const rr=BM.byNode.get(t.p)||BM.byNode.get(t);if(t.p!==BM.focus)zoomTo(t.p,rr&&rr.n===t.p?cellRect(rr):null);else deepen(Object.assign(t.p,{deepAt:0}));return;}
+    const canZoom=(t.kids&&t.kids.length)||(t.kind==='dir'&&!t.full&&!t.pending);if(!canZoom)return;zoomTo(t,cellRect(BM.byNode.get(t)));});
+  cv.addEventListener('contextmenu',e=>{if(BM.focus.p&&!BM.wall){e.preventDefault();zoomTo(BM.focus.p);}});
 }
 function bmTip(n){
-  const rows=[{v:pathOf(n),c:'h'}];const par=n.p;
-  rows.push({v:fmtB(n.t),l:par&&par.t?pct(n.t/par.t)+' of '+nameOf(par):''});
+  const rows=[{v:pathOf(n),c:'h'}];const par=n.p;const s=sizeOf(n);
+  rows.push({v:fmtB(s),l:par&&par.t?pct(s/(sizeOf(par)||1))+' of '+nameOf(par)+(BM.mode==='time'&&BM.t?' on '+fmtDay(BM.t):''):''});
+  if(n.rest){rows.push({l:n.parts.length+' smaller blocks folded into one so the cells stay readable. Switch to Blocks to see each.',c:'m'});return rows;}
   if(n.kind==='host'&&n.offline){rows.push({l:'offline: '+(maskText(n.H.err)||'no answer'),c:'m'});return rows;}
   const lvm=n.kind==='fs'&&n.fs.type==='lvmthin'||n.kind==='unacc'&&n.p.fs&&n.p.fs.type==='lvmthin';
-  if(n.kind==='fs'){const fs=n.fs,mu=metaUse(fs);rows.push({v:fmtB(fs.used),l:lvm?`allocated of ${fmtB(fs.size)} · ${fmtB(fs.avail)} free`:`used of ${fmtB(fs.size)} (df) · ${fmtB(fs.avail)} free`});
+  if(n.kind==='fs'){const fs=n.fs,mu=metaUse(fs),m=fsModel(n);rows.push({v:fmtB(fs.used),l:lvm?`allocated of ${fmtB(fs.size)} · ${fmtB(fs.avail)} free`:`used of ${fmtB(fs.size)} (df) · ${fmtB(fs.avail)} free`});
+    if(m&&m.slope)rows.push({v:fmtD(m.slope)+'/day',l:isFinite(m.tFull)?'fills on '+fmtDay(m.tFull):'not filling'});
     if(lvm&&+fs.provisioned>0)rows.push({v:fmtB(+fs.provisioned),l:`provisioned to volumes, ${(fs.provisioned/(fs.size||1)).toFixed(2)}× the pool`});if(mu!=null)rows.push({v:pct(mu),l:`of ${fmtB(+fs.meta.size)} thin metadata used`});
     if(n.nested){const ni=n.H.nestIn,d=ni&&ni.place.get(fs.id);if(d)rows.push({l:`inside ${hostName(ni.P)} › ${guestLabel(ni.g)} › ${d.key}. Only its scanned folders are drawn: its free space is not allocated in the pool.`,c:'m'});}
     if(n.over>0)rows.push({l:lvm?`Volumes add up to ${fmtB(n.over)} more than the pool allocated: snapshots share blocks with their volume.`:`Files add up to ${fmtB(n.over)} more than df used: they share blocks (see Sharing).`,c:'m'});if(n.unacc.t>0)rows.push({v:fmtB(n.unacc.t),l:lvm?'allocated but in no listed volume':'used but in no target'});}
   if(n.kind==='unacc')rows.push({l:lvm?'pool data allocated minus every listed thin volume: snapshots and volumes the harvester does not list.':'df used minus every target on this filesystem: excluded paths, other users of the disk, metadata, files deleted while open.',c:'m'});
   if(n.kind==='gap')rows.push({l:n.p.nest?'allocated in the thin pool but in none of the guest’s scanned folders: blocks freed inside the guest and not trimmed yet, its filesystem metadata, and paths its harvester does not scan.':'allocated blocks no file in the container accounts for: filesystem metadata, and blocks freed inside the container that are still mapped.',c:'m'});
-  if(n.kind==='free')rows.push({l:'available to unprivileged users (df avail)',c:'m'});
+  if(n.kind==='free'){const m=fsModel(n.p);rows.push({l:'available to unprivileged users (df avail)'+(m&&isFinite(m.tFull)?' · gone on '+fmtDay(m.tFull)+' at the current pace':''),c:'m'});}
   if(n.kind==='reserved')rows.push({l:'neither used nor available: kept back for root by the filesystem',c:'m'});
   if(n.kind==='more')rows.push({l:'smaller folders the tree API pruned. Click to load them.',c:'m'});
   if(n.kind==='here')rows.push({l:'files directly in this folder',c:'m'});
   if(n.pending){const st=n.H.tstate.get(n.T.name);rows.push({l:'tree '+(st&&st.status==='pending'?'waits for the first scan':st&&st.status==='error'?'failed: '+maskText(st.err):'is loading')+'. Size from /api/info.',c:'m'});}
-  if(n.kind==='dir'&&n.v){const g=n.v==='guest'?guestOf(n):null,d=n.v==='disk'?diskOf(n):null,io=ioAgg().get(n.id);
+  const agg=ioAgg(),rate=rateOf(n,agg,Date.now());if(rate>=KiB)rows.push({key:actColor(heatOf(rate)),sw:1,v:fmtRate(rate),l:'changing now (writes and changes over the last 20 s)'});
+  if(n.who&&Date.now()/1000-n.whoAt<600)rows.push({v:HIDE?'a process':n.who,l:'last writer'+(n.ctr&&!HIDE?' · container '+n.ctr:'')+' · '+fmtAgo(n.whoAt)});
+  if(n.kind==='dir'&&n.v){const g=n.v==='guest'?guestOf(n):null,d=n.v==='disk'?diskOf(n):null,io=agg.get(n.id);
     if(n.v==='pool'){const fs=fsOf(n);rows.push({l:`thin pool: ${n.c.length} guests`+(fs&&fs.fs?` · pool ${pct(fs.fs.used/(fs.fs.size||1))} allocated`:''),c:'m'});}
     if(n.v==='guest')rows.push({l:(n.g==='lxc'?'container':n.g==='qemu'?'virtual machine':'volumes no guest refers to')+(g&&g.template?', template':'')+(n.on?', running':', stopped')+(n.vmid!=null&&!HIDE?' · id '+n.vmid:''),c:'m'});
     if(n.v==='disk'&&n.prov)rows.push({v:fmtB(n.t),l:`allocated of ${fmtB(n.prov)} provisioned, ${pct(n.t/n.prov)}`});
-    if(io)rows.push({key:actColor(actTr(io.w)),sw:1,v:fmtRate(io.w),l:'writing · '+fmtRate(io.r)+' reading'});
+    if(io)rows.push({key:actColor(heatOf(io.w)),sw:1,v:fmtRate(io.w),l:'writing · '+fmtRate(io.r)+' reading'});
     if(d)rows.push({l:(HIDE?'':d.lv+' · ')+(d.discard?'discard on: freed blocks go back to the pool':'no discard: freed blocks stay allocated'),c:'m'});
     if(n.v==='disk')rows.push({l:n.nest?'holds '+n.nest.map(f=>hostName(f.H)+' '+maskPath(f.fs.mount)).join(', ')+' (its own harvester)':n.c.length?'the container’s folders, walked from the host':'blocks inside a VM: not scanned from here',c:'m'});}
-  if(BM.mode==='activity'&&n.kind!=='free'&&n.kind!=='reserved'&&n.kind!=='unacc'&&n.kind!=='gap'&&!(n.kind==='dir'&&n.v)){const a=actOf(n,ioAgg(),Date.now());if(a!=null)rows.push({key:actColor(actTr(a)),sw:1,v:fmtRate(a),l:'bytes changed in the last few seconds (live events)'});}
-  if(n.kind!=='free'&&n.kind!=='reserved'&&n.kind!=='unacc'&&n.kind!=='gap'&&!n.pending){const d=bmDelta(n);if(d!=null)rows.push({key:divColor(divTr(d,BM.sc.lo,BM.sc.hi)),sw:1,v:fmtD(d),l:n.kind==='here'?'live since the page opened':bmBasis(n)});}
-  if(n.kind==='dir'){if(n.x!=null)rows.push({v:fmtB(n.x),l:`freed if deleted (${pct(n.t?n.x/n.t:0)})`});
+  if(n.kind!=='free'&&n.kind!=='reserved'&&n.kind!=='unacc'&&n.kind!=='gap'&&!n.pending){
+    if(BM.mode==='change'){const d=bmDelta(n);if(d!=null)rows.push({key:divColor(divTr(d,BM.sc.lo,BM.sc.hi)),sw:1,v:fmtD(d),l:n.kind==='here'?'live since the page opened':bmBasis(n)});}
+    if(BM.mode==='rings'||BM.mode==='time'){const d1=deltaOver(n,1),d7=deltaOver(n,7),d30=deltaOver(n,30);if(d7!=null){rows.push({v:fmtD(d1),l:'last day'},{v:fmtD(d7),l:growSpan()<7?'since '+fmtDay(-growSpan()):'last 7 days'});if(growSpan()>7)rows.push({v:fmtD(d30),l:growSpan()<30?'since '+fmtDay(-growSpan()):'last 30 days'});}
+      const g=growthOf(n);if(g)rows.push({v:fmtD(g)+'/day',l:'trend'+(growRec(n)&&growRec(n).a!==n?' (share of '+nameOf(growRec(n).a)+'’s)':'')});}}
+  if(n.kind==='dir'){if(n.m>0)rows.push({v:fmtAgo(n.m),l:'newest change inside'+(Date.now()/1000-n.m>=COLD?' · cold':''),c:Date.now()/1000-n.m>=COLD?'m':''});
+    if(n.x!=null)rows.push({v:fmtB(n.x),l:`freed if deleted (${pct(n.t?n.x/n.t:0)})`});
     if(!n.v||n.f||n.d)rows.push({l:`${fmtN(n.f)} files · ${fmtN(n.d)} folders`+(n.placeholder?' · known from live changes only':''),c:'m'});
     if(!n.full&&!n.pending&&!n.placeholder)rows.push({l:n.c.length?'some subfolders pruned: zoom in to load them':'subfolders not loaded: zoom in to load them',c:'m'});
     rows.push({l:hostName(n.H)+' · target '+tgName(n.T.name),c:'m'});}
+  if(BM.mode==='reclaim'){const it=RECL.filter(r=>r.parts.some(p=>{for(let t=p.n;t;t=t.p)if(t===n)return true;return false;}));for(const r of it)rows.push({v:fmtB(r.bytes),l:r.title+' · '+r.basisText});}
   return rows;
 }
 function bmLegend(){const l=$('#bm-legend');if(!l)return;l.replaceChildren();
-  const sw=(c,t,extra)=>el('span',null,el('i',{style:`background:${c};${extra||''}`}),t);
-  if(BM.mode==='kind')KINDS.forEach(k=>l.append(sw(kindColor(k.k),k.label)));
-  else if(BM.mode==='host')HARV.filter(h=>h.status==='ok').forEach(h=>l.append(sw(hostColor(h),hostName(h))));
-  else if(BM.mode==='share'){for(const [f,lab] of [[1,'frees all of it'],[0.75,'frees 75%'],[0.5,'50%'],[0.25,'25%'],[0,'frees nothing']])l.append(sw(shareColor(1-f),lab));l.append(sw(C.mid,'unknown (no sharing pass)',`background-image:radial-gradient(${C.axis} 1px,transparent 1px);background-size:4px 4px`));}
-  else if(BM.mode==='activity'){for(const [v,lab] of [[0,'idle'],[64*KiB,'64 KiB/s'],[MiB,'1 MiB/s'],[16*MiB,'16 MiB/s'],[128*MiB,'128 MiB/s']])l.append(sw(actColor(actTr(v)),lab));l.append(el('span',{class:'muted',text:'VM disks: block writes, polled; folders: bytes changed in the last few seconds'}));}
+  const sw=(c,t,extra)=>el('span',null,el('i',{style:`background:${c};${extra||''}`}),t),m=BM.mode;
+  if(m==='kind')KINDS.forEach(k=>l.append(sw(kindColor(k.k),k.label)));
+  else if(m==='host')HARV.filter(h=>h.status==='ok').forEach(h=>l.append(sw(hostColor(h),hostName(h))));
+  else if(m==='live'){l.append(sw(`linear-gradient(90deg,${actColor(.1)},${actColor(.45)},${actColor(.8)},${actColor(1)})`,'changing now: 64 KiB/s → 256 MiB/s','width:34px'),sw(C.s3,'unchanged 30+ days',`background-image:repeating-linear-gradient(45deg,transparent 0 3px,${C.axis} 3px 4px)`),
+    el('span',{class:'muted',text:'Hot cores and trembling edges are writes; walls glow when anything inside is busy. Folders: bytes changed over 20 s. VM disks: block writes, polled.'}));}
+  else if(m==='rings')l.append(sw(C.pos,'added: last day, week, month (outside in)'),sw(C.neg,'shrank'),el('span',{class:'muted',text:GROW.status==='ok'?'Ring thickness is bytes added, square-root scale. History since '+fmtSince(GROW.first)+'; deeper folders have no series yet.':GROW.status==='none'?'needs metrics_url':'loading history…'}));
+  else if(m==='time')l.append(sw(C.crit,'filesystem full'),el('span',{class:'muted',text:'Free space drains at each filesystem’s df trend (90 days, fit over 30); folders move along their own history and trend.'}));
+  else if(m==='links')l.append(sw(C.s3,'shared with another folder',`background-image:repeating-linear-gradient(45deg,transparent 0 3px,${C.share} 3px 4.5px)`),sw(C.s3,'only here: what deleting frees',`box-shadow:inset 0 0 0 1.5px ${C.share}`),el('span',{class:'muted',text:'Threads join folders that reference the same blocks (btrfs sharing pass).'}));
+  else if(m==='reclaim')l.append(sw(C.s3,'could come back',`background-image:repeating-linear-gradient(45deg,transparent 0 3px,${C.good} 3px 4.5px)`),sw(C.free,'free space that grows',`box-shadow:inset 0 0 0 2px ${C.good}`));
   else{const s=BM.sc;l.append(sw(divColor(-0.6),'shrank'),sw(C.mid,'no change'),sw(divColor(0.3),'grew ~'+fmtAxis(divInvr(0.3,s.lo,s.hi))),sw(divColor(0.6),'~'+fmtAxis(divInvr(0.6,s.lo,s.hi))),sw(divColor(0.9),'~'+fmtAxis(divInvr(0.9,s.lo,s.hi))),el('span',{class:'muted',text:HIST.status==='ok'?`folders with history: last ${fmtSpan(HIST.t1-HIST.t0)}; others: since ${fmtHM(PAGE_T0)}`:`since ${fmtHM(PAGE_T0)}`}));}
   l.append(sw(C.free,'free',`background-image:repeating-linear-gradient(135deg,transparent 0 3px,${C.freeLine} 3px 4px)`),sw(C.dark,'not in any target'));
-  if(HARV.some(h=>h.status==='ok'&&h.info.targets.some(t=>t.kind==='lvm_thin'))){const v=el('span',null,el('i',{class:'vmtex',style:`background:${C.vm}`}),'blocks inside a VM disk');l.append(v);}}
-document.addEventListener('keydown',e=>{if(e.key==='Escape'&&current()==='blockmap'&&BM.focus.p){zoomTo(BM.focus.p);}});
+  if(HARV.some(h=>h.status==='ok'&&h.info.targets.some(t=>t.kind==='lvm_thin'))){const v=el('span',null,el('i',{class:'vmtex',style:`background:${C.vm}`}),'blocks inside a VM disk');l.append(v);}
+  if(BM.focus===ROOT&&BM.size==='balanced')l.append(el('span',{class:'muted',text:'Machines are drawn at the cube root of their bytes; inside a machine, area is true bytes.'}));}
+document.addEventListener('keydown',e=>{if(e.key!=='Escape'||current()!=='blockmap')return;if(BM.wall){setWall(false);return;}if(BM.focus.p)zoomTo(BM.focus.p);});
 
 /* ======================================================================= SHARING */
 const SH={sort:'shared'};
@@ -1641,12 +2091,12 @@ function renderSources(){
 /* ======================================================================= shell */
 const VIEWS={overview:renderOverview,changes:renderChanges,blockmap:renderBlockmap,sharing:renderSharing,sources:renderSources};
 function current(){const h=location.hash.slice(1);return VIEWS[h]?h:'overview';}
-function show(){const cur=current();for(const k in VIEWS)$('#v-'+k).hidden=k!==cur;for(const a of document.querySelectorAll('.tabs a')){a.setAttribute('aria-current',a.dataset.view===cur?'page':'false');if(a.dataset.view===cur){const t=a.parentNode;if(a.offsetLeft+a.offsetWidth>t.scrollLeft+t.clientWidth)t.scrollLeft=a.offsetLeft+a.offsetWidth-t.clientWidth+12;else if(a.offsetLeft<t.scrollLeft)t.scrollLeft=a.offsetLeft-12;}}untip();BM.on=cur==='blockmap';if(!BM.on){BM.pulses.length=0;}VIEWS[cur]();}
+function show(){const cur=current();for(const k in VIEWS)$('#v-'+k).hidden=k!==cur;for(const a of document.querySelectorAll('.tabs a')){a.setAttribute('aria-current',a.dataset.view===cur?'page':'false');if(a.dataset.view===cur){const t=a.parentNode;if(a.offsetLeft+a.offsetWidth>t.scrollLeft+t.clientWidth)t.scrollLeft=a.offsetLeft+a.offsetWidth-t.clientWidth+12;else if(a.offsetLeft<t.scrollLeft)t.scrollLeft=a.offsetLeft-12;}}untip();BM.on=cur==='blockmap';if(!BM.on){BM.pulses.length=0;if(BM.wall)setWall(false);}VIEWS[cur]();}
 const hideBox=$('#hide-names');
 HIDE=QS.get('hide')==='1'||(QS.get('hide')==null&&store.get('hide')==='1');hideBox.checked=HIDE;
 hideBox.addEventListener('change',e=>{HIDE=e.target.checked;store.set('hide',HIDE?'1':null);renderHeader();BM.needBase=true;show();});
 addEventListener('hashchange',show);
-let rz=0;addEventListener('resize',()=>{clearTimeout(rz);rz=setTimeout(()=>{const cur=current();if(cur==='changes'){hmLayout();hmDraw();hmDrawer();}else if(cur==='blockmap'){BM.needLayout=true;bmSchedule();}else VIEWS[cur]();},150);});
+let rz=0;addEventListener('resize',()=>{clearTimeout(rz);rz=setTimeout(()=>{const cur=current();if(cur==='changes'){hmLayout();hmDraw();hmDrawer();}else if(cur==='blockmap'){BM.needLayout=true;bmSchedule();if(BM.mode==='time')drawTimeChart();}else VIEWS[cur]();},150);});
 const THEMES=['auto','light','dark'];let THEME=QS.get('theme')||store.get('theme')||'auto';if(!THEMES.includes(THEME))THEME='auto';
 // theme-color follows the forced theme too (the browser chrome and an installed app's title bar)
 const TCOL={light:'#fcfcfd',dark:'#14171b'};
@@ -1686,7 +2136,7 @@ async function boot(){
   setInterval(()=>{if(METRICS&&document.visibilityState!=='hidden'&&(!HIST.fetchedAt||Date.now()/1000-HIST.fetchedAt>Math.max(60,Math.min(600,HIST.step||60))))loadHistory();},20000);
   setInterval(()=>{if(METRICS)loadCapacity();},600000);
   setInterval(()=>{if(current()==='overview')renderOvLive();if(current()==='blockmap')renderConn();
-    const now=Date.now();if(ACT.size>5000)for(const [k,a] of ACT)if(a.v*Math.exp(-(now-a.t)/ACT_TAU)<1)ACT.delete(k);for(const [k,e] of IOD)if(now-e.at>120000)IOD.delete(k);},5000);
+    const now=Date.now();if(HEAT.size>5000)for(const [k,a] of HEAT)if(a.v*Math.exp(-(now-a.t)/HEAT_TAU)<1)HEAT.delete(k);for(const [k,e] of IOD)if(now-e.at>120000)IOD.delete(k);},5000);
 }
 boot();
 </script>

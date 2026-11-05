@@ -80,6 +80,9 @@ fn each_node(node: &Value, rel: &Path, visit: &mut impl FnMut(&Path, &Value)) {
 fn tree_matches_an_independent_walk_at_every_depth() {
     let host = Host::new();
     realistic_tree(&host.data(), 11);
+    // Times of their own, so a directory's newest is not just when the tree was written.
+    age(&host.data(), &mut Rng::new(12));
+    set_mtime(&host.data(), 1_500_000_000);
     let h = host.start(ONE_TARGET);
     first_scan(&h);
 
@@ -127,6 +130,7 @@ fn tree_matches_an_independent_walk_at_every_depth() {
             node["k"].as_u64(),
             Some(dir.direct_dirs),
         );
+        out.check(format!("{path} m"), node["m"].as_i64(), Some(dir.newest));
         // t = own inode + files here + pruned children + listed children.
         let children: u64 = node["c"]
             .as_array()
@@ -261,14 +265,28 @@ fn events_report_a_change_on_disk() {
     assert_eq!(hello["host"], "test-host");
 
     write_file(&host.data().join("spool/new.bin"), 1_000_000);
+    // A re-read may catch the file half written; the rest follows in later changes, from
+    // fanotify or from the next scan's difference.
     let deadline = Instant::now() + SCAN_TIMEOUT;
-    loop {
+    let mut arrived = 0;
+    while arrived < 1_000_000 {
         let change = events.next_named("change", deadline - Instant::now());
-        if change["path"] == "/srv/data/spool" && change["db"].as_i64().unwrap() >= 1_000_000 {
-            assert_eq!(change["target"], "data");
-            assert!(["fanotify", "scan"].contains(&change["src"].as_str().unwrap()));
-            break;
+        if change["path"] != "/srv/data/spool" || change["replay"] == true {
+            continue;
         }
+        assert_eq!(change["target"], "data");
+        let src = change["src"].as_str().unwrap();
+        assert!(["fanotify", "scan"].contains(&src), "{change}");
+        if src == "fanotify" {
+            // Written by this test, which shares the harvester's PID namespace.
+            assert!(
+                change["who"].as_str().is_some_and(|who| !who.is_empty()),
+                "{change}"
+            );
+        } else {
+            assert!(change.get("who").is_none(), "{change}");
+        }
+        arrived += change["db"].as_i64().unwrap();
     }
     // A client connecting now gets it replayed.
     let mut late = Events::open(h.port);
@@ -415,13 +433,15 @@ fn the_relay_serves_peers_and_metrics_from_one_origin() {
     // And keeps streaming: a change on the peer's disk comes through.
     write_file(&peer_host.data().join("later/new.bin"), 1_000_000);
     let deadline = Instant::now() + SCAN_TIMEOUT;
-    loop {
+    let mut arrived = 0;
+    while arrived < 1_000_000 {
         let change = events.next_named("change", deadline - Instant::now());
-        // `/srv/data/later` from a scan, `/srv/data` (or deeper) from fanotify.
+        // `/srv/data/later` from a scan, `/srv/data` (or deeper) from fanotify, possibly in
+        // parts when a re-read catches the file half written.
         let path = change["path"].as_str().unwrap();
-        if path.starts_with("/srv/data") && change["db"].as_i64().unwrap() >= 1_000_000 {
+        if path.starts_with("/srv/data") && change["replay"] != true {
             assert_eq!(change["host"], "the-peer");
-            break;
+            arrived += change["db"].as_i64().unwrap();
         }
     }
 
