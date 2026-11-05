@@ -181,8 +181,9 @@ container's root disk also holds the container's directories, walked from the ho
 scan: its root is opened once through the container's init process, checked to be on the
 container's own volume (so a recycled PID cannot point the walk at the host), and walked through
 that descriptor, staying on that filesystem. If the container frees and trims blocks below what
-the walk found, the disk shows as one opaque block of its allocation until the next scan. Between scans, `dmsetup status` and `/sys/block/dm-*/stat` are
-read every `live.block_poll_interval` (2 s), including volumes activated since the scan:
+the walk found, the disk shows as one opaque block of its allocation until the next scan. Between scans, device-mapper's status (what `dmsetup status` prints, read
+by ioctl: under 1 ms, against 9 ms for running `dmsetup`) and `/sys/block/dm-*/stat` are
+read every `live.block_poll_interval` (1 s), including volumes activated since the scan:
 allocation changes become `change` events with
 `src: "lvm"`, and disks doing I/O get an `io` event with bytes/s read and written, sent live
 only (not replayed).
@@ -224,6 +225,16 @@ Between scans, the harvester follows changes and re-reads only the directories t
   metadata search for blocks newer than the last poll names the changed directories. btrfs
   writes inode updates at commit, so a change can take up to the commit interval (30 s by
   default) to show.
+- **synotify** (Synology DSM, x86_64): DSM's kernel has no fanotify, but Synology added its
+  own notifier, whose events name each changed entry by full path. On DSM, btrfs targets are
+  followed by it as well as by polling, which stays on to catch what it misses (writes through
+  `mmap`, reflinks, an overflowed queue). Writes and deletions then show within a re-read
+  (measured on a DS1821+: a buffered write 12 s → 0.1 s, a deletion 23 s → 0.0 s). A mark
+  covers one mount, and writes are reported only through the mount the file was opened
+  through, so the harvester marks every mount of the targets' filesystems in every mount
+  namespace, other containers' included, and looks for new ones every 2 s. In a container
+  that needs `pid: host` and `cap_add: [SYS_ADMIN, SYS_PTRACE]`; without them only its own
+  mounts are marked. `live.synotify: false` turns it off.
 
 A file with several hard links counts once, in one directory; when that link goes, another
 directory holding one takes it over. A *new* hard link to a file that had one link is reported
@@ -235,21 +246,24 @@ already approximate (that directory is sealed, or the new link sits in a new sub
 and never scanning more than a tenth of the time
 (`storage_harvester_live_rescans_requested_total`).
 
-Both need `CAP_SYS_ADMIN` (`cap_add: [SYS_ADMIN]`). Without it, or with `live.enabled: false`
-or a target's `live: false`, trees change at each scan only. A directory is re-read at most
-once per `live.min_relist_interval` (1 s), and less often the longer it takes to read.
+All need `CAP_SYS_ADMIN` (`cap_add: [SYS_ADMIN]`). Without it, or with `live.enabled: false`
+or a target's `live: false`, trees change at each scan only. A directory is re-read 50 ms after
+its first change (so files that live only milliseconds, like lock files and atomic saves, come
+and go unseen), then at most once per `live.min_relist_interval` (250 ms), and less often the
+longer it takes to read.
 
 `GET /api/events` is a Server-Sent Events stream. `change` events carry the directory's
 `path`, `db` (the change in bytes, which every ancestor shares), `da`, `df` (files), `b` (its
-new total) and `src` (`fanotify`, `btrfs`, or `scan` for a difference found by a scan). A
+new total) and `src` (`fanotify`, `synotify`, `btrfs`, `lvm`, or `scan` for a difference found by a scan). A
 `scan` event follows each scan. New clients get the last 200 changes first, marked `replay`.
 
-With fanotify, a change also names the last process seen changing the directory: `who` (its
+With fanotify or synotify, a change also names the last process seen changing the directory: `who` (its
 `comm`, such as `rsync` or `smbd`) and, when it runs in a container, `ctr` (`lxc/<vmid>` for
 a Proxmox guest, else the first 12 hex digits of the Docker or containerd ID; Docker inside a
 guest names the guest). fanotify gives the PID only of processes in the harvester's PID
 namespace: run in a container without `pid: host`, the harvester sees none but itself, and its
-own events are not named. Both fields are left out when the process is unknown or gone before
+own events are not named. synotify gives host PIDs, which are used only with `pid: host`; NFS
+writes show as `nfsd`. Both fields are left out when the process is unknown or gone before
 `/proc` was read.
 
 ### What deleting a directory frees (btrfs)

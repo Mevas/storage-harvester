@@ -11,7 +11,8 @@
 //!
 //! Everything is read-only:
 //! - `lvs` (at each scan): the pool's thin volumes, active or not.
-//! - `dmsetup table` / `dmsetup status`: the pool's chunk size and usage, and each active
+//! - `dmsetup table` (at each scan) and device-mapper status (each poll, by ioctl; `dmsetup
+//!   status` if that fails): the pool's chunk size and usage, and each active
 //!   volume's mapped sectors.
 //! - `/sys/block/dm-N/stat`: sectors read and written per volume.
 //! - `<pve_config>/storage.cfg`, `qemu-server/*.conf`, `lxc/*.conf`: which storage is this
@@ -440,12 +441,112 @@ struct Sample {
 }
 
 fn sample() -> Result<Sample> {
-    let status = parse_dmsetup(&run("dmsetup", &["status"], COMMAND_DEADLINE)?);
+    let status = match dm_status() {
+        Ok(status) => status,
+        Err(_) => parse_dmsetup(&run("dmsetup", &["status"], COMMAND_DEADLINE)?),
+    };
     Ok(Sample {
         status,
         devices: dm_devices(),
         at: Instant::now(),
     })
+}
+
+/// `dmsetup status` read from device-mapper itself, as [`parse_dmsetup`] gives it: device name
+/// → its first segment. Each poll spawned `dmsetup` before, about 8 ms of CPU; the two ioctls
+/// take a fraction of a millisecond, so the pool can be polled every second.
+#[cfg(target_os = "linux")]
+fn dm_status() -> std::io::Result<HashMap<String, String>> {
+    use std::io;
+    use std::os::fd::AsRawFd;
+
+    // `_IOWR(0xfd, nr, struct dm_ioctl)`, a 312-byte struct: version[3], data_size,
+    // data_start, target_count, open_count, flags, event_nr, padding, dev, name[128], ...
+    const LIST_DEVICES: u32 = 0xC138_FD02;
+    const TABLE_STATUS: u32 = 0xC138_FD0C;
+    const HEADER: usize = 312;
+    const NAME_AT: usize = 48;
+    const NAME_LEN: usize = 128;
+    const BUFFER_FULL: u32 = 1 << 8;
+
+    fn u32_at(bytes: &[u8], at: usize) -> u32 {
+        u32::from_ne_bytes(bytes[at..at + 4].try_into().unwrap())
+    }
+    fn u64_at(bytes: &[u8], at: usize) -> u64 {
+        u64::from_ne_bytes(bytes[at..at + 8].try_into().unwrap())
+    }
+    fn c_str(bytes: &[u8]) -> &[u8] {
+        &bytes[..bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len())]
+    }
+    /// One ioctl, growing the buffer until the answer fits. Returns it from `data_start`.
+    fn call(control: &fs::File, cmd: u32, name: &[u8]) -> io::Result<(Vec<u8>, u32)> {
+        if name.len() >= NAME_LEN {
+            return Err(io::ErrorKind::InvalidInput.into());
+        }
+        let mut size = 16 * 1024;
+        loop {
+            // u64 words, for the struct's alignment.
+            let mut words = vec![0u64; size / 8];
+            // SAFETY: plain bytes over our own buffer.
+            let buf =
+                unsafe { std::slice::from_raw_parts_mut(words.as_mut_ptr().cast::<u8>(), size) };
+            buf[0..4].copy_from_slice(&4u32.to_ne_bytes());
+            buf[12..16].copy_from_slice(&(size as u32).to_ne_bytes());
+            buf[16..20].copy_from_slice(&(HEADER as u32).to_ne_bytes());
+            buf[NAME_AT..NAME_AT + name.len()].copy_from_slice(name);
+            // SAFETY: the buffer is a `struct dm_ioctl` with `data_size` bytes behind it, and
+            // the kernel writes no further.
+            let status = unsafe { libc::ioctl(control.as_raw_fd(), cmd as _, buf.as_mut_ptr()) };
+            if status < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            if u32_at(buf, 28) & BUFFER_FULL != 0 && size < 1 << 24 {
+                size *= 4;
+                continue;
+            }
+            let start = (u32_at(buf, 16) as usize).min(size);
+            return Ok((buf[start..].to_vec(), u32_at(buf, 20)));
+        }
+    }
+
+    let control = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open("/dev/mapper/control")?;
+    // `struct dm_name_list`: dev, next (from this entry), name; dev 0 means none.
+    let (list, _) = call(&control, LIST_DEVICES, b"")?;
+    let mut names = Vec::new();
+    let mut at = 0;
+    while at + 12 <= list.len() && u64_at(&list, at) != 0 {
+        names.push(c_str(&list[at + 12..]).to_vec());
+        let next = u32_at(&list, at + 8) as usize;
+        if next == 0 {
+            break;
+        }
+        at += next;
+    }
+    let mut status = HashMap::new();
+    for name in names {
+        // `struct dm_target_spec`: sector_start, length, status, next, target_type[16]; then
+        // the target's status string.
+        let (data, targets) = call(&control, TABLE_STATUS, &name)?;
+        let line = if targets == 0 || data.len() < 40 {
+            String::new()
+        } else {
+            let kind = String::from_utf8_lossy(c_str(&data[24..40]));
+            let params = String::from_utf8_lossy(c_str(&data[40..]));
+            format!("{} {} {kind} {params}", u64_at(&data, 0), u64_at(&data, 8))
+                .trim()
+                .to_string()
+        };
+        status.insert(String::from_utf8_lossy(&name).into_owned(), line);
+    }
+    Ok(status)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn dm_status() -> std::io::Result<HashMap<String, String>> {
+    Err(std::io::ErrorKind::Unsupported.into())
 }
 
 /// Active device-mapper devices by name (`/sys/block/dm-*`).
@@ -1153,7 +1254,7 @@ fn poll(store: &LiveStore, lt: &LiveTarget, last: &mut Counters) -> Result<()> {
     let Some(generation) = generation else {
         return Ok(());
     };
-    // Sampled without the lock: `dmsetup` may be slow.
+    // Sampled without the lock: device-mapper (or `dmsetup`) may be slow.
     let sample = sample()?;
     apply(store, lt, generation, &sample, last);
     Ok(())
@@ -1270,6 +1371,26 @@ fn apply(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// On a host with device-mapper, as root: `cargo test dm_status -- --ignored`.
+    #[test]
+    #[ignore]
+    fn dm_status_matches_dmsetup() {
+        let direct = dm_status().expect("read device-mapper");
+        let tool = parse_dmsetup(&run("dmsetup", &["status"], COMMAND_DEADLINE).unwrap());
+        assert!(!direct.is_empty());
+        for (name, line) in &tool {
+            let ours = &direct[name];
+            // Counters may move between the two reads; the layout may not.
+            let shape = |line: &str| -> Vec<String> {
+                line.split_whitespace()
+                    .map(|f| f.chars().filter(|c| !c.is_ascii_digit()).collect())
+                    .collect()
+            };
+            assert_eq!(shape(ours), shape(line), "{name}: {ours:?} vs {line:?}");
+        }
+        assert_eq!(direct.len(), tool.len());
+    }
 
     const LVS: &str = r#"{"report":[{"lv":[
         {"lv_name":"data","vg_name":"pve","pool_lv":"","lv_size":"1884119105536","lv_active":"active"},
