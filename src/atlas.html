@@ -1404,7 +1404,8 @@ function bmKids(n){if(n.kind==='fs'&&!BM.free)return n.kids.filter(k=>k.kind!=='
 const STATIC_LENS=new Set(['live','rings','time','links','reclaim']);
 const whatifOn=()=>WHATIF.size>0&&(BM.mode==='reclaim'||BM.mode==='time');
 // what a block weighs: its size, shrunk by reclaim previews and moved along the time machine's slider
-function sizeOf(n){let s=n.t||0;if(whatifOn()){const w=WHATIF.get(n.id);if(w)s=Math.max(0,s+w);}if(BM.mode==='time'&&BM.t)s=timeSize(n,s);return s;}
+function baseSize(n){let s=n.t||0;if(whatifOn()){const w=WHATIF.get(n.id);if(w)s=Math.max(0,s+w);}return s;}
+function sizeOf(n){const s=baseSize(n);return BM.mode==='time'&&BM.t?timeSize(n,s):s;}
 // machines at the top level: true bytes, the cube root of their bytes (a small busy machine stays visible), or equal
 function weightOf(par,k){const s=sizeOf(k);if(par.kind!=='root')return s;if(BM.size==='equal')return 1;if(BM.size==='balanced')return Math.cbrt(Math.max(0,s));return s;}
 
@@ -1468,16 +1469,24 @@ function bmBuildCells(W,H){
     const inner=c.d===0?pInset(c.poly,1):pInset(c.poly,GAP[c.d]||1.2);if(!inner||Math.abs(pArea(inner))<240){c.leaf=true;c.box=false;return;}
     let kids=[];for(const k of ks){const v=weightOf(n,k);if(v>0)kids.push({n:k,v});}if(!kids.length){c.leaf=true;c.box=false;return;}
     c.box=true;kids.sort((a,b)=>b.v-a.v);
-    if(kids.length>MAXK){const rest=kids.slice(MAXK-1);kids=kids.slice(0,MAXK-1);kids.push({n:restNode(n,rest),v:rest.reduce((a,b)=>a+b.v,0)});}
+    // past MAXK, and siblings under 1.2% (two or more), fold into one cell: cells that small are unreadable and hard to fit
+    {const tot=kids.reduce((a,b)=>a+b.v,0);let cut=kids.findIndex(k=>k.v<tot*.012);if(cut<0||kids.length-cut<2)cut=kids.length;cut=Math.min(cut,MAXK-1);
+      if(cut<kids.length){const rest=kids.slice(cut);kids=kids.slice(0,cut);kids.push({n:restNode(n,rest),v:rest.reduce((a,b)=>a+b.v,0)});}}
     let sum=0;for(const k of kids)sum+=k.v;let s2=0;for(const k of kids){k.f=Math.max(k.v/sum,.007);s2+=k.f;}
     const K=kids.map(k=>{let st=BM.cs.get(k.n.id);if(!st){st={site:null,w:0,lastTgt:null};BM.cs.set(k.n.id,st);}st.tgt=k.f/s2;return st;});
     let g=BM.cs.get(n.id+'|g');if(!g){g={frozen:false,budget:90};BM.cs.set(n.id+'|g',g);}
     let moved=0,fresh=false;for(const st of K){if(!st.site)fresh=true;moved=Math.max(moved,Math.abs(st.tgt-(st.lastTgt??st.tgt)));st.lastTgt=st.tgt;}
+    // A frozen group thaws when its sizes move, when its outline moved since it froze (its parent was still
+    // settling) and that left it off by more than 1%, or when it got 1% worse than it froze at. One still over 2%
+    // off when its budget runs out starts again from fresh sites, once: state carried over from an older outline
+    // can trap it.
     const rnd=rng(hash(n.id));
-    if(fresh){g.err=relaxGroup(inner,K,140,.5,1,rnd);g.frozen=REDUCED;g.budget=90;}
+    if(fresh){g.err=relaxGroup(inner,K,140,.5,1,rnd);g.frozen=REDUCED;g.budget=90;g.ferr=g.err;g.fa=Math.abs(pArea(inner));g.fc=pCen(inner);}
     else if(REDUCED){g.err=relaxGroup(inner,K,moved>2e-5?60:0,.3,1,rnd);g.frozen=true;}
-    else if(g.frozen&&moved<=2e-5){g.err=relaxGroup(inner,K,0,0,1,rnd);if(g.err>.015){g.frozen=false;g.budget=90;}}
-    else{if(moved>2e-5)g.budget=90;g.err=relaxGroup(inner,K,BM.mode==='time'?2:1,moved>2e-5?.12:.06,moved>2e-5?.5:.35,rnd);if(moved<=2e-5&&(g.err<.005||--g.budget<=0))g.frozen=true;}
+    else if(g.frozen&&moved<=2e-5){g.err=relaxGroup(inner,K,0,0,1,rnd);const ia=Math.abs(pArea(inner)),ic=pCen(inner),shifted=!g.fc||Math.abs(ia-g.fa)>g.fa*.002||Math.hypot(ic[0]-g.fc[0],ic[1]-g.fc[1])>.5;
+      if(g.err>g.ferr+.01||(shifted&&g.err>.01)){g.frozen=false;g.budget=90;}}
+    else{if(moved>2e-5){g.budget=90;g.frozen=false;g.reseeded=false;}const far=(g.err||0)>.03;g.err=relaxGroup(inner,K,far?3:BM.mode==='time'?2:1,moved>2e-5?.12:far?.25:.06,moved>2e-5?.5:far?.7:.35,rnd);if(moved<=2e-5&&g.budget<=1&&g.err>.02&&!g.reseeded){g.reseeded=true;for(const st of K){st.site=null;st.w=0;}g.err=relaxGroup(inner,K,140,.5,1,rnd);g.budget=90;}
+      if(moved<=2e-5&&(g.err<.005||--g.budget<=0)){g.frozen=true;g.ferr=g.err;g.fa=Math.abs(pArea(inner));g.fc=pCen(inner);}}
     if(!g.frozen)moving=true;
     kids.forEach((k,i)=>{const P=K[i].poly;if(!P)return;const cc=cellOf(k.n,P,c.d+1);out.push(cc);rec(cc);});
   })(root);
@@ -1560,12 +1569,20 @@ function fsModel(f,actual){if(!f||f.kind!=='fs'||!f.fs||f.fs.synthetic)return nu
   return {size,res,avail,slope,tFull,cap:ok?cap:null,freeAt(t){if(t>=0)return slope?Math.max(0,avail-slope*Math.min(t,tFull)):avail;
     if(ok&&cap.t.length){const u=interp(cap.t,cap.v,Date.now()/1000+t*DAY);return Math.max(0,size-res-u+extra);}return avail;},
     usedAt(t){return size?Math.min(1,Math.max(0,(size-res-this.freeAt(t))/size)):0;}};}
-function timeSize(n,s){const t=BM.t;
-  switch(n.kind){case 'free':{const m=fsModel(n.p);return m?m.freeAt(t):s;}case 'reserved':case 'unacc':return s;
-    case 'host':{let x=0;for(const k of n.kids)x+=sizeOf(k);return x;}case 'fs':{let x=0;for(const k of n.kids)x+=sizeOf(k);return x;}case 'root':return s;}
-  const f=fsOf(n),m=f&&fsModel(f),tc=m&&isFinite(m.tFull)?Math.min(t,m.tFull):t;
+function timeSize(n,s){
+  switch(n.kind){case 'free':{const m=fsModel(n.p);return m?m.freeAt(BM.t):s;}case 'reserved':return s;
+    case 'host':case 'fs':{let x=0;for(const k of n.kids)x+=sizeOf(k);return x;}case 'root':return s;}
+  const f=forecast(n,s);return n.p&&n.p.kind==='fs'?f*usedScale(n.p):f;}
+// where a folder's own history and trend take it along the slider
+function forecast(n,s){if(n.kind==='unacc')return s;const t=BM.t,f=fsOf(n),m=f&&fsModel(f),tc=m&&isFinite(m.tFull)?Math.min(t,m.tFull):t;
   if(tc<0){const x=growRec(n);if(!x||!(x.r.now>0))return s;return s*Math.max(0,seriesAt(x.r,tc))/x.r.now;}
   return Math.max(s*0.02,s+growthOf(n)*tc);}
+// A filesystem keeps its capacity along the slider: its used part follows the df model, and the forecasts of the
+// blocks directly in it only share that out. Cached per slider position and preview set.
+let WHATIF_GEN=0;
+function usedScale(f){const m=fsModel(f);if(!m)return 1;const c=f._us;if(c&&c.t===BM.t&&c.g===WHATIF_GEN)return c.k;
+  let now=0,fut=0;for(const k of f.kids){if(k.kind==='free'||k.kind==='reserved')continue;const s0=baseSize(k);now+=s0;fut+=forecast(k,s0);}
+  const k=fut>0?Math.max(0,now+m.avail-m.freeAt(BM.t))/fut:1;f._us={t:BM.t,g:WHATIF_GEN,k};return k;}
 function fullNow(f){if(BM.mode!=='time'||!f||f.kind!=='fs')return false;const m=fsModel(f);return !!m&&BM.t>=m.tFull;}
 
 /* ---------------------------------------------------------------- reclaim (what-if) */
@@ -1576,8 +1593,9 @@ function reclaimItems(){
     for(const T of H.info.targets){if(T.kind!=='lvm_thin'||!Array.isArray(T.guests)||!isOuter(H,T))continue;const f=H.fsNodes.get(T.fs);
       for(const g of T.guests){if(!g||!g.path)continue;const r=findDir(H,T,g.path),gn=r&&!r.rest.length?r.node:null;if(!gn)continue;
         if(g.type==='lxc'&&g.running){const ds=gn.c.filter(d=>d.v==='disk'&&d.u>0&&d.c.length),u=ds.reduce((a,d)=>a+d.u,0);
-          if(u>=512*MiB)out.push({key:'trim|'+H.key+'|'+g.vmid,title:'Trim '+guestLabel(g),where:hostName(H)+' · '+(f?maskPath(f.fs.mount):tgName(T.name)),basis:'m',basisText:'measured',bytes:u,
-            cmd:'pct fstrim '+(HIDE?'<id>':g.vmid),why:'Allocated blocks no file in the container accounts for: blocks freed inside it and not trimmed yet, plus some filesystem metadata.',parts:ds.map(d=>({n:d,db:-d.u}))});}
+          const parts=ds.map(d=>d.gap?{n:d.gap,db:-d.gap.t}:{n:d,db:-d.u}),b=-parts.reduce((a,x)=>a+x.db,0);
+          if(u>=512*MiB&&b>0)out.push({key:'trim|'+H.key+'|'+g.vmid,title:'Trim '+guestLabel(g),where:hostName(H)+' · '+(f?maskPath(f.fs.mount):tgName(T.name)),basis:'m',basisText:'measured',bytes:b,
+            cmd:'pct fstrim '+(HIDE?'<id>':g.vmid),why:'Allocated blocks no file in the container accounts for: blocks freed inside it and not trimmed yet, plus some filesystem metadata.',parts});}
         const N=HARV.find(h=>h.nestIn&&h.nestIn.P===H&&h.nestIn.g.vmid===g.vmid);
         if(N&&g.type==='qemu'){let used=0;for(const id of N.nestIn.place.keys()){const x=N.info.filesystems.find(y=>y.id===id);if(x)used+=+x.used||0;}const recl=gn.t-used;
           if(recl>=GiB){const gaps=gn.c.filter(d=>d.v==='disk'&&d.gap&&d.gap.t>0).map(d=>d.gap),gs=gaps.reduce((a,x)=>a+x.t,0);
@@ -1594,15 +1612,20 @@ function reclaimItems(){
   return out;}
 function refreshReclaim(force){const now=Date.now();if(!force&&now-RECL_AT<15000)return;RECL_AT=now;RECL=reclaimItems();for(const k of [...BM.applied])if(!RECL.some(r=>r.key===k))BM.applied.delete(k);recomputeWhatif();}
 // a preview moves bytes from the folders to their filesystem's free space: ancestors shrink, the filesystem does not
-function recomputeWhatif(){WHATIF.clear();for(const it of RECL){if(!BM.applied.has(it.key))continue;for(const p of it.parts)for(let a=p.n;a;a=a.p){if(a.kind==='fs'){if(a.free)WHATIF.set(a.free.id,(WHATIF.get(a.free.id)||0)-p.db);break;}WHATIF.set(a.id,(WHATIF.get(a.id)||0)+p.db);}}}
+function recomputeWhatif(){WHATIF.clear();WHATIF_GEN++;for(const it of RECL){if(!BM.applied.has(it.key))continue;for(const p of it.parts)for(let a=p.n;a;a=a.p){if(a.kind==='fs'){if(a.free)WHATIF.set(a.free.id,(WHATIF.get(a.free.id)||0)-p.db);break;}WHATIF.set(a.id,(WHATIF.get(a.id)||0)+p.db);}}}
 
 /* ---------------------------------------------------------------- story stream */
 // raw change and io events folded into one line per folder over the last minute, with an inferred reason
 const STORY=new Map();
+const STORY_WIN=60000;
 function storyAdd(H,O,path,o){const k=H.key+'|'+O.name+'|'+path,now=Date.now();let s=STORY.get(k);
-  if(!s||now-s.last>90000){s={H,O,path,db:0,n:0,io:0,rd:0,ioN:0,last:now,src:'',who:null,ctr:null,g:null};STORY.set(k,s);}
-  if(o.db!=null){s.db+=o.db;s.n++;if(o.src)s.src=o.src;}if(o.w!=null){s.io+=o.w;s.rd+=o.r||0;s.ioN++;if(o.g)s.g=o.g;}s.last=now;if(o.who){s.who=o.who;s.ctr=o.ctr||null;}
-  if(STORY.size>2500){for(const [kk,v] of STORY)if(now-v.last>90000)STORY.delete(kk);if(STORY.size>2500){const old=[...STORY.entries()].sort((a,b)=>a[1].last-b[1].last).slice(0,800);for(const [kk] of old)STORY.delete(kk);}}}
+  if(!s){s={H,O,path,ev:[],last:now,src:'',who:null,ctr:null,g:null};STORY.set(k,s);}
+  s.ev.push([now,o.db,o.w,o.r||0]);if(s.ev.length>600)s.ev.splice(0,s.ev.length-600);
+  if(o.db!=null&&o.src)s.src=o.src;if(o.w!=null&&o.g)s.g=o.g;s.last=now;if(o.who){s.who=o.who;s.ctr=o.ctr||null;}
+  if(STORY.size>2500){for(const [kk,v] of STORY)if(now-v.last>STORY_WIN)STORY.delete(kk);if(STORY.size>2500){const old=[...STORY.entries()].sort((a,b)=>a[1].last-b[1].last).slice(0,800);for(const [kk] of old)STORY.delete(kk);}}}
+// a story's totals over the last minute: change bytes and count, and the average disk write and read rates
+function storyNow(s,now){let i=0;while(i<s.ev.length&&now-s.ev[i][0]>STORY_WIN)i++;if(i)s.ev.splice(0,i);let db=0,n=0,io=0,rd=0,ioN=0;
+  for(const [,d,w,r] of s.ev){if(d!=null){db+=d;n++;}if(w!=null){io+=w;rd+=r;ioN++;}}return Object.assign({},s,{db,n,io,rd,ioN});}
 function storyReason(s){const p=s.path.toLowerCase();
   if(s.ioN&&!s.n)return s.io>=s.rd?(s.g==='lxc'?'container writes':'VM writes'):'reads';
   if(s.src==='lvm')return s.db<0?'fstrim returned':'thin alloc';
@@ -1816,7 +1839,7 @@ function storyRow(s){const now=Date.now(),ago=Math.round((now-s.last)/1000),rate
     el('i',{class:'dot',style:`background:${hostColor(s.H)}`}),el('span',{class:'nm',text:tail(maskPath(s.path),2)}),el('span',{class:'dv'+(rate?'':s.db>0?' pos':s.db<0?' neg':''),text:val}),
     el('span',{class:'sub'},el('span',{class:'src st '+cls,text:why}),who?el('span',{class:'who',text:who}):null,el('span',{text:(s.n+s.ioN)+' event'+(s.n+s.ioN===1?'':'s')}),el('span',{text:ago<2?'now':ago+' s ago'})));
   return b;}
-function renderStories(){const box=$('#bm-stories');if(!box||FEED_PAUSE)return;const now=Date.now(),rows=[...STORY.values()].filter(s=>now-s.last<60000).sort((a,b)=>b.last-a.last).slice(0,16);
+function renderStories(){const box=$('#bm-stories');if(!box||FEED_PAUSE)return;const now=Date.now(),rows=[...STORY.values()].filter(s=>now-s.last<STORY_WIN).map(s=>storyNow(s,now)).filter(s=>s.n+s.ioN>0).sort((a,b)=>b.last-a.last).slice(0,16);
   box.replaceChildren(...(rows.length?rows.map(storyRow):[el('p',{class:'side-note',text:'Nothing changed in the last minute. Lines appear here as change and disk-write events arrive.'})]));renderConn();}
 const storiesLater=throttle(()=>{if(current()==='blockmap'&&BM.side==='stories')renderStories();},1000);
 function lensRow(name,val,sub,cls,onclick,onenter){return el('button',{type:'button',class:'lrow2'+(cls?' '+cls:''),onclick,onpointerenter:onenter,onpointerleave:()=>{BM.hl=null;bmSchedule();}},el('span',{class:'nm',text:name}),el('span',{class:'v',text:val}),sub?el('span',{class:'sub',text:sub}):null);}
@@ -2135,7 +2158,7 @@ async function boot(){
   setInterval(()=>{for(const H of HARV)if(H.status!=='duplicate')loadInfo(H);},30000);
   setInterval(()=>{if(METRICS&&document.visibilityState!=='hidden'&&(!HIST.fetchedAt||Date.now()/1000-HIST.fetchedAt>Math.max(60,Math.min(600,HIST.step||60))))loadHistory();},20000);
   setInterval(()=>{if(METRICS)loadCapacity();},600000);
-  setInterval(()=>{if(current()==='overview')renderOvLive();if(current()==='blockmap')renderConn();
+  setInterval(()=>{if(current()==='overview')renderOvLive();if(current()==='blockmap'){renderConn();renderStories();}
     const now=Date.now();if(HEAT.size>5000)for(const [k,a] of HEAT)if(a.v*Math.exp(-(now-a.t)/HEAT_TAU)<1)HEAT.delete(k);for(const [k,e] of IOD)if(now-e.at>120000)IOD.delete(k);},5000);
 }
 boot();
