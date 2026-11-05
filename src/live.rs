@@ -1,13 +1,14 @@
 //! Keeps each target's tree current between scans and tells `/api/events` what changed.
 //!
-//! A *source* says which directories may have changed: fanotify's directory events (Linux 5.9+)
-//! or btrfs generation polling (older kernels). The engine then re-reads just those
-//! directories (one `getdents64` + `fstatat` per entry, as in a scan), applies the difference to
-//! the tree and every ancestor, and publishes it. A directory is re-read at most once per
+//! A *source* says which directories may have changed: fanotify's directory events (Linux 5.9+),
+//! Synology's synotify (DSM, see [`crate::synotify`]) or btrfs generation polling (older
+//! kernels). The engine then re-reads just those directories (one `getdents64` + `fstatat` per
+//! entry, as in a scan), applies the difference to the tree and every ancestor, and publishes it.
+//! A directory is re-read 50 ms after its first signal, then at most once per
 //! `min_relist_interval`, and less often the longer a re-read of it takes, so a busy directory
 //! costs at most about 1% of a CPU.
 //!
-//! Both sources need `CAP_SYS_ADMIN`. Without one, trees still change at each scan, and the
+//! The sources need `CAP_SYS_ADMIN`. Without one, trees still change at each scan, and the
 //! scan's differences are published the same way.
 
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
@@ -25,7 +26,7 @@ use tokio::sync::broadcast;
 use tracing::info;
 use tracing::warn;
 
-use crate::config::{ReportMode, Target};
+use crate::config::{LiveConfig, ReportMode, Target};
 use crate::fsinfo::{self, FsLocation};
 use crate::scanner::native::{self, NativeScanner};
 use crate::scanner::Scanner;
@@ -41,6 +42,8 @@ const SCAN_CHANGES: usize = 200;
 /// How long publishing a re-read's changes may wait, in all, for the processes behind them to
 /// be looked up. They nearly always are already.
 const WHO_PATIENCE: Duration = Duration::from_millis(100);
+/// How long a directory's first signal waits before the re-read.
+const SETTLE: Duration = Duration::from_millis(50);
 
 #[derive(Clone, Debug)]
 pub struct Message {
@@ -460,8 +463,18 @@ impl LiveStore {
     /// Queues `node` for a re-read. A signal that names no process (PID 0, btrfs, a re-read's
     /// follow-up) keeps the last one that did.
     fn enqueue(&self, target: usize, node: u32, generation: u64, who: Option<Arc<Lookup>>) {
+        let key = (target, node);
+        let now = Instant::now();
         let mut queue = lock(&self.queue);
-        let pending = queue.pending.entry((target, node)).or_default();
+        // A quiet directory's first change waits `SETTLE` for the rest of its burst, so files
+        // that live a few milliseconds (lock files, atomic saves, health checks) come and go
+        // unseen, as between two scans, rather than as a create and a delete.
+        if !queue.pending.contains_key(&key)
+            && queue.cooldown.get(&key).is_none_or(|until| *until <= now)
+        {
+            queue.cooldown.insert(key, now + SETTLE);
+        }
+        let pending = queue.pending.entry(key).or_default();
         if pending.generation != generation {
             // A node number of another tree: another directory.
             *pending = Pending {
@@ -518,7 +531,13 @@ impl LiveStore {
     /// btrfs: the directory with this inode, in target `index`, changed.
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     pub fn signal_ino(&self, index: usize, ino: u64) {
-        self.signal(&self.targets[index], StableKey::Ino(ino), &|| None);
+        self.signal_ino_by(index, ino, &|| None);
+    }
+
+    /// synotify: the same, by the process `who` gives, if it can tell.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    pub fn signal_ino_by(&self, index: usize, ino: u64, who: &dyn Fn() -> Option<Arc<Lookup>>) {
+        self.signal(&self.targets[index], StableKey::Ino(ino), who);
     }
 
     /// Takes a finished scan's tree: publishes how it differs from the live one, swaps it in,
@@ -1114,11 +1133,7 @@ fn is_btrfs(_path: &std::path::Path) -> bool {
 
 /// Starts the sources for every live target; returns the targets whose walks must record
 /// file handles (the fanotify ones).
-pub fn start_sources(
-    store: &Arc<LiveStore>,
-    poll_interval: Duration,
-    block_interval: Duration,
-) -> Vec<usize> {
+pub fn start_sources(store: &Arc<LiveStore>, config: &LiveConfig) -> Vec<usize> {
     let live: Vec<&Arc<LiveTarget>> = store.targets.iter().filter(|lt| lt.target.live).collect();
     if live.is_empty() {
         return Vec::new();
@@ -1131,16 +1146,43 @@ pub fn start_sources(
 
     let (pools, live): (Vec<_>, Vec<_>) = live.into_iter().partition(|lt| lt.target.lvm.is_some());
     for lt in pools {
-        crate::lvm::follow(Arc::clone(store), Arc::clone(lt), block_interval);
+        crate::lvm::follow(
+            Arc::clone(store),
+            Arc::clone(lt),
+            config.block_poll_interval,
+        );
     }
     let (btrfs, others): (Vec<_>, Vec<_>) = live.into_iter().partition(|lt| lt.btrfs);
-    for lt in btrfs {
-        start_btrfs(store, lt, poll_interval);
+    for lt in &btrfs {
+        start_btrfs(store, lt, config.btrfs_poll_interval);
+    }
+    if config.synotify {
+        start_synotify(store, &btrfs);
     }
     if others.is_empty() {
         return Vec::new();
     }
     start_fanotify(store, &others)
+}
+
+/// Adds synotify on top of polling, for the polled targets it can map changes into.
+fn start_synotify(store: &Arc<LiveStore>, btrfs: &[&Arc<LiveTarget>]) {
+    let watched = btrfs
+        .iter()
+        .filter(|lt| *lock(&lt.source) == Some("btrfs"))
+        .filter_map(|lt| {
+            let location = lt.location.as_ref()?;
+            Some(crate::synotify::Watched {
+                index: lt.index,
+                dev: location.id.clone(),
+                fs_path: location.fs_path.as_bytes().to_vec(),
+                scan_path: lt.target.scan_path.clone(),
+            })
+        })
+        .collect();
+    for index in crate::synotify::start(store, watched) {
+        *lock(&store.targets[index].source) = Some("synotify");
+    }
 }
 
 #[cfg(target_os = "linux")]
