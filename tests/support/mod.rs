@@ -81,6 +81,39 @@ pub fn link(target: &str, at: &Path) {
     symlink(target, at).unwrap();
 }
 
+/// Gives every entry below `dir`, symlinks included, a modification time of its own between
+/// 2017 and 2020, entries before their directory (setting an entry's time does not touch its
+/// directory's).
+pub fn age(dir: &Path, rng: &mut Rng) {
+    for entry in fs::read_dir(dir).unwrap() {
+        let path = entry.unwrap().path();
+        if fs::symlink_metadata(&path).unwrap().is_dir() {
+            age(&path, rng);
+        }
+        set_mtime(&path, 1_500_000_000 + rng.range(0, 100_000_000) as i64);
+    }
+}
+
+/// Sets `path`'s modification time (and access time), without following a symlink.
+pub fn set_mtime(path: &Path, secs: i64) {
+    use std::os::unix::ffi::OsStrExt;
+    let path = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
+    let time = libc::timespec {
+        tv_sec: secs as _,
+        tv_nsec: 0,
+    };
+    // SAFETY: `path` is NUL-terminated and `times` holds the two timestamps utimensat reads.
+    let status = unsafe {
+        libc::utimensat(
+            libc::AT_FDCWD,
+            path.as_ptr(),
+            [time, time].as_ptr(),
+            libc::AT_SYMLINK_NOFOLLOW,
+        )
+    };
+    assert_eq!(status, 0, "{}", std::io::Error::last_os_error());
+}
+
 /// A tree shaped like the places the harvester is pointed at: source trees with vendored
 /// dependencies and VCS metadata, rotated logs plus one runaway log, media, a sparse VM image,
 /// empty files and directories, symlinks of every kind, a deep chain, and file names that stress
@@ -204,6 +237,8 @@ pub struct DirTotals {
     pub deeper_files: u64,
     pub deeper_dirs: u64,
     pub deeper_symlinks: u64,
+    /// The newest modification time at or below the directory, in seconds (`m`).
+    pub newest: i64,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -264,6 +299,7 @@ fn visit_dir(
         depth,
         own_blocks: meta.blocks() * 512,
         own_apparent: meta.size(),
+        newest: meta.mtime(),
         ..DirTotals::default()
     };
     totals.total_blocks = totals.own_blocks;
@@ -301,6 +337,7 @@ fn visit_dir(
         let child_rel = rel.join(&name);
         let child_meta = fs::symlink_metadata(&child_abs).unwrap();
         walk.max_depth = walk.max_depth.max(depth + 1);
+        totals.newest = totals.newest.max(child_meta.mtime());
 
         if child_meta.is_dir() {
             walk.directories += 1;
@@ -311,6 +348,7 @@ fn visit_dir(
             totals.deeper_files += child.direct_files + child.deeper_files;
             totals.deeper_dirs += child.direct_dirs + child.deeper_dirs;
             totals.deeper_symlinks += child.direct_symlinks + child.deeper_symlinks;
+            totals.newest = totals.newest.max(child.newest);
         } else {
             let entry = EntryTotals {
                 depth: depth + 1,

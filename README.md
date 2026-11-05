@@ -95,7 +95,7 @@ volumes:
 
 `/atlas` shows the storage of every machine running a harvester on one page: capacity and
 growth per filesystem, a heatmap of which directories changed when, a block map of every
-directory on every machine that pulses as files change, and which directories share blocks.
+directory on every machine, and which directories share blocks.
 It reads `/api/*` from this harvester and from each of `atlas.peers`, and history from
 `atlas.metrics_url`:
 
@@ -124,6 +124,44 @@ after 2 minutes in all, and at most 64 are relayed at once.
 whole disks each filesystem sits on (`filesystems[].disks`: a QEMU disk reports
 `drive-scsi0`). A Proxmox harvester reports the same for each VM, so the atlas draws a VM's
 harvester inside that VM's disks.
+
+### Block map
+
+Every block is a directory, sized by the blocks it holds. Two layouts:
+- **Cells**, the default: a weighted Voronoi treemap. Each group of siblings settles in a few
+  milliseconds to within 1% of its true areas. It then holds still and only moves while its
+  sizes change, so a growing folder pushes its neighbours aside instead of re-tiling the map.
+  A group shows at most 24 cells; the smallest are folded into one.
+- **Blocks**: a squarified treemap.
+
+At the top level, machines are drawn at the cube root of their bytes (Balanced) by default, so
+a small, busy machine stays visible. Inside a machine, area is true bytes.
+
+Lenses:
+- **Live**: hot cores grow with bytes changed over the last 20 s and with block writes. Busy
+  cells tremble and ripple as changes arrive, and walls glow when something inside is busy.
+  A folder whose newest change (`m`) is 30+ days old is frosted.
+- **Change**: growth or shrinkage over the chosen range.
+- **Growth rings**: bytes added in the last day, week and month (outermost is newest), from
+  30 days of folder history in `metrics_url`.
+- **Time machine**: from 30 days back to 180 days ahead. Free space follows each filesystem's
+  df trend (90 days, fit over 30), and folders follow their own history and trend. A filesystem
+  turns red on the day it fills.
+- **Hard links**: from the btrfs sharing pass, each folder's shared part is hatched and what
+  deleting it frees is solid. Threads join folders that share blocks.
+- **Reclaim**: what could come back. Each candidate has its command, and ticking it previews
+  the result on the map and in the time machine. The candidates:
+  - untrimmed blocks in running containers' thin volumes (`u`), `pct fstrim <vmid>`;
+  - a VM with its own harvester that holds more than its filesystems use, `fstrim` inside it;
+  - folders of at least 8 GiB (and 0.4% of their filesystem) unchanged for 120 days, or
+    download and cache folders unchanged for 30.
+- **Kind** and **Machine**: colour by what the folder looks like, or by machine.
+
+The side panel folds the event stream into one line per folder per minute, with a reason
+guessed from the path and the kind of event, and the process behind it (`who`, `ctr`) when
+the harvester can see it. **Raw** shows every event. **Wall mode** fills the screen with the
+Live lens, hides leaf names, drifts slowly so a screen left on does not hold one image, and
+keeps the screen awake.
 
 ### Proxmox thin pools
 
@@ -169,8 +207,12 @@ pruned subtree, best first: the largest listed directory is expanded next, until
 directories are listed or none within `depth` levels holds `min_bytes` (default: the root's
 total / 4000). Each node: `n` name, `t` total bytes, `a` apparent bytes, `f`/`d`/`l` files,
 directories and symlinks below it, `o` bytes of files directly in it, `k` subdirectories,
-`r` bytes of subdirectories not listed, `c` listed subdirectories, and `x` (btrfs, below)
-the bytes deleting it would free.
+`m` the newest modification time in it (unix seconds: its own, its subdirectories', and every
+file and symlink the scan stat'ed below it), `r` bytes of subdirectories not listed, `c`
+listed subdirectories, and `x` (btrfs, below) the bytes deleting it would free. Live changes
+raise `m` of the directory and its ancestors to the change's time at least and never lower it
+(a deletion leaves it), so it is the last activity seen. A thin pool's own nodes (the pool,
+guests, and disks not walked) have no `m`.
 
 ### Live changes
 
@@ -201,6 +243,14 @@ once per `live.min_relist_interval` (1 s), and less often the longer it takes to
 `path`, `db` (the change in bytes, which every ancestor shares), `da`, `df` (files), `b` (its
 new total) and `src` (`fanotify`, `btrfs`, or `scan` for a difference found by a scan). A
 `scan` event follows each scan. New clients get the last 200 changes first, marked `replay`.
+
+With fanotify, a change also names the last process seen changing the directory: `who` (its
+`comm`, such as `rsync` or `smbd`) and, when it runs in a container, `ctr` (`lxc/<vmid>` for
+a Proxmox guest, else the first 12 hex digits of the Docker or containerd ID; Docker inside a
+guest names the guest). fanotify gives the PID only of processes in the harvester's PID
+namespace: run in a container without `pid: host`, the harvester sees none but itself, and its
+own events are not named. Both fields are left out when the process is unknown or gone before
+`/proc` was read.
 
 ### What deleting a directory frees (btrfs)
 

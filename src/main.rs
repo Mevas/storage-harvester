@@ -13,6 +13,7 @@ mod registry;
 mod scanner;
 mod scheduler;
 mod tree;
+mod who;
 
 use anyhow::Result;
 use clap::Parser;
