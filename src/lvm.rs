@@ -33,7 +33,7 @@ use crate::config::{LvmTarget, ReportMode, Target};
 use crate::live::{millis, LiveStore, LiveTarget};
 use crate::scanner::native::{self, NativeScanner};
 use crate::scanner::{ScanResult, Scanner};
-use crate::tree::{Delta, DirNode, DirTree, Tally, NONE};
+use crate::tree::{Delta, DirNode, DirTree, Tally, NONE, NO_TIME};
 
 const SECTOR: u64 = 512;
 /// dm-thin metadata blocks are 4 KiB.
@@ -664,6 +664,8 @@ fn synthetic(name: &str, parent: u32, depth: u32) -> DirNode {
         own_blocks: 0,
         own_apparent: 0,
         mtime: 0,
+        // Nothing here is stat'ed: a pool, a guest, or a disk seen from outside.
+        newest: NO_TIME,
         direct: Tally::default(),
         sub: Tally::default(),
         children: Vec::new(),
@@ -1055,6 +1057,8 @@ fn set_allocated(tree: &mut DirTree, disk: &mut Disk, allocated: u64) -> (Delta,
         let disk_node = &mut tree.nodes[node];
         (disk_node.direct, disk_node.sub) = (opaque, opaque);
         (disk_node.own_blocks, disk_node.own_apparent) = (0, 0);
+        // Blocks now, not files: nothing stat'ed stands behind a time.
+        disk_node.newest = NO_TIME;
         let delta = Delta::between(&before, &opaque).plus(own.negate());
         let parent = disk_node.parent;
         tree.propagate(parent, &delta);
@@ -1497,6 +1501,12 @@ sata0: local-lvm:vm-103-disk-1,size=32G
         assert!(graft_walk(&mut tree, &mut pool.guests[1].disks[0], walked));
         pool.reindex();
         let disk_node = pool.guests[1].disks[0].node;
+        // The walked disk has a time; the guest and the pool, never stat'ed, have none.
+        assert_ne!(tree.nodes[disk_node as usize].newest, NO_TIME);
+        assert_eq!(tree.nodes[pool.guests[1].node as usize].newest, NO_TIME);
+        assert_eq!(tree.root().newest, NO_TIME);
+        let json = tree.pruned(0, 100, 10, 0, None);
+        assert!(json.get("m").is_none(), "{json}");
         let allocated = 4180096 * 512;
         assert_eq!(tree.nodes[disk_node as usize].total_blocks(), allocated);
         assert_eq!(
@@ -1523,6 +1533,7 @@ sata0: local-lvm:vm-103-disk-1,size=32G
         let (_, opaque) = set_allocated(&mut tree, &mut pool.guests[1].disks[0], files / 2);
         assert!(opaque);
         assert_eq!(tree.nodes[disk_node as usize].total_blocks(), files / 2);
+        assert_eq!(tree.nodes[disk_node as usize].newest, NO_TIME);
         assert_eq!(tree.root().total_blocks(), before - allocated + files / 2);
         assert!(tree.find("/local-lvm/tailscale (101)/rootfs/var").is_none());
         assert!(!pool.guests[1].disks[0].walked);

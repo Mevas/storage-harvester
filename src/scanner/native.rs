@@ -31,7 +31,7 @@ use globset::{Glob, GlobSet, GlobSetBuilder};
 
 use crate::config::{ReportMode, Target};
 use crate::scanner::{EntryObservation, EntryType, NodeObservation, ScanResult, Scanner};
-use crate::tree::{plain_key, DirNode, DirTree, LinkOwner, Tally, NONE};
+use crate::tree::{plain_key, to_seconds, DirNode, DirTree, LinkOwner, Tally, NONE, NO_TIME};
 
 #[derive(Debug)]
 pub struct NativeScanner {
@@ -73,6 +73,8 @@ pub(crate) struct Listing {
     pub plain: Vec<u32>,
     /// The directory's own inode.
     pub own: Own,
+    /// The newest modification time read, the directory's own included, in nanoseconds.
+    pub newest: i64,
 }
 
 #[derive(Debug)]
@@ -117,6 +119,7 @@ pub(crate) fn read_direct(
             apparent: own.size,
             mtime: own.mtime,
         },
+        newest: own.mtime,
         ..Listing::default()
     };
     while dir.read(&mut batch)? {
@@ -139,6 +142,7 @@ pub(crate) fn read_direct(
             if target.no_cross_filesystem && stat.dev != root_dev {
                 continue;
             }
+            listing.newest = listing.newest.max(stat.mtime);
             let direct = &mut listing.direct;
             match stat.kind {
                 Kind::Directory => {
@@ -357,10 +361,22 @@ struct PendingDir {
 
 /// What one node has gathered: entries directly inside it, and entries in untracked
 /// directories below it.
-#[derive(Debug, Default, Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 struct NodeTally {
     direct: Tally,
     below: Tally,
+    /// The newest modification time of those entries, in seconds.
+    newest: i64,
+}
+
+impl Default for NodeTally {
+    fn default() -> Self {
+        Self {
+            direct: Tally::default(),
+            below: Tally::default(),
+            newest: NO_TIME,
+        }
+    }
 }
 
 impl NodeTally {
@@ -576,6 +592,8 @@ impl Walk<'_> {
         let parent_path = reported.then(|| lossy(display));
         let depth = job.depth + 1;
         let mut sums = Tally::default();
+        // In nanoseconds, as `stat` gives it: converted once, after the loop.
+        let mut newest = NO_TIME;
         let mut pruned = false;
 
         loop {
@@ -624,6 +642,7 @@ impl Walk<'_> {
                     continue;
                 }
                 counts.max_observed_depth = counts.max_observed_depth.max(depth);
+                newest = newest.max(stat.mtime);
 
                 if stat.kind == Kind::Directory {
                     counts.scanned_directories += 1;
@@ -752,7 +771,9 @@ impl Walk<'_> {
             arena.clear();
         }
 
-        worker.tally(job.node).part(job.tracked).add(&sums);
+        let tally = worker.tally(job.node);
+        tally.part(job.tracked).add(&sums);
+        tally.newest = tally.newest.max(to_seconds(newest));
         Ok(())
     }
 
@@ -831,6 +852,7 @@ fn finish(
         for (node, tally) in worker.tallies.iter().enumerate() {
             tallies[node].direct.add(&tally.direct);
             tallies[node].below.add(&tally.below);
+            tallies[node].newest = tallies[node].newest.max(tally.newest);
         }
         counts.add(&worker.counts);
         for (inode, link) in worker.links {
@@ -947,6 +969,7 @@ fn build_tree(
                 own_blocks: node.own_blocks,
                 own_apparent: node.own_apparent,
                 mtime: node.mtime,
+                newest: to_seconds(node.mtime).max(tally.newest),
                 direct: tally.direct,
                 sub,
                 children: Vec::new(),
@@ -959,8 +982,9 @@ fn build_tree(
     // A parent precedes its children, so one backwards pass rolls everything up.
     for index in (1..tree_nodes.len()).rev() {
         let parent = tree_nodes[index].parent as usize;
-        let sub = tree_nodes[index].sub;
+        let (sub, newest) = (tree_nodes[index].sub, tree_nodes[index].newest);
         tree_nodes[parent].sub.add(&sub);
+        tree_nodes[parent].newest = tree_nodes[parent].newest.max(newest);
         tree_nodes[parent].children.push(index as u32);
     }
     for index in 0..tree_nodes.len() {
@@ -1603,6 +1627,50 @@ mod tests {
             result.scanned_files > 1 && result.scanned_files < 30,
             "{result:?}"
         );
+    }
+
+    /// A directory's newest time is the newest of everything stat'ed below it, tracked or not.
+    #[test]
+    fn newest_times_cover_every_entry_below() {
+        let temp = tempdir().unwrap();
+        let root = temp.path();
+        fs::create_dir_all(root.join("old")).unwrap();
+        fs::create_dir_all(root.join("new/deep")).unwrap();
+        File::create(root.join("old/file")).unwrap();
+        File::create(root.join("new/deep/file")).unwrap();
+        // Files first: setting a directory's time does not touch its parent's.
+        for (path, secs) in [
+            ("old/file", 500),
+            ("new/deep/file", 5_000),
+            ("old", 1_000),
+            ("new/deep", 1_000),
+            ("new", 1_000),
+            ("", 2_000),
+        ] {
+            let time = SystemTime::UNIX_EPOCH + Duration::from_secs(secs);
+            File::open(root.join(path))
+                .unwrap()
+                .set_modified(time)
+                .unwrap();
+        }
+        // With room for every directory, and with `new/deep` past the cap (untracked).
+        for cap in [1000, 3] {
+            let mut target = test_target(root.to_path_buf(), PathBuf::from("/data"), vec![]);
+            target.tree_max_directories = cap;
+            let scanner = NativeScanner::new(&target).unwrap();
+            let result = scanner.scan(&target, &AtomicBool::new(false)).unwrap();
+            let tree = result.tree.unwrap();
+            let newest = |path: &str| tree.nodes[tree.find(path).unwrap() as usize].newest;
+            assert_eq!(newest("/data/old"), 1_000, "its own time beats its file's");
+            assert_eq!(newest("/data/new"), 5_000, "cap {cap}");
+            assert_eq!(newest("/data"), 5_000, "cap {cap}");
+            assert_eq!(tree.pruned(0, 100, 10, 0, None)["m"], 5_000);
+            if cap == 3 {
+                assert!(tree.find("/data/new/deep").is_none(), "untracked");
+            } else {
+                assert_eq!(newest("/data/new/deep"), 5_000);
+            }
+        }
     }
 
     fn test_target(scan_path: PathBuf, display_path: PathBuf, exclude: Vec<String>) -> Target {
