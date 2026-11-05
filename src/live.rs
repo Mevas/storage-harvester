@@ -31,12 +31,16 @@ use crate::scanner::native::{self, NativeScanner};
 use crate::scanner::Scanner;
 use std::cmp::Ordering as Order;
 
-use crate::tree::{plain_key, Delta, DirTree, LinkOwner, NONE};
+use crate::tree::{plain_key, to_seconds, Delta, DirTree, LinkOwner, NONE};
+use crate::who::Lookup;
 
 /// Events kept for clients that connect later.
 const REPLAY: usize = 200;
 /// Scan differences published per scan, largest first.
 const SCAN_CHANGES: usize = 200;
+/// How long publishing a re-read's changes may wait, in all, for the processes behind them to
+/// be looked up. They nearly always are already.
+const WHO_PATIENCE: Duration = Duration::from_millis(100);
 
 #[derive(Clone, Debug)]
 pub struct Message {
@@ -75,9 +79,10 @@ pub struct LiveTarget {
     pub sharing: RwLock<Option<Arc<SharingReport>>>,
     /// The source following this target, once one runs.
     pub source: Mutex<Option<&'static str>>,
-    /// Set while a scan runs: changes signalled meanwhile are re-applied to its tree.
+    /// Set while a scan runs: changes signalled meanwhile are re-applied to its tree, with the
+    /// last process fanotify named for each.
     pub scanning: AtomicBool,
-    during_scan: Mutex<HashSet<StableKey>>,
+    during_scan: Mutex<HashMap<StableKey, Option<Arc<Lookup>>>>,
     pub relists: AtomicU64,
     pub changes: AtomicU64,
     /// Wakes the scheduler for an early scan, when the live tree cannot settle a change itself.
@@ -291,10 +296,19 @@ pub struct SharingReport {
 
 #[derive(Default)]
 struct Queue {
-    /// `(target, node)` → the tree generation it was queued for.
-    pending: HashMap<(usize, u32), u64>,
+    /// `(target, node)` → what it was queued with.
+    pending: HashMap<(usize, u32), Pending>,
     /// Not before: when each directory may be re-read again.
     cooldown: HashMap<(usize, u32), Instant>,
+}
+
+/// A directory waiting to be re-read.
+#[derive(Default)]
+struct Pending {
+    /// The tree generation it was queued for.
+    generation: u64,
+    /// The last process fanotify named as changing it.
+    who: Option<Arc<Lookup>>,
 }
 
 /// What a re-read changed.
@@ -362,7 +376,7 @@ impl LiveStore {
                     sharing: RwLock::new(None),
                     source: Mutex::new(None),
                     scanning: AtomicBool::new(false),
-                    during_scan: Mutex::new(HashSet::new()),
+                    during_scan: Mutex::new(HashMap::new()),
                     relists: AtomicU64::new(0),
                     changes: AtomicU64::new(0),
                     rescan: tokio::sync::Notify::new(),
@@ -443,15 +457,28 @@ impl LiveStore {
         let _ = self.events.send(message);
     }
 
-    fn enqueue(&self, target: usize, node: u32, generation: u64) {
+    /// Queues `node` for a re-read. A signal that names no process (PID 0, btrfs, a re-read's
+    /// follow-up) keeps the last one that did.
+    fn enqueue(&self, target: usize, node: u32, generation: u64, who: Option<Arc<Lookup>>) {
         let mut queue = lock(&self.queue);
-        queue.pending.insert((target, node), generation);
+        let pending = queue.pending.entry((target, node)).or_default();
+        if pending.generation != generation {
+            // A node number of another tree: another directory.
+            *pending = Pending {
+                generation,
+                who: None,
+            };
+        }
+        if who.is_some() {
+            pending.who = who;
+        }
         drop(queue);
         self.wake.notify_one();
     }
 
+    /// `who` names the process behind the signal, looked up only if the signal is kept.
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-    fn signal(&self, lt: &LiveTarget, key: StableKey) {
+    fn signal(&self, lt: &LiveTarget, key: StableKey, who: &dyn Fn() -> Option<Arc<Lookup>>) {
         self.signals.fetch_add(1, Ordering::Relaxed);
         // Under the read lock, so `replace` (which drains `during_scan` and clears `scanning`
         // under the write lock) sees this signal either in the old tree's queue or in the
@@ -459,20 +486,31 @@ impl LiveStore {
         let guard = lt.state.read().unwrap_or_else(PoisonError::into_inner);
         if let Some(state) = guard.as_ref() {
             if let Some(node) = state.resolve(&key) {
-                self.enqueue(lt.index, node, state.generation);
+                self.enqueue(lt.index, node, state.generation, who());
             }
         }
         if lt.scanning.load(Ordering::Relaxed) {
-            lock(&lt.during_scan).insert(key);
+            let who = who();
+            let mut during = lock(&lt.during_scan);
+            let held = during.entry(key).or_default();
+            if who.is_some() {
+                *held = who;
+            }
         }
     }
 
-    /// fanotify: a directory with this handle, on the filesystem with this ID, changed.
+    /// fanotify: a directory with this handle, on the filesystem with this ID, changed, by the
+    /// process `who` gives, if it can tell.
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-    pub fn signal_handle(&self, fsid: [i32; 2], handle: &[u8]) {
+    pub fn signal_handle(
+        &self,
+        fsid: [i32; 2],
+        handle: &[u8],
+        who: &dyn Fn() -> Option<Arc<Lookup>>,
+    ) {
         for lt in &self.targets {
             if lt.fsid == Some(fsid) && *lock(&lt.source) == Some("fanotify") {
-                self.signal(lt, StableKey::Handle(handle.into()));
+                self.signal(lt, StableKey::Handle(handle.into()), who);
             }
         }
     }
@@ -480,7 +518,7 @@ impl LiveStore {
     /// btrfs: the directory with this inode, in target `index`, changed.
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     pub fn signal_ino(&self, index: usize, ino: u64) {
-        self.signal(&self.targets[index], StableKey::Ino(ino));
+        self.signal(&self.targets[index], StableKey::Ino(ino), &|| None);
     }
 
     /// Takes a finished scan's tree: publishes how it differs from the live one, swaps it in,
@@ -500,9 +538,17 @@ impl LiveStore {
         };
         let state = TreeState::new(tree, generation, started);
         let total = state.tree.root().total_blocks();
-        let keys: Vec<StableKey> = lock(&lt.during_scan).drain().collect();
-        let mut replay: Vec<u32> = keys.iter().filter_map(|key| state.resolve(key)).collect();
-        replay.extend(state.linked_during_scan());
+        let keys: Vec<(StableKey, Option<Arc<Lookup>>)> = lock(&lt.during_scan).drain().collect();
+        let mut replay: Vec<(u32, Option<Arc<Lookup>>)> = keys
+            .into_iter()
+            .filter_map(|(key, who)| Some((state.resolve(&key)?, who)))
+            .collect();
+        replay.extend(
+            state
+                .linked_during_scan()
+                .into_iter()
+                .map(|node| (node, None)),
+        );
         *guard = Some(state);
         lt.scanning.store(false, Ordering::Relaxed);
         // Published before the lock goes, so no poll's events can come between the tree and
@@ -528,8 +574,8 @@ impl LiveStore {
             }),
         );
         drop(guard);
-        for node in replay {
-            self.enqueue(index, node, generation);
+        for (node, who) in replay {
+            self.enqueue(index, node, generation, who);
         }
     }
 
@@ -537,12 +583,9 @@ impl LiveStore {
     pub fn run(self: Arc<Self>) {
         loop {
             let due = self.next_due();
-            let mut by_target: HashMap<usize, Vec<(u32, u64)>> = HashMap::new();
-            for (target, node, generation) in due {
-                by_target
-                    .entry(target)
-                    .or_default()
-                    .push((node, generation));
+            let mut by_target: HashMap<usize, Vec<(u32, Pending)>> = HashMap::new();
+            for ((target, node), pending) in due {
+                by_target.entry(target).or_default().push((node, pending));
             }
             for (target, nodes) in by_target {
                 self.relist_all(target, nodes);
@@ -550,20 +593,20 @@ impl LiveStore {
         }
     }
 
-    fn next_due(&self) -> Vec<(usize, u32, u64)> {
+    fn next_due(&self) -> Vec<((usize, u32), Pending)> {
         let mut queue = lock(&self.queue);
         loop {
             let now = Instant::now();
             let Queue { pending, cooldown } = &mut *queue;
             let mut due = Vec::new();
             let mut wake_at: Option<Instant> = None;
-            pending.retain(|&key, &mut generation| match cooldown.get(&key) {
+            pending.retain(|&key, queued| match cooldown.get(&key) {
                 Some(&until) if until > now => {
                     wake_at = Some(wake_at.map_or(until, |at| at.min(until)));
                     true
                 }
                 _ => {
-                    due.push((key.0, key.1, generation));
+                    due.push((key, std::mem::take(queued)));
                     false
                 }
             });
@@ -582,8 +625,9 @@ impl LiveStore {
         }
     }
 
-    fn relist_all(&self, index: usize, nodes: Vec<(u32, u64)>) {
+    fn relist_all(&self, index: usize, nodes: Vec<(u32, Pending)>) {
         let lt = &self.targets[index];
+        let now = SystemTime::now();
         let mut changed = Vec::new();
         let mut requeue = Vec::new();
         {
@@ -591,7 +635,7 @@ impl LiveStore {
             let Some(state) = guard.as_mut() else {
                 return;
             };
-            for (node, generation) in nodes {
+            for (node, Pending { generation, who }) in nodes {
                 if generation != state.generation {
                     continue;
                 }
@@ -607,7 +651,9 @@ impl LiveStore {
                     if delta.is_zero() {
                         continue;
                     }
-                    state.live_at = Some(SystemTime::now());
+                    state.live_at = Some(now);
+                    // Activity seen here and above, whatever the files' own times say.
+                    state.tree.touch(dir, seconds(now) as i64);
                     // A file rewritten in place changes its apparent size only: the tree
                     // takes it, the event stream does not.
                     if delta.blocks != 0
@@ -620,6 +666,7 @@ impl LiveStore {
                             tree.display_path(dir),
                             delta,
                             tree.nodes[dir as usize].total_blocks(),
+                            who.clone(),
                         ));
                     }
                 }
@@ -632,20 +679,22 @@ impl LiveStore {
             }
         }
         for (dir, generation) in requeue {
-            self.enqueue(index, dir, generation);
+            self.enqueue(index, dir, generation, None);
         }
         let source = (*lock(&lt.source)).unwrap_or("scan");
-        let now = millis(SystemTime::now());
-        for (path, delta, total) in changed {
+        let t = millis(now);
+        let deadline = Instant::now() + WHO_PATIENCE;
+        for (path, delta, total, who) in changed {
             lt.changes.fetch_add(1, Ordering::Relaxed);
-            self.publish(
-                "change",
-                json!({
-                    "t": now, "host": self.host, "target": lt.target.name, "path": path,
-                    "db": delta.blocks, "da": delta.apparent, "df": delta.files, "b": total,
-                    "src": source,
-                }),
-            );
+            let mut event = json!({
+                "t": t, "host": self.host, "target": lt.target.name, "path": path,
+                "db": delta.blocks, "da": delta.apparent, "df": delta.files, "b": total,
+                "src": source,
+            });
+            if let Some(who) = who.and_then(|lookup| lookup.wait_until(deadline)) {
+                who.annotate(&mut event);
+            }
+            self.publish("change", event);
         }
     }
 }
@@ -823,6 +872,8 @@ fn relist(lt: &LiveTarget, state: &mut TreeState, node: u32) -> Outcome {
         }
         delta = delta.plus(grown);
     }
+    // Its newest entry, even one rewritten in place at the same size (no change to publish).
+    tree.touch(node, to_seconds(listing.newest));
     out.changes.push((node, delta));
 
     // A link written through here changes the size where it is counted.
@@ -1170,6 +1221,7 @@ fn start_fanotify(store: &Arc<LiveStore>, _targets: &[&Arc<LiveTarget>]) -> Vec<
 
 #[cfg(target_os = "linux")]
 mod fanotify {
+    use std::cell::LazyCell;
     use std::ffi::CString;
     use std::io;
     use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
@@ -1180,6 +1232,7 @@ mod fanotify {
     use tracing::warn;
 
     use super::LiveStore;
+    use crate::who::Resolver;
 
     const FAN_CLOEXEC: u32 = 0x1;
     const FAN_CLASS_NOTIF: u32 = 0x0;
@@ -1257,6 +1310,7 @@ mod fanotify {
 
         pub fn run(self, store: &LiveStore) {
             let mut buf = vec![0u8; 256 * 1024];
+            let mut resolver = Resolver::start();
             loop {
                 // SAFETY: the buffer is valid for its length.
                 let read =
@@ -1270,12 +1324,12 @@ mod fanotify {
                     store.note_error(format!("fanotify read: {error}"));
                     return;
                 }
-                parse(&buf[..read as usize], store);
+                parse(&buf[..read as usize], store, &mut resolver);
             }
         }
     }
 
-    fn parse(mut events: &[u8], store: &LiveStore) {
+    fn parse(mut events: &[u8], store: &LiveStore, resolver: &mut Resolver) {
         while events.len() >= 24 {
             let event_len = u32::from_ne_bytes(events[0..4].try_into().unwrap()) as usize;
             if event_len < 24 || event_len > events.len() {
@@ -1285,6 +1339,10 @@ mod fanotify {
             let metadata_len = u16::from_ne_bytes(event[6..8].try_into().unwrap()) as usize;
             let mask = u64::from_ne_bytes(event[8..16].try_into().unwrap());
             let fd = i32::from_ne_bytes(event[16..20].try_into().unwrap());
+            // 0 when the process is not in our PID namespace. Looked up once per event, and
+            // only if one of its directories is followed.
+            let pid = i32::from_ne_bytes(event[20..24].try_into().unwrap());
+            let who = LazyCell::new(|| resolver.lookup(pid));
             if fd >= 0 {
                 // SAFETY: the kernel handed us this descriptor.
                 unsafe { libc::close(fd) };
@@ -1309,7 +1367,7 @@ mod fanotify {
                     if record.len() >= 20 + bytes {
                         // The key `name_to_handle_at` gave the walk: handle type, then handle.
                         let key = &record[16..20 + bytes];
-                        store.signal_handle(fsid, key);
+                        store.signal_handle(fsid, key, &|| LazyCell::force(&who).clone());
                     }
                 }
                 info = &info[len..];
@@ -1400,12 +1458,18 @@ mod tests {
     }
 
     fn relist_paths(store: &LiveStore, paths: &[&str]) {
-        let nodes: Vec<(u32, u64)> = {
+        let nodes: Vec<(u32, Pending)> = {
             let guard = store.targets[0].state.read().unwrap();
             let state = guard.as_ref().unwrap();
             paths
                 .iter()
-                .map(|path| (state.tree.find(path).unwrap(), state.generation))
+                .map(|path| {
+                    let pending = Pending {
+                        generation: state.generation,
+                        who: None,
+                    };
+                    (state.tree.find(path).unwrap(), pending)
+                })
                 .collect()
         };
         store.relist_all(0, nodes);
@@ -1839,13 +1903,13 @@ mod tests {
     fn settle(store: &LiveStore, paths: &[&str]) {
         relist_paths(store, paths);
         loop {
-            let due: Vec<(u32, u64)> = {
+            let due: Vec<(u32, Pending)> = {
                 let mut queue = lock(&store.queue);
                 queue.cooldown.clear();
                 queue
                     .pending
                     .drain()
-                    .map(|((_, node), generation)| (node, generation))
+                    .map(|((_, node), pending)| (node, pending))
                     .collect()
             };
             if due.is_empty() {
@@ -2081,7 +2145,7 @@ mod tests {
         store.relist_all(
             0,
             due.into_iter()
-                .map(|(_, node, generation)| (node, generation))
+                .map(|((_, node), pending)| (node, pending))
                 .collect(),
         );
         let live = totals(
@@ -2094,5 +2158,120 @@ mod tests {
                 .tree,
         );
         assert_eq!(live, totals(&scan(&target)));
+    }
+
+    fn set_mtime(path: &Path, secs: u64) {
+        File::open(path)
+            .unwrap()
+            .set_modified(UNIX_EPOCH + Duration::from_secs(secs))
+            .unwrap();
+    }
+
+    fn newest(store: &LiveStore, path: &str) -> i64 {
+        let guard = store.targets[0].state.read().unwrap();
+        let tree = &guard.as_ref().unwrap().tree;
+        tree.nodes[tree.find(path).unwrap() as usize].newest
+    }
+
+    /// A change raises its directory's newest time and its ancestors', to its time at least;
+    /// a file rewritten in place, with nothing to publish, still counts.
+    #[test]
+    fn live_changes_raise_newest_times() {
+        const YEAR_2020: u64 = 1_577_836_800;
+        const YEAR_2096: u64 = 4_000_000_000;
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        write(&root.join("a/old.bin"), 10_000);
+        write(&root.join("b/other.bin"), 10_000);
+        for path in ["a/old.bin", "b/other.bin", "a", "b", ""] {
+            set_mtime(&root.join(path), YEAR_2020);
+        }
+        let target = target(root);
+        let store = started(&target);
+        assert_eq!(newest(&store, "/data"), YEAR_2020 as i64);
+
+        let before = seconds(SystemTime::now()) as i64;
+        write(&root.join("a/new.bin"), 20_000);
+        settle(&store, &["/data/a"]);
+        assert!(newest(&store, "/data/a") >= before);
+        assert!(newest(&store, "/data") >= before);
+        assert_eq!(
+            newest(&store, "/data/b"),
+            YEAR_2020 as i64,
+            "a sibling keeps its time"
+        );
+
+        File::create(root.join("b/other.bin"))
+            .unwrap()
+            .write_all(&[8; 10_000])
+            .unwrap();
+        set_mtime(&root.join("b/other.bin"), YEAR_2096);
+        settle(&store, &["/data/b"]);
+        assert_eq!(newest(&store, "/data/b"), YEAR_2096 as i64);
+        assert_eq!(newest(&store, "/data"), YEAR_2096 as i64);
+
+        // Deleting does not lower it: it is the last activity seen.
+        fs::remove_file(root.join("b/other.bin")).unwrap();
+        settle(&store, &["/data/b"]);
+        assert_eq!(newest(&store, "/data/b"), YEAR_2096 as i64);
+        let guard = store.targets[0].state.read().unwrap();
+        let json = guard.as_ref().unwrap().tree.pruned(0, 100, 10, 0, None);
+        assert_eq!(json["m"], YEAR_2096);
+    }
+
+    fn known(comm: &str, container: Option<&str>) -> Option<Arc<Lookup>> {
+        let lookup = Lookup::default();
+        lookup.fill(Some(crate::who::Who {
+            comm: comm.into(),
+            container: container.map(Into::into),
+        }));
+        Some(Arc::new(lookup))
+    }
+
+    /// A change names the last process fanotify could see changing its directory; a signal
+    /// from a process it cannot see does not forget it.
+    #[test]
+    fn changes_name_the_process_behind_them() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        write(&root.join("a/x.bin"), 10_000);
+        write(&root.join("b/y.bin"), 10_000);
+        let target = target(root);
+        let store = started(&target);
+        *lock(&store.targets[0].source) = Some("fanotify");
+        let (generation, a, b) = {
+            let guard = store.targets[0].state.read().unwrap();
+            let state = guard.as_ref().unwrap();
+            let find = |path| state.tree.find(path).unwrap();
+            (state.generation, find("/data/a"), find("/data/b"))
+        };
+
+        // A node number of another tree is another directory: what named it is dropped.
+        store.enqueue(0, a, generation, known("cp", None));
+        store.enqueue(0, a, generation + 1, None);
+        assert!(lock(&store.queue).pending[&(0, a)].who.is_none());
+        lock(&store.queue).pending.clear();
+
+        let mut events = store.subscribe();
+        write(&root.join("a/new.bin"), 50_000);
+        write(&root.join("b/new.bin"), 50_000);
+        store.enqueue(0, a, generation, known("rsync", Some("4f8c2a1be0d3")));
+        store.enqueue(0, a, generation, None);
+        store.enqueue(0, b, generation, None);
+        settle(&store, &[]);
+
+        let mut changes = HashMap::new();
+        while let Ok(message) = events.try_recv() {
+            let value: Value = serde_json::from_str(&message.data).unwrap();
+            changes.insert(value["path"].as_str().unwrap().to_string(), value);
+        }
+        let a = &changes["/data/a"];
+        assert_eq!(
+            (&a["who"], &a["ctr"]),
+            (&json!("rsync"), &json!("4f8c2a1be0d3"))
+        );
+        assert_eq!(a["src"], "fanotify");
+        let b = &changes["/data/b"];
+        assert!(b.get("who").is_none() && b.get("ctr").is_none(), "{b}");
     }
 }

@@ -14,6 +14,19 @@ use serde_json::{json, Map, Value};
 
 pub const NONE: u32 = u32::MAX;
 
+/// [`DirNode::newest`] where nothing was stat'ed: a thin pool's own nodes.
+pub const NO_TIME: i64 = i64::MIN;
+
+/// A `stat` time in nanoseconds since the epoch, in whole seconds (rounded down, before 1970
+/// too). Keeps [`NO_TIME`].
+pub fn to_seconds(nanos: i64) -> i64 {
+    if nanos == NO_TIME {
+        NO_TIME
+    } else {
+        nanos.div_euclid(1_000_000_000)
+    }
+}
+
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Tally {
     pub files: u64,
@@ -124,6 +137,11 @@ pub struct DirNode {
     pub own_apparent: u64,
     /// Last modification of its entries, in nanoseconds: a re-read of its parent compares it.
     pub mtime: i64,
+    /// The newest modification time in its subtree, in seconds: its own, its subdirectories',
+    /// and every file and symlink stat'ed below it. Live changes raise it and never lower it
+    /// (the last activity seen), so it is at least every child's. [`NO_TIME`] where nothing
+    /// was stat'ed.
+    pub newest: i64,
     /// Entries directly inside, subdirectories' own inodes included.
     pub direct: Tally,
     /// Everything below the directory: `direct`, plus the contents of untracked
@@ -278,6 +296,21 @@ impl DirTree {
         }
     }
 
+    /// Raises the newest time of `index` and of every ancestor to at least `at` (seconds).
+    /// Stops at a node already that new, whose ancestors are too, and at one nothing was
+    /// stat'ed for (a thin pool's guests and the pool), which stays without a time.
+    pub fn touch(&mut self, index: u32, at: i64) {
+        let mut node = index;
+        while node != NONE {
+            let current = &mut self.nodes[node as usize];
+            if current.newest == NO_TIME || current.newest >= at {
+                return;
+            }
+            current.newest = at;
+            node = current.parent;
+        }
+    }
+
     /// Inserts `child` into `parent`'s children, keeping them sorted.
     pub fn attach(&mut self, parent: u32, child: u32) {
         let name = self.nodes[child as usize].name.clone();
@@ -325,6 +358,7 @@ impl DirTree {
     pub fn graft(&mut self, under: u32, mut other: DirTree) -> u32 {
         let offset = self.nodes.len() as u32;
         let base_depth = self.nodes[under as usize].depth + 1;
+        let newest = other.nodes[0].newest;
         for node in &mut other.nodes {
             node.parent = if node.parent == NONE {
                 under
@@ -338,6 +372,8 @@ impl DirTree {
         }
         self.nodes.extend(other.nodes);
         self.attach(under, offset);
+        // Whatever is new below is new in every directory above.
+        self.touch(under, newest);
         for (inode, mut owner) in other.links {
             owner.node += offset;
             for holder in &mut owner.others {
@@ -437,6 +473,9 @@ impl DirTree {
         object.insert("l".into(), json!(node.sub.symlinks));
         object.insert("o".into(), json!(files_here));
         object.insert("k".into(), json!(node.direct.dirs));
+        if node.newest != NO_TIME {
+            object.insert("m".into(), json!(node.newest));
+        }
         if let Some(pool) = &self.pool {
             pool.annotate(index, &mut object);
         }
@@ -466,7 +505,8 @@ impl DirTree {
 
     /// Directory-level differences from `self` (older) to `newer`, as `(path, delta)` where
     /// each delta is the change *directly* in that directory, or a whole subtree that appeared
-    /// or vanished. Applying them all to `self`'s totals gives `newer`'s.
+    /// or vanished. Applying them all to `self`'s totals gives `newer`'s. Sizes and counts
+    /// only: `newer` brings its own newest times, and a newer time alone is no change.
     pub fn diff(&self, newer: &DirTree) -> Vec<(String, Delta)> {
         let mut out = Vec::new();
         if self.nodes.is_empty() || newer.nodes.is_empty() {
@@ -529,7 +569,7 @@ impl DirTree {
 mod tests {
     use super::*;
 
-    fn node(name: &str, parent: u32, depth: u32, direct_blocks: u64) -> DirNode {
+    fn node(name: &str, parent: u32, depth: u32, direct_blocks: u64, newest: i64) -> DirNode {
         DirNode {
             name: name.as_bytes().into(),
             parent,
@@ -538,6 +578,7 @@ mod tests {
             own_blocks: 4,
             own_apparent: 4,
             mtime: 0,
+            newest,
             direct: Tally {
                 blocks: direct_blocks,
                 ..Tally::default()
@@ -550,13 +591,14 @@ mod tests {
         }
     }
 
-    /// root(10) -> a(100) -> a/x(1000); root -> b(50)
+    /// root(10) -> a(100) -> a/x(1000); root -> b(50). Newest times before the roll-up:
+    /// root 100, a 200, b 50, x 300.
     fn sample() -> DirTree {
         let mut nodes = vec![
-            node("", NONE, 0, 10 + 4 + 4),
-            node("a", 0, 1, 100 + 4),
-            node("b", 0, 1, 50),
-            node("x", 1, 2, 1000),
+            node("", NONE, 0, 10 + 4 + 4, 100),
+            node("a", 0, 1, 100 + 4, 200),
+            node("b", 0, 1, 50, 50),
+            node("x", 1, 2, 1000, 300),
         ];
         for index in (0..nodes.len()).rev() {
             let direct = nodes[index].direct;
@@ -565,6 +607,9 @@ mod tests {
             if parent != NONE {
                 let sub = nodes[index].sub;
                 nodes[parent as usize].sub.add(&sub);
+                let newest = nodes[index].newest;
+                let above = &mut nodes[parent as usize].newest;
+                *above = (*above).max(newest);
             }
         }
         nodes[0].children = vec![1, 2];
@@ -668,5 +713,89 @@ mod tests {
         assert!(changes
             .iter()
             .any(|(p, d)| p == "/data/b" && d.blocks == -50));
+    }
+
+    #[test]
+    fn newest_times_roll_up_and_show_as_m() {
+        let tree = sample();
+        let full = tree.pruned(0, 100, 10, 1, None);
+        assert_eq!(full["m"], 300, "the root has x's time");
+        let a = &full["c"][0];
+        assert_eq!((&a["n"], &a["m"]), (&json!("a"), &json!(300)));
+        assert_eq!(a["c"][0]["m"], 300);
+        let b = &full["c"][1];
+        assert_eq!((&b["n"], &b["m"]), (&json!("b"), &json!(50)));
+
+        let mut unknown = sample();
+        unknown.nodes[2].newest = NO_TIME;
+        let full = unknown.pruned(0, 100, 10, 1, None);
+        assert!(full["c"][1].get("m").is_none(), "no time, no m");
+        assert_eq!(full["c"][0]["m"], 300);
+    }
+
+    #[test]
+    fn touch_raises_a_node_and_its_ancestors_only() {
+        let mut tree = sample();
+        tree.touch(2, 400);
+        assert_eq!(newest(&tree), [400, 300, 400, 300]);
+        tree.touch(3, 350);
+        assert_eq!(
+            newest(&tree),
+            [400, 350, 400, 350],
+            "the root is newer already"
+        );
+        tree.touch(1, 10);
+        assert_eq!(newest(&tree), [400, 350, 400, 350], "never lowered");
+        tree.touch(1, NO_TIME);
+        assert_eq!(newest(&tree), [400, 350, 400, 350]);
+
+        // A node without a time (a thin pool's guest) keeps none, and stops the raise.
+        let mut tree = sample();
+        tree.nodes[1].newest = NO_TIME;
+        tree.touch(3, 500);
+        assert_eq!(newest(&tree), [300, NO_TIME, 50, 500]);
+    }
+
+    #[test]
+    fn graft_raises_the_new_subtree_s_ancestors() {
+        let mut tree = sample();
+        let mut new = sample();
+        new.nodes[0].name = b"n".to_vec().into_boxed_slice();
+        new.touch(3, 1000);
+        let at = tree.graft(2, new);
+        assert_eq!(tree.nodes[at as usize].newest, 1000);
+        assert_eq!(
+            newest(&tree)[..4],
+            [1000, 300, 1000, 300],
+            "b and the root, not a"
+        );
+
+        // Grafted under a node without a time: the times stay below it.
+        let mut tree = sample();
+        tree.nodes[2].newest = NO_TIME;
+        tree.nodes[0].newest = NO_TIME;
+        let at = tree.graft(2, sample());
+        assert_eq!(tree.nodes[at as usize].newest, 300);
+        assert_eq!(tree.nodes[2].newest, NO_TIME);
+        assert_eq!(tree.nodes[0].newest, NO_TIME);
+    }
+
+    #[test]
+    fn diff_ignores_newer_times_alone() {
+        let old = sample();
+        let mut new = sample();
+        new.touch(3, 9_999);
+        assert!(old.diff(&new).is_empty());
+    }
+
+    #[test]
+    fn seconds_round_down() {
+        assert_eq!(to_seconds(1_700_000_000_999_999_999), 1_700_000_000);
+        assert_eq!(to_seconds(-1), -1, "just before 1970");
+        assert_eq!(to_seconds(NO_TIME), NO_TIME);
+    }
+
+    fn newest(tree: &DirTree) -> Vec<i64> {
+        tree.nodes.iter().map(|node| node.newest).collect()
     }
 }
