@@ -288,8 +288,9 @@ TIFF, HEIC, AVIF, DNG), or of the key frame at or before 15% into a video (at mo
 its first frame). Only for targets with `thumbnails: true` (default off: it reads file
 contents, which nothing else does), only for a regular file in a folder the tree holds, under
 the walk's rules (excludes, `no_cross_filesystem`, `follow_symlinks`); anything else is a 404.
-ffmpeg reads the file the harvester opened, at a low priority, with (on Linux) 768 MiB of
-address space; an image takes one of `jobs` slots, a video all of them. A request waits up to
+ffmpeg reads the file the harvester opened, at a low priority, and (on Linux) is the first
+process the kernel kills when memory runs out; an image takes one of `jobs` slots, a video all
+of them. A request waits up to
 8 s for a slot and making the picture may take 20 s, so a relayed one fits the relay's 30 s;
 past either it is a 503, tried again next time. Pictures are kept in `cache_dir` by the file's path,
 size, modification time and inode, oldest made first out past `cache_mib`; a file ffmpeg

@@ -101,10 +101,6 @@ const QUEUE_MAX: usize = 48;
 /// and ffprobe killed past it): together within the relay's 30 s for an answer.
 const QUEUE_WAIT: Duration = Duration::from_secs(8);
 const MAKE_TIMEOUT: Duration = Duration::from_secs(20);
-/// ffmpeg's address space (Linux): a huge image fails instead of taking the container's memory.
-/// A 4K HEVC frame took 423 MiB resident on the NAS (2026-11-06).
-#[cfg(target_os = "linux")]
-const FFMPEG_ADDRESS_SPACE: libc::rlim_t = 768 << 20;
 /// A picture bigger than this is not one this module made.
 const PICTURE_MAX: usize = 2 << 20;
 /// Posters fetched from Plex at once.
@@ -321,17 +317,19 @@ async fn run(program: &Path, args: &[&str], file: &std::fs::File) -> Run {
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .kill_on_drop(true);
-    // SAFETY: setpriority and setrlimit are async-signal-safe system calls.
+    // SAFETY: setpriority, open, write and close are async-signal-safe system calls.
     unsafe {
         command.pre_exec(|| {
             libc::setpriority(libc::PRIO_PROCESS, 0, 10);
+            // When memory runs out (a huge image, in a container with a memory limit), the
+            // kernel kills ffmpeg, not the harvester: the picture is then remembered as none.
             #[cfg(target_os = "linux")]
             {
-                let limit = libc::rlimit {
-                    rlim_cur: FFMPEG_ADDRESS_SPACE,
-                    rlim_max: FFMPEG_ADDRESS_SPACE,
-                };
-                libc::setrlimit(libc::RLIMIT_AS, &limit);
+                let adj = libc::open(c"/proc/self/oom_score_adj".as_ptr(), libc::O_WRONLY);
+                if adj >= 0 {
+                    libc::write(adj, b"1000".as_ptr().cast(), 4);
+                    libc::close(adj);
+                }
             }
             Ok(())
         });

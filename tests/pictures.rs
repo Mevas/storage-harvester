@@ -46,7 +46,7 @@ fn fake_ffmpeg(dir: &Path) -> PathBuf {
     let script = r#"#!/bin/sh
 [ "$1" = "-version" ] && exit 0
 here=$(dirname "$0")
-echo "$(basename "$0") $*" >> "$here/calls"
+echo "$(basename "$0") $* adj=$(cat /proc/self/oom_score_adj 2>/dev/null)" >> "$here/calls"
 input="$here/input.$$"
 cat > "$input"
 if [ "$(head -c 3 "$input")" = "BAD" ]; then rm -f "$input"; exit 1; fi
@@ -170,6 +170,12 @@ targets:
         "w=200 is made at 256: {made:?}"
     );
     assert!(!made[0].contains("-ss"), "{made:?}");
+    if cfg!(target_os = "linux") {
+        assert!(
+            made[0].ends_with(" adj=1000"),
+            "ffmpeg goes first when memory runs out: {made:?}"
+        );
+    }
 
     // Kept: the second request is answered from disk, and revalidates by its tag.
     let (status, again_head, again) = get(h.port, &format!("{}&w=200", thumb("a.jpg")), "");
