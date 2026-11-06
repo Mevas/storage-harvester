@@ -1449,6 +1449,7 @@ mod tests {
             tree_max_directories: 1000,
             live: true,
             sharing_interval: None,
+            thumbnails: false,
             collect_handles: false,
             lvm: None,
             labels: BTreeMap::new(),

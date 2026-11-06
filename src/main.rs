@@ -9,6 +9,7 @@ mod exporter;
 mod fsinfo;
 mod live;
 mod lvm;
+mod pictures;
 mod registry;
 mod scanner;
 mod scheduler;

@@ -53,6 +53,9 @@ walk of the same tree (`tests/support`), not from the scanner.
   `target/tmp/perf-report.json`. Size the tree with `HARVESTER_PERF_FILES` (default 20000).
 - `tests/atlas.rs`: `/api/tree` against the independent walk at every depth, best-first
   pruning, `/api/files`, `/api/info`, CORS, and a change on disk reaching `/api/events`.
+- `tests/pictures.rs`: `/api/thumb` with a stand-in ffmpeg (the walk's rules, made once,
+  no CORS) and with the real one when installed, and `/api/posters` and `/api/poster` against a
+  stand-in Plex server.
 - `tests/btrfs.rs`: opt-in (`HARVESTER_BTRFS_DIR`, root). Reflinks, a hard link and an
   excluded reflink on a real btrfs: what deleting each directory frees, the sharing pairs, and
   a change seen by generation polling. CI runs it on a loopback btrfs.
@@ -88,9 +91,10 @@ volumes:
 - `GET /-/ready`: ready after each configured target has completed at least one scan.
 - `GET /atlas`: the Storage Atlas, a dashboard of every harvester's storage (see below), and
   `/atlas/manifest.webmanifest` and its icons, so a phone can install it as an app.
-- `GET /api/info`, `GET /api/tree`, `GET /api/files`, `GET /api/events`: what the atlas reads
-  (see below).
-- `GET /api/peer/<i>/api/{info,tree,files,events}`, `GET /api/metrics/api/v1/...`: the relay.
+- `GET /api/info`, `GET /api/tree`, `GET /api/files`, `GET /api/thumb`, `GET /api/posters`,
+  `GET /api/poster`, `GET /api/events`: what the atlas reads (see below).
+- `GET /api/peer/<i>/api/{info,tree,files,thumb,posters,poster,events}`,
+  `GET /api/metrics/api/v1/...`: the relay.
 
 ## Storage Atlas
 
@@ -112,8 +116,10 @@ atlas:
       size: 'my_disk_size_bytes{volume="1"}'
 ```
 
-`/api/*` is read-only and allows any origin. The harvester serving the page also relays
-`/api/peer/<i>/...` to `atlas.peers[i]` (`/api/info`, `/api/tree`, `/api/files` and `/api/events` only,
+`/api/*` is read-only and allows any origin, except pictures: another site may show them but
+not read them. The harvester serving the page also relays `/api/peer/<i>/...` to
+`atlas.peers[i]` (`/api/info`, `/api/tree`, `/api/files`, `/api/thumb`, `/api/posters`,
+`/api/poster` and `/api/events` only,
 event streams included) and `/api/metrics/...` to `atlas.metrics_url` (`query`,
 `query_range`, `series`, `labels` and label values only), so the page talks to one origin.
 That is what lets it work over HTTPS behind a reverse proxy with single sign-on, where the
@@ -160,6 +166,11 @@ Every block is a directory, sized by the blocks it holds. Two layouts:
   which is not a level: zoomed in, its children show in place as if they sat in its parent.
 - **Files**: zoomed into a folder's "files here" cell, its files are cells too, from
   `/api/files` (below); the side panel lists the files of the folder in view.
+- **Pictures** (on unless switched off; never in wall mode): an image or video file of a
+  target with `thumbnails: true` shows its picture, and a folder of a Plex library its poster
+  (below). A picture covers its cell, with the lens's colour as its rim, and stands in for the
+  name. An open folder keeps its poster behind its children, which tint it like glass. Only
+  cells at least 44 px across ask, nearest the middle first, four at a time.
 - **Blocks**: a squarified treemap.
 
 At the top level, machines are drawn at the cube root of their bytes (Balanced) by default, so
@@ -268,6 +279,52 @@ name, `b` allocated bytes, `a` apparent bytes, `m` modification time (unix secon
 links, `s` symlink; `count`, `bytes` and `apparent` cover every entry, and `partial` is set when
 a directory with more than 200,000 entries was read in part. A path the tree does not hold, or
 a thin pool's node, is a 404.
+
+### Pictures
+
+`GET /api/thumb?target=NAME&path=/abs/folder&name=FILE[&w=128|256|512]` answers a JPEG at least
+`w` on its short side (other widths round up): of an image file (JPEG, PNG, WebP, GIF, BMP,
+TIFF, HEIC, AVIF, DNG), or of the key frame at or before 15% into a video (at most 90 s in, else
+its first frame). Only for targets with `thumbnails: true` (default off: it reads file
+contents, which nothing else does), only for a regular file in a folder the tree holds, under
+the walk's rules (excludes, `no_cross_filesystem`, `follow_symlinks`); anything else is a 404.
+ffmpeg reads the file the harvester opened, at a low priority, and (on Linux) is the first
+process the kernel kills when memory runs out; an image takes one of `jobs` slots, a video all
+of them. A request waits up to
+8 s for a slot and making the picture may take 20 s, so a relayed one fits the relay's 30 s;
+past either it is a 503, tried again next time. Pictures are kept in `cache_dir` by the file's path,
+size, modification time and inode, oldest made first out past `cache_mib`; a file ffmpeg
+cannot read is remembered too. Answers carry an `ETag`, are private for a week, and have no
+`Access-Control-Allow-Origin`.
+
+`GET /api/posters?target=NAME` lists the target's folders (`paths`) that a Plex library has a
+poster for, and `GET /api/poster?target=NAME&path=/abs/folder[&w=...]` fetches one, scaled by
+Plex and kept like thumbnails. A movie's poster goes on the folder its file is in, a show's on
+its folders, and a season's on `Season 01` (or `Season 1`, `Specials` for season 0) inside
+them, the show's again when the season has none. Plex's libraries are read in the background at
+startup and every 15 minutes (a minute after a failure); until the first read, both answer 503.
+
+```yaml
+atlas:
+  thumbnails:                # all optional
+    cache_dir: /var/cache/storage-harvester
+    cache_mib: 512
+    ffmpeg: ffmpeg
+    ffprobe: ffprobe
+    jobs: 2
+  plex:                      # optional
+    url: http://plex.lan:32400
+    token_env: PLEX_TOKEN    # the variable holding the token (default)
+    paths:                   # Plex's path: this harvester's
+      /data/media: /volume1/data/media
+targets:
+  - name: photos
+    path: /volume1/photos
+    thumbnails: true
+```
+
+`/api/info` says per target whether it makes thumbnails (`thumbs`) and whether Plex's libraries
+reach into it (`posters`). The image includes ffmpeg.
 
 ### Live changes
 

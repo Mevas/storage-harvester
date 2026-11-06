@@ -28,7 +28,8 @@ use tokio::time::Instant;
 use crate::cache::SnapshotStore;
 use crate::config::{Config, Target};
 use crate::fsinfo;
-use crate::live::{seconds, LiveStore, Message};
+use crate::live::{seconds, LiveStore, LiveTarget, Message};
+use crate::pictures::{self, Pictures};
 
 const PAGE: &str = include_str!("atlas.html");
 
@@ -93,6 +94,7 @@ pub struct Static {
     relay: Client<HttpConnector, Body>,
     /// Upstream requests in flight, event streams included.
     relay_slots: Arc<Semaphore>,
+    pictures: Pictures,
 }
 
 /// At most this many relayed requests at once; more get 503.
@@ -118,6 +120,14 @@ impl Static {
             .collect();
         let mut connector = HttpConnector::new();
         connector.set_connect_timeout(Some(Duration::from_secs(5)));
+        let relay = Client::builder(TokioExecutor::new())
+            .pool_idle_timeout(Duration::from_secs(30))
+            .build(connector);
+        let thumbnails = config.defaults.thumbnails
+            || config
+                .targets
+                .iter()
+                .any(|target| target.thumbnails == Some(true));
         Self {
             display_name: config.display_name.clone().unwrap_or_else(|| host.clone()),
             host,
@@ -129,9 +139,13 @@ impl Static {
             host_root: config.host_root.clone(),
             btrfs: Mutex::new(HashMap::new()),
             block_poll: config.live.block_poll_interval,
-            relay: Client::builder(TokioExecutor::new())
-                .pool_idle_timeout(Duration::from_secs(30))
-                .build(connector),
+            pictures: Pictures::new(
+                &config.atlas.thumbnails,
+                config.atlas.plex.as_ref(),
+                thumbnails,
+                relay.clone(),
+            ),
+            relay,
             relay_slots: Arc::new(Semaphore::new(RELAY_SLOTS)),
         }
     }
@@ -150,6 +164,9 @@ pub fn routes(state: AtlasState) -> Router {
         .route("/api/info", get(info))
         .route("/api/tree", get(tree))
         .route("/api/files", get(files))
+        .route("/api/thumb", get(thumb))
+        .route("/api/posters", get(posters))
+        .route("/api/poster", get(poster))
         .route("/api/events", get(events))
         .route("/api/peer/:index/*rest", get(peer))
         .route("/api/metrics/*rest", get(metrics))
@@ -161,7 +178,16 @@ pub fn routes(state: AtlasState) -> Router {
         .with_state(state)
 }
 
+/// Marks an answer of `/api/thumb` or `/api/poster`, here or relayed, 304s included.
+#[derive(Clone, Copy)]
+struct Picture;
+
+/// Pictures are the exception: another site may show them, but not read them. A 304 counts too:
+/// a browser merges its headers into the picture it kept.
 async fn allow_any_origin(mut response: Response) -> Response {
+    if response.extensions().get::<Picture>().is_some() {
+        return response;
+    }
     response.headers_mut().insert(
         header::ACCESS_CONTROL_ALLOW_ORIGIN,
         HeaderValue::from_static("*"),
@@ -204,14 +230,24 @@ async fn peer(
     };
     if !matches!(
         rest.as_str(),
-        "api/info" | "api/tree" | "api/files" | "api/events"
+        "api/info"
+            | "api/tree"
+            | "api/files"
+            | "api/thumb"
+            | "api/posters"
+            | "api/poster"
+            | "api/events"
     ) {
         return error(
             StatusCode::NOT_FOUND,
-            "the relay passes /api/info, /api/tree, /api/files and /api/events",
+            "the relay passes /api/info, /api/tree, /api/files, /api/thumb, /api/posters, /api/poster and /api/events",
         );
     }
-    relay(&state, base, &rest, query, &headers).await
+    let mut response = relay(&state, base, &rest, query, &headers).await;
+    if matches!(rest.as_str(), "api/thumb" | "api/poster") {
+        response.extensions_mut().insert(Picture);
+    }
+    response
 }
 
 /// `/api/metrics/<rest>`: `GET atlas.metrics_url/<rest>`, for read-only query paths.
@@ -260,7 +296,7 @@ async fn relay(
         return error(StatusCode::SERVICE_UNAVAILABLE, "relay busy");
     };
     let mut request = Request::get(uri);
-    for name in [header::ACCEPT, header::CACHE_CONTROL] {
+    for name in [header::ACCEPT, header::CACHE_CONTROL, header::IF_NONE_MATCH] {
         if let Some(value) = headers.get(&name) {
             request = request.header(name, value);
         }
@@ -626,6 +662,8 @@ async fn info(State(state): State<AtlasState>) -> Response {
             "live_at": live_at,
             "total": total,
             "sharing": sharing,
+            "thumbs": target.thumbnails && state.info.pictures.ffmpeg_ok,
+            "posters": state.info.pictures.plex.as_ref().is_some_and(|plex| plex.covers(&target.display_path)),
         });
         if let Some(skipped) = skips.get(&target.name) {
             entry["skips"] = json!(skipped);
@@ -737,20 +775,9 @@ async fn files(
         .and_then(|value| value.parse::<usize>().ok())
         .unwrap_or(FILES_LIMIT)
         .clamp(1, FILES_MAX);
-    let (scan, root) = {
-        let guard = lt.state.read().unwrap_or_else(PoisonError::into_inner);
-        let Some(tree_state) = guard.as_ref() else {
-            return error(StatusCode::SERVICE_UNAVAILABLE, "no scan yet");
-        };
-        let tree = &tree_state.tree;
-        // A thin pool's nodes are guests and disks, not folders on this machine.
-        if tree.pool.is_some() {
-            return error(StatusCode::NOT_FOUND, "files in a thin pool are not listed");
-        }
-        let Some(node) = tree.find(path) else {
-            return error(StatusCode::NOT_FOUND, "path not in the tree");
-        };
-        (tree.scan_path(node), (tree.root_dev, tree.root().ino))
+    let (scan, root) = match walked(lt, path) {
+        Ok(found) => found,
+        Err((status, message)) => return error(status, message),
     };
     let rules = Arc::clone(lt);
     let display = path.clone();
@@ -786,6 +813,263 @@ async fn files(
         ),
         Err(_) => error(StatusCode::INTERNAL_SERVER_ERROR, "listing failed"),
     }
+}
+
+/// A refused request: its status and why.
+type Refusal = (StatusCode, &'static str);
+
+/// The folder at `path` in `lt`'s tree: where the walk read it, and the target root's device and
+/// inode. Thin pools hold guests and disks, not folders on this machine.
+fn walked(lt: &LiveTarget, path: &str) -> Result<(Vec<u8>, (u64, u64)), Refusal> {
+    let guard = lt.state.read().unwrap_or_else(PoisonError::into_inner);
+    let Some(tree_state) = guard.as_ref() else {
+        return Err((StatusCode::SERVICE_UNAVAILABLE, "no scan yet"));
+    };
+    let tree = &tree_state.tree;
+    if tree.pool.is_some() {
+        return Err((StatusCode::NOT_FOUND, "files in a thin pool are not listed"));
+    }
+    let Some(node) = tree.find(path) else {
+        return Err((StatusCode::NOT_FOUND, "path not in the tree"));
+    };
+    Ok((tree.scan_path(node), (tree.root_dev, tree.root().ino)))
+}
+
+/// The folder the walk read at `scan`, opened again now. Unless the target follows symlinks,
+/// the target must still be the directory the scan walked (same device and inode, not a
+/// symlink), and the folder must really be inside it: a folder the scan walked, one of its
+/// parents or the target itself may have become a symlink since.
+fn walked_folder(
+    scan: &[u8],
+    target: &Target,
+    (root_dev, root_ino): (u64, u64),
+) -> std::io::Result<PathBuf> {
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::fs::MetadataExt;
+    let dir = std::fs::canonicalize(OsStr::from_bytes(scan))?;
+    if !target.follow_symlinks {
+        let root = std::fs::symlink_metadata(&target.scan_path)?;
+        if !root.is_dir()
+            || (root.dev(), root.ino()) != (root_dev, root_ino)
+            || !dir.starts_with(std::fs::canonicalize(&target.scan_path)?)
+        {
+            return Err(std::io::ErrorKind::NotFound.into());
+        }
+    }
+    Ok(dir)
+}
+
+/// `/api/thumb?target=<name>&path=<folder>&name=<file>[&w=128|256|512]`: a JPEG of an image
+/// file, or of a frame some way into a video, at least `w` on its short side, for targets with
+/// `thumbnails` on. The folder must be one the target's tree holds and the file must be a
+/// regular file the walk would count (excludes, filesystem boundary, symlinks). Made once and
+/// kept; another site can show it but not read it (no `Access-Control-Allow-Origin`).
+async fn thumb(
+    State(state): State<AtlasState>,
+    Query(params): Query<HashMap<String, String>>,
+    headers: HeaderMap,
+) -> Response {
+    use std::os::unix::fs::MetadataExt;
+    let (Some(name), Some(path), Some(file)) =
+        (params.get("target"), params.get("path"), params.get("name"))
+    else {
+        return error(
+            StatusCode::BAD_REQUEST,
+            "target, path and name are required",
+        );
+    };
+    let Some(lt) = state.live.target(name) else {
+        return error(StatusCode::NOT_FOUND, "unknown target");
+    };
+    let pictures = &state.info.pictures;
+    if !lt.target.thumbnails || !pictures.ffmpeg_ok {
+        return error(StatusCode::NOT_FOUND, "no thumbnails for this target");
+    }
+    let Some(kind) = pictures::kind_of(file) else {
+        return error(StatusCode::NOT_FOUND, "not an image or a video");
+    };
+    if file.is_empty() || file == "." || file == ".." || file.contains(['/', '\0']) {
+        return error(StatusCode::NOT_FOUND, "not a file name");
+    }
+    let width = pictures::width(params.get("w").map(String::as_str));
+    let (scan, root) = match walked(lt, path) {
+        Ok(found) => found,
+        Err((status, message)) => return error(status, message),
+    };
+    let shown = format!("{}/{file}", path.trim_end_matches('/'));
+    let opened = {
+        let (rules, file, shown) = (Arc::clone(lt), file.clone(), shown.clone());
+        tokio::task::spawn_blocking(move || open_picture(&scan, &file, &shown, &rules, root)).await
+    };
+    let (handle, meta) = match opened {
+        Ok(Ok(opened)) => opened,
+        Ok(Err(failure)) if failure.kind() == std::io::ErrorKind::NotFound => {
+            return error(StatusCode::NOT_FOUND, "no such file")
+        }
+        Ok(Err(failure)) => {
+            return error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &format!("cannot read the file: {failure}"),
+            )
+        }
+        Err(_) => return error(StatusCode::INTERNAL_SERVER_ERROR, "reading failed"),
+    };
+    // A changed file (size, modification time or inode) gets a new picture.
+    let key = pictures::key(&[
+        b"thumb1",
+        name.as_bytes(),
+        shown.as_bytes(),
+        &meta.len().to_le_bytes(),
+        &meta.mtime().to_le_bytes(),
+        &meta.mtime_nsec().to_le_bytes(),
+        &meta.ino().to_le_bytes(),
+        &width.to_le_bytes(),
+    ]);
+    picture_response(
+        key,
+        pictures.thumbnail(key, handle, kind, width).await,
+        &headers,
+    )
+}
+
+/// `name` in the walked folder at `scan`, opened (not through a symlink unless the target
+/// follows them) and checked like the walk would: a regular file, not excluded, on the
+/// target's filesystem.
+fn open_picture(
+    scan: &[u8],
+    name: &str,
+    shown: &str,
+    lt: &LiveTarget,
+    root: (u64, u64),
+) -> std::io::Result<(std::fs::File, std::fs::Metadata)> {
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+    let target = &lt.target;
+    let dir = walked_folder(scan, target, root)?;
+    if lt.exclude().is_match(std::path::Path::new(shown)) {
+        return Err(std::io::ErrorKind::NotFound.into());
+    }
+    let mut flags = libc::O_NONBLOCK;
+    if !target.follow_symlinks {
+        flags |= libc::O_NOFOLLOW;
+    }
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(flags)
+        .open(dir.join(name))
+        .map_err(|failure| match failure.raw_os_error() {
+            Some(libc::ELOOP) => std::io::ErrorKind::NotFound.into(),
+            _ => failure,
+        })?;
+    let meta = file.metadata()?;
+    if !meta.is_file() || (target.no_cross_filesystem && meta.dev() != root.0) {
+        return Err(std::io::ErrorKind::NotFound.into());
+    }
+    Ok((file, meta))
+}
+
+/// `/api/posters?target=<name>`: the target's folders a Plex library has a poster for (movie
+/// and show folders, and seasons'), as `{"paths": [...]}`.
+async fn posters(
+    State(state): State<AtlasState>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Response {
+    let Some(name) = params.get("target") else {
+        return error(StatusCode::BAD_REQUEST, "target is required");
+    };
+    let Some(lt) = state.live.target(name) else {
+        return error(StatusCode::NOT_FOUND, "unknown target");
+    };
+    let plex = match &state.info.pictures.plex {
+        Some(plex) if plex.covers(&lt.target.display_path) => plex,
+        _ => return Json(json!({ "paths": [] })).into_response(),
+    };
+    let Some(index) = plex.posters() else {
+        return error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Plex's libraries are not read yet",
+        );
+    };
+    let guard = lt.state.read().unwrap_or_else(PoisonError::into_inner);
+    let Some(tree_state) = guard.as_ref() else {
+        return error(StatusCode::SERVICE_UNAVAILABLE, "no scan yet");
+    };
+    let mut paths: Vec<&String> = index
+        .keys()
+        .filter(|path| tree_state.tree.find(path).is_some())
+        .collect();
+    paths.sort_unstable();
+    Json(json!({ "paths": paths })).into_response()
+}
+
+/// `/api/poster?target=<name>&path=<folder>[&w=128|256|512]`: Plex's poster for a folder of the
+/// target, `w` across. Kept like thumbnails.
+async fn poster(
+    State(state): State<AtlasState>,
+    Query(params): Query<HashMap<String, String>>,
+    headers: HeaderMap,
+) -> Response {
+    let (Some(name), Some(path)) = (params.get("target"), params.get("path")) else {
+        return error(StatusCode::BAD_REQUEST, "target and path are required");
+    };
+    let Some(lt) = state.live.target(name) else {
+        return error(StatusCode::NOT_FOUND, "unknown target");
+    };
+    let pictures = &state.info.pictures;
+    let Some(plex) = &pictures.plex else {
+        return error(StatusCode::NOT_FOUND, "no Plex server configured");
+    };
+    let in_tree = {
+        let guard = lt.state.read().unwrap_or_else(PoisonError::into_inner);
+        guard
+            .as_ref()
+            .is_some_and(|tree_state| tree_state.tree.find(path).is_some())
+    };
+    let Some(index) = plex.posters() else {
+        return error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Plex's libraries are not read yet",
+        );
+    };
+    let Some(thumb) = index.get(path).filter(|_| in_tree) else {
+        return error(StatusCode::NOT_FOUND, "no poster for this folder");
+    };
+    let width = pictures::width(params.get("w").map(String::as_str));
+    let key = pictures::key(&[b"poster1", thumb.as_bytes(), &width.to_le_bytes()]);
+    picture_response(key, pictures.poster(key, thumb, width).await, &headers)
+}
+
+fn picture_response(
+    key: u64,
+    picture: Result<Option<Vec<u8>>, pictures::Busy>,
+    headers: &HeaderMap,
+) -> Response {
+    let bytes = match picture {
+        Ok(Some(bytes)) => bytes,
+        Ok(None) => return error(StatusCode::NOT_FOUND, "no picture of this"),
+        Err(pictures::Busy) => {
+            let mut busy = error(StatusCode::SERVICE_UNAVAILABLE, "busy making pictures");
+            busy.headers_mut()
+                .insert(header::RETRY_AFTER, HeaderValue::from_static("5"));
+            return busy;
+        }
+    };
+    let tag = format!("\"{key:016x}\"");
+    let etag = HeaderValue::from_str(&tag).expect("hex");
+    let cache = HeaderValue::from_static("private, max-age=604800");
+    let mut response = if headers.get(header::IF_NONE_MATCH) == Some(&etag) {
+        StatusCode::NOT_MODIFIED.into_response()
+    } else {
+        let mut whole = bytes.into_response();
+        whole
+            .headers_mut()
+            .insert(header::CONTENT_TYPE, HeaderValue::from_static("image/jpeg"));
+        whole
+    };
+    response.headers_mut().insert(header::ETAG, etag);
+    response.headers_mut().insert(header::CACHE_CONTROL, cache);
+    response.extensions_mut().insert(Picture);
+    response
 }
 
 /// `/api/files` lists this many files unless asked, and at most `FILES_MAX`.
@@ -838,19 +1122,7 @@ fn list_files(
         at.push(b'/');
     }
     let base = at.len();
-    // A folder the scan walked, one of its parents or the target itself may have become a symlink
-    // since. Unless the target follows symlinks, the target must still be the directory the scan
-    // walked (same device and inode, not a symlink), and the folder must really be inside it.
-    let dir = std::fs::canonicalize(OsStr::from_bytes(scan))?;
-    if !target.follow_symlinks {
-        let root = std::fs::symlink_metadata(&target.scan_path)?;
-        if !root.is_dir()
-            || (root.dev(), root.ino()) != (root_dev, root_ino)
-            || !dir.starts_with(std::fs::canonicalize(&target.scan_path)?)
-        {
-            return Err(std::io::ErrorKind::NotFound.into());
-        }
-    }
+    let dir = walked_folder(scan, target, (root_dev, root_ino))?;
     for entry in std::fs::read_dir(&dir)? {
         seen += 1;
         if seen > FILES_SCAN_MAX {
