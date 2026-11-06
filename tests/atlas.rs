@@ -191,6 +191,117 @@ fn tree_lists_the_largest_first_within_the_limit() {
 }
 
 #[test]
+fn files_lists_one_folders_own_files_biggest_first() {
+    let host = Host::new();
+    let dir = host.data().join("show");
+    for (name, len) in [("b.mkv", 3_000_000), ("a.mkv", 1_000_000), ("c.nfo", 2_000)] {
+        write_file(&dir.join(name), len);
+    }
+    write_file(&dir.join("Season 01/e01.mkv"), 5_000_000);
+    write_file(&dir.join("skip.tmp"), 4_000_000);
+    link("b.mkv", &dir.join("link"));
+    set_mtime(&dir.join("a.mkv"), 1_600_000_000);
+    let h = host.start(
+        "\
+defaults:
+  baseline_interval: 1s
+  report_depth: 1
+  exclude: ['**/*.tmp']
+targets:
+  - name: data
+    path: /srv/data
+",
+    );
+    first_scan(&h);
+
+    let (status, body) = json(&h, "/api/files?target=data&path=/srv/data/show");
+    assert_eq!(status, 200, "{body}");
+    let names: Vec<&str> = body["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|file| file["n"].as_str().unwrap())
+        .collect();
+    // Files only (not the subfolder), not the excluded one, biggest first; the symlink is not
+    // followed, so it is the smallest.
+    assert_eq!(names, ["b.mkv", "a.mkv", "c.nfo", "link"], "{body}");
+    assert_eq!(body["count"], 4);
+    let a = &body["files"][1];
+    assert_eq!(a["a"], 1_000_000);
+    assert!(a["b"].as_u64().unwrap() >= 1_000_000, "{a}");
+    assert_eq!(a["m"], 1_600_000_000);
+    assert_eq!(a["l"], 1);
+    assert_eq!(body["files"][3]["s"], true);
+    let total: u64 = body["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|file| file["b"].as_u64().unwrap())
+        .sum();
+    assert_eq!(body["bytes"], total);
+
+    let (_, top) = json(&h, "/api/files?target=data&path=/srv/data/show&limit=1");
+    assert_eq!(top["files"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        (top["files"][0]["n"].as_str(), top["count"].as_u64()),
+        (Some("b.mkv"), Some(4))
+    );
+
+    // Only folders the tree holds: nothing outside the target, however the path is spelled.
+    for refused in [
+        "/api/files?target=data&path=/srv/data/none",
+        "/api/files?target=data&path=/srv/data/show/../../..",
+        "/api/files?target=data&path=/etc",
+        "/api/files?target=nope&path=/srv/data",
+    ] {
+        assert_eq!(json(&h, refused).0, 404, "{refused}");
+    }
+    assert_eq!(json(&h, "/api/files?target=data").0, 400);
+}
+
+#[test]
+fn files_does_not_follow_a_walked_folder_swapped_for_a_symlink() {
+    let host = Host::new();
+    write_file(&host.data().join("show/Season 01/e01.mkv"), 10_000);
+    let outside = host.tmp.path().join("outside");
+    write_file(&outside.join("Season 01/secret.key"), 10);
+    // No rescan and no live updates: the tree keeps the walked folders while the disk changes.
+    let h = host.start(
+        "\
+defaults:
+  baseline_interval: 1h
+  live: false
+targets:
+  - name: data
+    path: /srv/data
+",
+    );
+    first_scan(&h);
+    let files = "/api/files?target=data&path=/srv/data/show/Season%2001";
+    assert_eq!(json(&h, files).1["files"][0]["n"], "e01.mkv");
+
+    // A parent of the walked folder becomes a symlink to a folder outside the target.
+    std::fs::rename(host.data().join("show"), host.tmp.path().join("show-was")).unwrap();
+    link(outside.to_str().unwrap(), &host.data().join("show"));
+    let tree = "/api/tree?target=data&path=/srv/data/show/Season%2001";
+    assert_eq!(json(&h, tree).0, 200, "the tree still holds the folder");
+    let (status, body) = json(&h, files);
+    assert_eq!(status, 404, "{body}");
+
+    // And the target itself becomes a symlink to a folder outside, which has the same layout.
+    std::fs::remove_file(host.data().join("show")).unwrap();
+    std::fs::rename(host.tmp.path().join("show-was"), host.data().join("show")).unwrap();
+    assert_eq!(json(&h, files).1["files"][0]["n"], "e01.mkv");
+    let elsewhere = host.tmp.path().join("elsewhere");
+    write_file(&elsewhere.join("show/Season 01/secret.key"), 10);
+    std::fs::rename(host.data(), host.tmp.path().join("data-was")).unwrap();
+    link(elsewhere.to_str().unwrap(), &host.data());
+    assert_eq!(json(&h, tree).0, 200, "the tree still holds the folder");
+    let (status, body) = json(&h, files);
+    assert_eq!(status, 404, "{body}");
+}
+
+#[test]
 fn info_describes_targets_filesystems_and_nesting() {
     let host = Host::new();
     realistic_tree(&host.data(), 5);
@@ -425,6 +536,12 @@ fn the_relay_serves_peers_and_metrics_from_one_origin() {
     let (status, tree) = json(&h, "/api/peer/0/api/tree?target=data&depth=1");
     assert_eq!(status, 200, "{tree}");
     assert!(tree["node"]["t"].as_u64().unwrap() >= 50_000);
+    let (status, files) = json(&h, "/api/peer/0/api/files?target=data&path=/srv/data");
+    assert_eq!(
+        (status, files["files"][0]["n"].as_str()),
+        (200, Some("peer.bin")),
+        "{files}"
+    );
     let mut events = Events::open_at(h.port, "/api/peer/0/api/events");
     assert_eq!(
         events.next_named("hello", Duration::from_secs(10))["host"],

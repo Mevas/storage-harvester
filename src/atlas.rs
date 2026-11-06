@@ -149,6 +149,7 @@ pub fn routes(state: AtlasState) -> Router {
     let api = Router::new()
         .route("/api/info", get(info))
         .route("/api/tree", get(tree))
+        .route("/api/files", get(files))
         .route("/api/events", get(events))
         .route("/api/peer/:index/*rest", get(peer))
         .route("/api/metrics/*rest", get(metrics))
@@ -201,10 +202,13 @@ async fn peer(
     let Some(base) = state.info.peers.get(index) else {
         return error(StatusCode::NOT_FOUND, "no such peer");
     };
-    if !matches!(rest.as_str(), "api/info" | "api/tree" | "api/events") {
+    if !matches!(
+        rest.as_str(),
+        "api/info" | "api/tree" | "api/files" | "api/events"
+    ) {
         return error(
             StatusCode::NOT_FOUND,
-            "the relay passes /api/info, /api/tree and /api/events",
+            "the relay passes /api/info, /api/tree, /api/files and /api/events",
         );
     }
     relay(&state, base, &rest, query, &headers).await
@@ -708,6 +712,197 @@ async fn tree(
         "node": node,
     }))
     .into_response()
+}
+
+/// `/api/files?target=<name>&path=<folder>[&limit=N]`: the files directly in one folder (not
+/// in its subfolders), biggest first, read from disk when asked: names, sizes, times and link
+/// counts, never contents. The folder must be one the target's tree holds, so a path can only
+/// name a folder the harvester already walks; entries follow the walk's rules (excludes,
+/// filesystem boundary, symlinks).
+async fn files(
+    State(state): State<AtlasState>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Response {
+    let Some(name) = params.get("target") else {
+        return error(StatusCode::BAD_REQUEST, "target is required");
+    };
+    let Some(path) = params.get("path") else {
+        return error(StatusCode::BAD_REQUEST, "path is required");
+    };
+    let Some(lt) = state.live.target(name) else {
+        return error(StatusCode::NOT_FOUND, "unknown target");
+    };
+    let limit = params
+        .get("limit")
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(FILES_LIMIT)
+        .clamp(1, FILES_MAX);
+    let (scan, root) = {
+        let guard = lt.state.read().unwrap_or_else(PoisonError::into_inner);
+        let Some(tree_state) = guard.as_ref() else {
+            return error(StatusCode::SERVICE_UNAVAILABLE, "no scan yet");
+        };
+        let tree = &tree_state.tree;
+        // A thin pool's nodes are guests and disks, not folders on this machine.
+        if tree.pool.is_some() {
+            return error(StatusCode::NOT_FOUND, "files in a thin pool are not listed");
+        }
+        let Some(node) = tree.find(path) else {
+            return error(StatusCode::NOT_FOUND, "path not in the tree");
+        };
+        (tree.scan_path(node), (tree.root_dev, tree.root().ino))
+    };
+    let rules = Arc::clone(lt);
+    let display = path.clone();
+    let listed = tokio::task::spawn_blocking(move || {
+        list_files(&scan, display.as_bytes(), &rules, root, limit)
+    })
+    .await;
+    match listed {
+        Ok(Ok(listing)) => Json(json!({
+            "host": state.live.host,
+            "target": name,
+            "path": path,
+            "files": listing.files.iter().map(|file| json!({
+                "n": file.name,
+                "b": file.blocks,
+                "a": file.apparent,
+                "m": file.mtime,
+                "l": file.links,
+                "s": file.symlink,
+            })).collect::<Vec<_>>(),
+            "count": listing.count,
+            "bytes": listing.blocks,
+            "apparent": listing.apparent,
+            "partial": listing.partial,
+        }))
+        .into_response(),
+        Ok(Err(failure)) if failure.kind() == std::io::ErrorKind::NotFound => {
+            error(StatusCode::NOT_FOUND, "the folder is gone")
+        }
+        Ok(Err(failure)) => error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &format!("cannot read the folder: {failure}"),
+        ),
+        Err(_) => error(StatusCode::INTERNAL_SERVER_ERROR, "listing failed"),
+    }
+}
+
+/// `/api/files` lists this many files unless asked, and at most `FILES_MAX`.
+const FILES_LIMIT: usize = 400;
+const FILES_MAX: usize = 5000;
+/// A folder with more entries than this is listed in part: the first ones read.
+const FILES_SCAN_MAX: u64 = 200_000;
+
+struct FileEntry {
+    name: String,
+    blocks: u64,
+    apparent: u64,
+    mtime: i64,
+    links: u64,
+    symlink: bool,
+}
+
+/// One folder's non-directory entries: the biggest `limit` (by allocated bytes), and the count
+/// and totals of all of them.
+struct FileListing {
+    files: Vec<FileEntry>,
+    count: u64,
+    blocks: u64,
+    apparent: u64,
+    partial: bool,
+}
+
+fn list_files(
+    scan: &[u8],
+    display: &[u8],
+    lt: &crate::live::LiveTarget,
+    (root_dev, root_ino): (u64, u64),
+    limit: usize,
+) -> std::io::Result<FileListing> {
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::fs::MetadataExt;
+    let target = &lt.target;
+    let exclude = lt.exclude();
+    let mut listing = FileListing {
+        files: Vec::new(),
+        count: 0,
+        blocks: 0,
+        apparent: 0,
+        partial: false,
+    };
+    let mut seen = 0u64;
+    let mut at = display.to_vec();
+    if at.last() != Some(&b'/') {
+        at.push(b'/');
+    }
+    let base = at.len();
+    // A folder the scan walked, one of its parents or the target itself may have become a symlink
+    // since. Unless the target follows symlinks, the target must still be the directory the scan
+    // walked (same device and inode, not a symlink), and the folder must really be inside it.
+    let dir = std::fs::canonicalize(OsStr::from_bytes(scan))?;
+    if !target.follow_symlinks {
+        let root = std::fs::symlink_metadata(&target.scan_path)?;
+        if !root.is_dir()
+            || (root.dev(), root.ino()) != (root_dev, root_ino)
+            || !dir.starts_with(std::fs::canonicalize(&target.scan_path)?)
+        {
+            return Err(std::io::ErrorKind::NotFound.into());
+        }
+    }
+    for entry in std::fs::read_dir(&dir)? {
+        seen += 1;
+        if seen > FILES_SCAN_MAX {
+            listing.partial = true;
+            break;
+        }
+        let Ok(entry) = entry else { continue };
+        let name = entry.file_name();
+        if !exclude.is_empty() {
+            at.truncate(base);
+            at.extend_from_slice(name.as_bytes());
+            if exclude.is_match(std::path::Path::new(OsStr::from_bytes(&at))) {
+                continue;
+            }
+        }
+        let Ok(kind) = entry.file_type() else {
+            continue;
+        };
+        let meta = if kind.is_symlink() && target.follow_symlinks {
+            std::fs::metadata(entry.path())
+        } else {
+            entry.metadata()
+        };
+        let Ok(meta) = meta else { continue };
+        if meta.is_dir() || (target.no_cross_filesystem && meta.dev() != root_dev) {
+            continue;
+        }
+        let blocks = meta.blocks().saturating_mul(512);
+        listing.count += 1;
+        listing.blocks = listing.blocks.saturating_add(blocks);
+        listing.apparent = listing.apparent.saturating_add(meta.len());
+        listing.files.push(FileEntry {
+            name: name.to_string_lossy().into_owned(),
+            blocks,
+            apparent: meta.len(),
+            mtime: meta.mtime(),
+            links: meta.nlink(),
+            symlink: kind.is_symlink(),
+        });
+    }
+    let order = |a: &FileEntry, b: &FileEntry| {
+        b.blocks
+            .cmp(&a.blocks)
+            .then(b.apparent.cmp(&a.apparent))
+            .then_with(|| a.name.cmp(&b.name))
+    };
+    if listing.files.len() > limit {
+        listing.files.select_nth_unstable_by(limit, order);
+        listing.files.truncate(limit);
+    }
+    listing.files.sort_unstable_by(order);
+    Ok(listing)
 }
 
 async fn events(
