@@ -737,7 +737,7 @@ async fn files(
         .and_then(|value| value.parse::<usize>().ok())
         .unwrap_or(FILES_LIMIT)
         .clamp(1, FILES_MAX);
-    let (scan, root_dev) = {
+    let (scan, root) = {
         let guard = lt.state.read().unwrap_or_else(PoisonError::into_inner);
         let Some(tree_state) = guard.as_ref() else {
             return error(StatusCode::SERVICE_UNAVAILABLE, "no scan yet");
@@ -750,12 +750,12 @@ async fn files(
         let Some(node) = tree.find(path) else {
             return error(StatusCode::NOT_FOUND, "path not in the tree");
         };
-        (tree.scan_path(node), tree.root_dev)
+        (tree.scan_path(node), (tree.root_dev, tree.root().ino))
     };
     let rules = Arc::clone(lt);
     let display = path.clone();
     let listed = tokio::task::spawn_blocking(move || {
-        list_files(&scan, display.as_bytes(), &rules, root_dev, limit)
+        list_files(&scan, display.as_bytes(), &rules, root, limit)
     })
     .await;
     match listed {
@@ -817,7 +817,7 @@ fn list_files(
     scan: &[u8],
     display: &[u8],
     lt: &crate::live::LiveTarget,
-    root_dev: u64,
+    (root_dev, root_ino): (u64, u64),
     limit: usize,
 ) -> std::io::Result<FileListing> {
     use std::ffi::OsStr;
@@ -838,11 +838,18 @@ fn list_files(
         at.push(b'/');
     }
     let base = at.len();
-    // A folder the scan walked, or one of its parents, may have become a symlink since: unless the
-    // target follows symlinks, it is listed only while it really is inside the target.
+    // A folder the scan walked, one of its parents or the target itself may have become a symlink
+    // since. Unless the target follows symlinks, the target must still be the directory the scan
+    // walked (same device and inode, not a symlink), and the folder must really be inside it.
     let dir = std::fs::canonicalize(OsStr::from_bytes(scan))?;
-    if !target.follow_symlinks && !dir.starts_with(std::fs::canonicalize(&target.scan_path)?) {
-        return Err(std::io::ErrorKind::NotFound.into());
+    if !target.follow_symlinks {
+        let root = std::fs::symlink_metadata(&target.scan_path)?;
+        if !root.is_dir()
+            || (root.dev(), root.ino()) != (root_dev, root_ino)
+            || !dir.starts_with(std::fs::canonicalize(&target.scan_path)?)
+        {
+            return Err(std::io::ErrorKind::NotFound.into());
+        }
     }
     for entry in std::fs::read_dir(&dir)? {
         seen += 1;

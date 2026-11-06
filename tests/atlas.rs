@@ -287,6 +287,18 @@ targets:
     assert_eq!(json(&h, tree).0, 200, "the tree still holds the folder");
     let (status, body) = json(&h, files);
     assert_eq!(status, 404, "{body}");
+
+    // And the target itself becomes a symlink to a folder outside, which has the same layout.
+    std::fs::remove_file(host.data().join("show")).unwrap();
+    std::fs::rename(host.tmp.path().join("show-was"), host.data().join("show")).unwrap();
+    assert_eq!(json(&h, files).1["files"][0]["n"], "e01.mkv");
+    let elsewhere = host.tmp.path().join("elsewhere");
+    write_file(&elsewhere.join("show/Season 01/secret.key"), 10);
+    std::fs::rename(host.data(), host.tmp.path().join("data-was")).unwrap();
+    link(elsewhere.to_str().unwrap(), &host.data());
+    assert_eq!(json(&h, tree).0, 200, "the tree still holds the folder");
+    let (status, body) = json(&h, files);
+    assert_eq!(status, 404, "{body}");
 }
 
 #[test]
