@@ -7,7 +7,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::convert::Infallible;
 use std::path::PathBuf;
-use std::sync::{Arc, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, SystemTime};
 
 use axum::body::Body;
@@ -26,7 +26,7 @@ use tokio::sync::{broadcast, watch, OwnedSemaphorePermit, Semaphore};
 use tokio::time::Instant;
 
 use crate::cache::SnapshotStore;
-use crate::config::Config;
+use crate::config::{Config, Target};
 use crate::fsinfo;
 use crate::live::{seconds, LiveStore, Message};
 
@@ -83,6 +83,12 @@ pub struct Static {
     /// `(filesystem id, used query, size query)`.
     capacity_queries: Vec<(String, String, String)>,
     machine_uuid: Option<String>,
+    /// The hypervisor this machine is a guest of (`qemu`, ...), `None` on bare metal.
+    machine_virt: Option<String>,
+    host_root: PathBuf,
+    /// btrfs volume facts by filesystem id, with when they were read: [`btrfs_facts`].
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    btrfs: Mutex<HashMap<String, (std::time::Instant, Value)>>,
     block_poll: Duration,
     relay: Client<HttpConnector, Body>,
     /// Upstream requests in flight, event streams included.
@@ -119,6 +125,9 @@ impl Static {
             metrics_url: config.atlas.metrics_url.clone(),
             capacity_queries,
             machine_uuid: fsinfo::machine_uuid(&config.host_root),
+            machine_virt: fsinfo::machine_virt(&config.host_root),
+            host_root: config.host_root.clone(),
+            btrfs: Mutex::new(HashMap::new()),
             block_poll: config.live.block_poll_interval,
             relay: Client::builder(TokioExecutor::new())
                 .pool_idle_timeout(Duration::from_secs(30))
@@ -364,24 +373,192 @@ fn error(status: StatusCode, message: &str) -> Response {
     (status, Json(json!({ "error": message }))).into_response()
 }
 
+/// Whether a walk of `outer` reaches `inner`'s root: inside it, through no excluded path, no
+/// symlink (unless followed), and no other device when the walk stays on one. On btrfs each
+/// subvolume is its own device, so a share's target is not inside the volume's.
+fn walks_into(outer: &Target, inner: &Target, exclude: &globset::GlobSet) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    let Ok(rel) = inner.display_path.strip_prefix(&outer.display_path) else {
+        return false;
+    };
+    let root_dev = std::fs::metadata(&outer.scan_path).map(|m| m.dev()).ok();
+    let (mut display, mut scan) = (outer.display_path.clone(), outer.scan_path.clone());
+    for part in rel.components() {
+        display.push(part);
+        scan.push(part);
+        if exclude.is_match(&display) {
+            return false;
+        }
+        let Ok(meta) = std::fs::symlink_metadata(&scan) else {
+            return false;
+        };
+        if meta.file_type().is_symlink() && !outer.follow_symlinks {
+            return false;
+        }
+        if outer.no_cross_filesystem && root_dev.is_some() && Some(meta.dev()) != root_dev {
+            return false;
+        }
+    }
+    // `dir/**` excludes everything in `dir` but not `dir` itself.
+    !exclude.is_match(display.join(".storage-harvester-probe"))
+}
+
+/// For each target, the targets inside it by path that its walk does not reach: the atlas
+/// draws those beside it instead of inside it.
+fn skipped_targets(targets: &[&Target]) -> HashMap<String, Vec<String>> {
+    let mut skips: HashMap<String, Vec<String>> = HashMap::new();
+    for outer in targets {
+        if outer.lvm.is_some() {
+            continue;
+        }
+        let Ok(exclude) = crate::scanner::native::exclude_set(&outer.exclude) else {
+            continue;
+        };
+        for inner in targets {
+            if inner.name == outer.name
+                || inner.lvm.is_some()
+                || !inner.display_path.starts_with(&outer.display_path)
+            {
+                continue;
+            }
+            if !walks_into(outer, inner, &exclude) {
+                skips
+                    .entry(outer.name.clone())
+                    .or_default()
+                    .push(inner.name.clone());
+            }
+        }
+    }
+    skips
+}
+
+/// A btrfs volume's space as btrfs keeps it, and its subvolumes that no target walks, grouped
+/// by the folder they are in (`/volume2/@docker/btrfs/subvolumes`: 279, all snapshots). Read
+/// at most once a minute. `targets` are `(fs_path, display path, mount)` of the targets on it.
+#[cfg(target_os = "linux")]
+fn btrfs_facts(
+    info: &Static,
+    id: &str,
+    path: &std::path::Path,
+    targets: &[(String, String, String)],
+) -> Option<Value> {
+    use crate::btrfs;
+    let mut cache = info.btrfs.lock().unwrap_or_else(PoisonError::into_inner);
+    if let Some((at, value)) = cache.get(id) {
+        if at.elapsed() < Duration::from_secs(60) {
+            return Some(value.clone());
+        }
+    }
+    let mut value = btrfs::space(path).ok()?.to_json();
+    if let Ok(subvolumes) = btrfs::subvolumes(path) {
+        // The mount's root inside the volume (`/@syno` for `/volume1`), from any target.
+        let (mount_root, mount) = targets
+            .iter()
+            .find_map(|(fs_path, display, mount)| {
+                Some((mount_root(fs_path, display, mount)?, mount.clone()))
+            })
+            .unwrap_or_default();
+        let shown = |path: &str| match path.strip_prefix(mount_root.as_str()) {
+            Some(rest) if mount_root.is_empty() || rest.is_empty() || rest.starts_with('/') => {
+                format!("{}{}", mount.trim_end_matches('/'), rest)
+            }
+            _ => format!("(volume) {path}"),
+        };
+        let mut groups: BTreeMap<String, (u64, u64)> = BTreeMap::new();
+        for subvolume in &subvolumes {
+            if targets
+                .iter()
+                .any(|(fs_path, _, _)| *fs_path == subvolume.path)
+            {
+                continue;
+            }
+            let parent = subvolume
+                .path
+                .rsplit_once('/')
+                .map(|(p, _)| p)
+                .unwrap_or("");
+            let group = groups
+                .entry(shown(if parent.is_empty() { "/" } else { parent }))
+                .or_default();
+            group.0 += 1;
+            group.1 += u64::from(subvolume.snapshot);
+        }
+        value["subvolumes"] = json!(subvolumes.len());
+        value["unwalked"] = json!(groups
+            .into_iter()
+            .map(|(dir, (count, snapshots))| json!({"in": dir, "count": count, "snapshots": snapshots}))
+            .collect::<Vec<_>>());
+    }
+    cache.insert(id.to_string(), (std::time::Instant::now(), value.clone()));
+    Some(value)
+}
+
+/// The path inside the volume of the directory mounted at `mount`, from one target on that
+/// mount: `/@syno` for `/@syno/data` shown as `/volume1/data` with `/volume1` mounted.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn mount_root(fs_path: &str, display: &str, mount: &str) -> Option<String> {
+    let tail = display.strip_prefix(mount.trim_end_matches('/'))?;
+    if !(tail.is_empty() || tail.starts_with('/')) {
+        return None;
+    }
+    let tail = tail.trim_end_matches('/');
+    Some(
+        fs_path
+            .trim_end_matches('/')
+            .strip_suffix(tail)?
+            .to_string(),
+    )
+}
+
+#[cfg(not(target_os = "linux"))]
+fn btrfs_facts(
+    _: &Static,
+    _: &str,
+    _: &std::path::Path,
+    _: &[(String, String, String)],
+) -> Option<Value> {
+    None
+}
+
 async fn info(State(state): State<AtlasState>) -> Response {
     let scans = state.store.summaries().await;
     let mut filesystems: BTreeMap<String, Value> = BTreeMap::new();
     let mut targets = Vec::new();
+    let all: Vec<&Target> = state.live.targets.iter().map(|lt| &lt.target).collect();
+    let skips = skipped_targets(&all);
     for lt in &state.live.targets {
         let target = &lt.target;
         let location = lt.location.as_ref();
         if let Some(location) = location {
             if !filesystems.contains_key(&location.id) {
                 if let Some(usage) = fsinfo::usage(&target.scan_path) {
-                    filesystems.insert(
-                        location.id.clone(),
-                        json!({
-                            "id": location.id, "type": location.fstype, "mount": location.mount,
-                            "size": usage.size, "used": usage.used, "avail": usage.avail,
-                            "reserved": usage.reserved, "disks": location.disks,
-                        }),
-                    );
+                    let mut entry = json!({
+                        "id": location.id, "type": location.fstype, "mount": location.mount,
+                        "size": usage.size, "used": usage.used, "avail": usage.avail,
+                        "reserved": usage.reserved, "disks": location.disks,
+                    });
+                    if lt.btrfs {
+                        let on: Vec<(String, String, String)> = state
+                            .live
+                            .targets
+                            .iter()
+                            .filter(|o| o.location.as_ref().is_some_and(|l| l.id == location.id))
+                            .filter_map(|o| {
+                                let l = o.location.as_ref()?;
+                                Some((
+                                    l.fs_path.clone(),
+                                    o.target.display_path.display().to_string(),
+                                    l.mount.clone(),
+                                ))
+                            })
+                            .collect();
+                        if let Some(facts) =
+                            btrfs_facts(&state.info, &location.id, &target.scan_path, &on)
+                        {
+                            entry["btrfs"] = facts;
+                        }
+                    }
+                    filesystems.insert(location.id.clone(), entry);
                 }
             }
         }
@@ -446,6 +623,9 @@ async fn info(State(state): State<AtlasState>) -> Response {
             "total": total,
             "sharing": sharing,
         });
+        if let Some(skipped) = skips.get(&target.name) {
+            entry["skips"] = json!(skipped);
+        }
         if target.lvm.is_some() {
             entry["poll_s"] = json!(state.info.block_poll.as_secs_f64());
             entry["guests"] = guests.unwrap_or(json!([]));
@@ -453,12 +633,24 @@ async fn info(State(state): State<AtlasState>) -> Response {
         targets.push(entry);
     }
     let info = &state.info;
+    // The disks under this machine's own filesystems (not a thin pool's), partition by
+    // partition: what a VM's disk holds besides the scanned files.
+    let block_ids: Vec<String> = filesystems
+        .values()
+        .filter(|fs| fs["type"] != "lvmthin")
+        .filter_map(|fs| fs["id"].as_str().map(str::to_string))
+        .collect();
+    let disks: Vec<Value> = fsinfo::layout(&block_ids, &info.host_root)
+        .iter()
+        .map(fsinfo::Block::to_json)
+        .collect();
+    let machine = json!({ "uuid": info.machine_uuid, "virt": info.machine_virt, "disks": disks });
     Json(json!({
         "host": info.host,
         "display_name": info.display_name,
         "version": env!("CARGO_PKG_VERSION"),
         "now": seconds(SystemTime::now()),
-        "machine": info.machine_uuid.as_ref().map(|uuid| json!({ "uuid": uuid })),
+        "machine": machine,
         "atlas": { "peers": info.peers, "metrics_url": info.metrics_url, "proxy": true },
         "live": state.live.summary(),
         "filesystems": filesystems.into_values().collect::<Vec<_>>(),
@@ -560,6 +752,26 @@ async fn events(
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_target_says_where_its_volume_is_mounted() {
+        let root = super::mount_root;
+        assert_eq!(
+            root("/@syno/data", "/volume1/data", "/volume1").as_deref(),
+            Some("/@syno")
+        );
+        assert_eq!(
+            root("/@syno", "/volume1", "/volume1").as_deref(),
+            Some("/@syno")
+        );
+        assert_eq!(
+            root("/", "/mnt/scratch", "/mnt/scratch").as_deref(),
+            Some("")
+        );
+        assert_eq!(root("/var/log", "/var/log", "/").as_deref(), Some(""));
+        assert_eq!(root("/x", "/volume10/x", "/volume1"), None);
+    }
+
     use std::convert::Infallible;
 
     use axum::body::Bytes;
