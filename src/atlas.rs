@@ -838,15 +838,13 @@ fn list_files(
         at.push(b'/');
     }
     let base = at.len();
-    // A folder the scan walked that has since become a symlink is not followed out of the target.
-    if !target.follow_symlinks
-        && std::fs::symlink_metadata(OsStr::from_bytes(scan))?
-            .file_type()
-            .is_symlink()
-    {
+    // A folder the scan walked, or one of its parents, may have become a symlink since: unless the
+    // target follows symlinks, it is listed only while it really is inside the target.
+    let dir = std::fs::canonicalize(OsStr::from_bytes(scan))?;
+    if !target.follow_symlinks && !dir.starts_with(std::fs::canonicalize(&target.scan_path)?) {
         return Err(std::io::ErrorKind::NotFound.into());
     }
-    for entry in std::fs::read_dir(OsStr::from_bytes(scan))? {
+    for entry in std::fs::read_dir(&dir)? {
         seen += 1;
         if seen > FILES_SCAN_MAX {
             listing.partial = true;
