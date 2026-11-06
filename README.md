@@ -52,7 +52,7 @@ walk of the same tree (`tests/support`), not from the scanner.
   (default 1×) of that baseline, or if the walk was incomplete. The report goes to
   `target/tmp/perf-report.json`. Size the tree with `HARVESTER_PERF_FILES` (default 20000).
 - `tests/atlas.rs`: `/api/tree` against the independent walk at every depth, best-first
-  pruning, `/api/info`, CORS, and a change on disk reaching `/api/events`.
+  pruning, `/api/files`, `/api/info`, CORS, and a change on disk reaching `/api/events`.
 - `tests/btrfs.rs`: opt-in (`HARVESTER_BTRFS_DIR`, root). Reflinks, a hard link and an
   excluded reflink on a real btrfs: what deleting each directory frees, the sharing pairs, and
   a change seen by generation polling. CI runs it on a loopback btrfs.
@@ -88,8 +88,9 @@ volumes:
 - `GET /-/ready`: ready after each configured target has completed at least one scan.
 - `GET /atlas`: the Storage Atlas, a dashboard of every harvester's storage (see below), and
   `/atlas/manifest.webmanifest` and its icons, so a phone can install it as an app.
-- `GET /api/info`, `GET /api/tree`, `GET /api/events`: what the atlas reads (see below).
-- `GET /api/peer/<i>/api/{info,tree,events}`, `GET /api/metrics/api/v1/...`: the relay.
+- `GET /api/info`, `GET /api/tree`, `GET /api/files`, `GET /api/events`: what the atlas reads
+  (see below).
+- `GET /api/peer/<i>/api/{info,tree,files,events}`, `GET /api/metrics/api/v1/...`: the relay.
 
 ## Storage Atlas
 
@@ -112,7 +113,7 @@ atlas:
 ```
 
 `/api/*` is read-only and allows any origin. The harvester serving the page also relays
-`/api/peer/<i>/...` to `atlas.peers[i]` (`/api/info`, `/api/tree` and `/api/events` only,
+`/api/peer/<i>/...` to `atlas.peers[i]` (`/api/info`, `/api/tree`, `/api/files` and `/api/events` only,
 event streams included) and `/api/metrics/...` to `atlas.metrics_url` (`query`,
 `query_range`, `series`, `labels` and label values only), so the page talks to one origin.
 That is what lets it work over HTTPS behind a reverse proxy with single sign-on, where the
@@ -149,10 +150,16 @@ host), filesystems (the guest agent, or a stopped container's superblock), or bl
 ### Block map
 
 Every block is a directory, sized by the blocks it holds. Two layouts:
-- **Cells**, the default: a weighted Voronoi treemap. Each group of siblings settles in a few
-  milliseconds to within 1% of its true areas. It then holds still and only moves while its
-  sizes change, so a growing folder pushes its neighbours aside instead of re-tiling the map.
-  A group shows at most 24 cells; the smallest are folded into one.
+- **Cells**, the default: a weighted Voronoi treemap you zoom into like a map. Each group of
+  siblings settles in a few milliseconds to within 1% of its true areas, and after that its
+  cells keep their places: a size change of 1% or more re-fits the weights only, so a folder
+  grows or shrinks in place and pushes its neighbours aside; a new folder starts as a speck
+  next to where it came from and grows. Zoomed in, the camera holds on to the group in view,
+  and lenses, a resized window and tree reloads keep the zoom and the layout.
+  A group shows at most 24 cells; the smallest are drawn together as one grained "+N" cell,
+  which is not a level: zoomed in, its children show in place as if they sat in its parent.
+- **Files**: zoomed into a folder's "files here" cell, its files are cells too, from
+  `/api/files` (below); the side panel lists the files of the folder in view.
 - **Blocks**: a squarified treemap.
 
 At the top level, machines are drawn at the cube root of their bytes (Balanced) by default, so
@@ -250,6 +257,17 @@ listed subdirectories, and `x` (btrfs, below) the bytes deleting it would free. 
 raise `m` of the directory and its ancestors to the change's time at least and never lower it
 (a deletion leaves it), so it is the last activity seen. A thin pool's own nodes (the pool,
 guests, and disks not walked) have no `m`.
+
+### Files
+
+`GET /api/files?target=NAME&path=/abs/path[&limit=400]` lists the files directly in one
+directory the target's tree holds (not its subdirectories), biggest first, read from disk when
+asked and under the walk's rules (excludes, `no_cross_filesystem`, `follow_symlinks`): names,
+sizes, times and link counts, never contents. `files`: up to `limit` (at most 5000) of `n`
+name, `b` allocated bytes, `a` apparent bytes, `m` modification time (unix seconds), `l` hard
+links, `s` symlink; `count`, `bytes` and `apparent` cover every entry, and `partial` is set when
+a directory with more than 200,000 entries was read in part. A path the tree does not hold, or
+a thin pool's node, is a 404.
 
 ### Live changes
 
