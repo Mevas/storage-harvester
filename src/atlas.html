@@ -494,6 +494,7 @@ function pattern(ctx,kind){
   if(kind==='free'){x.fillStyle=C.free;x.fillRect(0,0,s,s);x.strokeStyle=C.freeLine;x.lineWidth=1;x.beginPath();x.moveTo(0,s);x.lineTo(s,0);x.moveTo(-2,2);x.lineTo(2,-2);x.moveTo(s-2,s+2);x.lineTo(s+2,s-2);x.stroke();}
   else if(kind==='reserved'||kind==='nohist'){x.fillStyle=kind==='nohist'?C.surface:C.s2;x.fillRect(0,0,s,s);x.strokeStyle=kind==='nohist'?C.hair:C.axis;x.lineWidth=1;x.beginPath();x.moveTo(0,0);x.lineTo(s,s);x.stroke();}
   else if(kind==='pending'){x.fillStyle=C.s2;x.fillRect(0,0,s,s);x.fillStyle=C.axis;x.fillRect(3,3,1.5,1.5);}
+  else if(kind==='untrimmed'){x.fillStyle=mix(C.dark,C.warn,0.3);x.fillRect(0,0,s,s);x.strokeStyle=mix(C.dark,C.warn,0.7);x.lineWidth=1;x.beginPath();x.moveTo(0,s/2);x.lineTo(s/2,0);x.moveTo(s/2,s);x.lineTo(s,s/2);x.stroke();}  // freed inside a guest, not trimmed
   else if(kind==='unknown'){x.fillStyle=C.mid;x.fillRect(0,0,s,s);x.fillStyle=C.axis;x.fillRect(1,1,1,1);x.fillRect(5,5,1,1);}
   else if(kind==='vmgrid'){x.fillStyle='rgba(255,255,255,.2)';x.fillRect(0,0,s,1);x.fillRect(0,0,1,s);x.fillStyle='rgba(0,0,0,.16)';x.fillRect(0,s-1,s,1);x.fillRect(s-1,0,1,s);}  // overlay: "blocks inside a VM"
   else{x.fillStyle=C.dark;x.fillRect(0,0,s,s);x.fillStyle='rgba(255,255,255,.22)';x.fillRect(1,1,1.5,1.5);x.fillRect(5,5,1.5,1.5);}
@@ -503,7 +504,8 @@ function divTr(v,lo,hi){const a=Math.abs(v);if(!isFinite(a)||a<lo*0.2)return 0;r
 function divInvr(t,lo,hi){return lo*(Math.exp(Math.abs(t)*Math.log(1+hi/lo))-1);}
 function divColor(t){if(!t)return C.mid;const r=t>0?RAMP_POS:RAMP_NEG;return r[Math.min(63,Math.round(Math.abs(t)*63))];}
 function shareColor(shared){return RAMP_SHARE[Math.min(63,Math.round(Math.max(0,Math.min(1,shared))*63))];}
-function hostColor(H){return H?C.slots[H.slot%8]:C.other;}
+// colours belong to machines: a guest's harvester takes its hypervisor's
+function hostColor(H){const M=machineOf(H);return M?C.slots[M.slot%8]:C.other;}
 // Activity: write rate on a fixed log scale (so a steady writer keeps its colour), 8 KiB/s .. 128 MiB/s
 const ACT_LO=8*KiB,ACT_HI=128*MiB;
 function actTr(v){return v>0?Math.max(0,divTr(v,ACT_LO,ACT_HI)):0;}
@@ -581,7 +583,16 @@ function maskPath(p){if(p==null)return '';if(!HIDE)return p;let g=false;return p
 function guestName(n){return HIDE?(GUESTC.get(n.name)||mask(n.name,'guest')):n.name;}
 function guestLabel(g){if(!g)return '?';const c=String(g.path||'').split('/').pop();return HIDE?(GUESTC.get(c)||'guest'):(g.vmid==null?String(g.name):`${g.name} (${g.vmid})`);}
 function tgName(name){return HIDE?mask(name,'target'):name;}
-function hostName(H){if(!H)return '?';if(H.info)return String(H.info.display_name||H.info.host);return HIDE?'harvester '+(H.idx+1):H.shown||H.url;}
+// A harvester by its own name (the Sources view, connection tips).
+function harvName(H){if(!H)return '?';if(H.info)return String(H.info.display_name||H.info.host);return HIDE?'harvester '+(H.idx+1):H.shown||H.url;}
+// A place, not a harvester: machines are the physical boxes. A harvester inside a hypervisor's guest is that guest
+// ("NUC · VM 100"); one that knows it is a VM but whose host is not reporting says so.
+function hostName(H){if(!H)return '?';const ni=H.nestIn||H.lastNest;if(ni)return guestPlace(ni.g);const v=H.info&&H.info.machine&&H.info.machine.virt;return harvName(H)+(v?' (VM)':'');}
+function guestPlace(g){if(!g)return '?';if(HIDE)return guestLabel(g);const t=g.type==='lxc'?'CT':g.type==='qemu'?'VM':'';return g.vmid==null?String(g.name):`${g.name} · ${t} ${g.vmid}`;}
+function machineOf(H){const ni=H&&(H.nestIn||H.lastNest);return ni?ni.P:H;}
+// the harvesters inside a machine's guests
+function insideOf(M){return HARV.filter(h=>h!==M&&machineOf(h)===M);}
+function isMachine(H){return H.status!=='duplicate'&&machineOf(H)===H;}
 function urlText(u,i){return HIDE?'harvester '+(i+1):u;}
 function maskText(s){s=s==null?'':String(s);if(!HIDE)return s;return s.replace(/https?:\/\/[^\s'"]+/g,'(url)').replace(/(^|[\s'"(=:])(\/[^\s'"),:]+)/g,(m,a,p)=>a+maskPath(p));}
 function hostLabel(h){return HIDE?mask(h,'host'):h;}
@@ -591,18 +602,23 @@ function nameOf(n){
     case 'root':return 'Fleet';
     case 'host':return hostName(n.H)+(n.offline?' · offline':'');
     case 'fs':return maskPath(n.fs.mount)+' · '+n.fs.type;
-    case 'free':return 'free';case 'reserved':return 'reserved';case 'unacc':return n.p&&n.p.fs&&n.p.fs.type==='lvmthin'?'outside listed volumes':'unaccounted';
+    case 'free':return 'free';case 'reserved':return 'reserved';case 'unacc':return unaccName(n);case 'part':return n.label||n.sub;
     case 'here':return 'files here';case 'more':return n.name;case 'gap':return n.p.nest?'outside scanned folders':'unaccounted blocks';
     case 'dir':if(n.isRoot)return tgName(n.T.name);if(n.placeholder)return maskPath(n.name);if(n.v==='guest')return guestName(n);if(n.v==='disk'&&DISKKEY.test(n.name))return n.name;return HIDE?mask(n.name):n.name;
   }
   return n.name||'';
 }
 function fsOf(n){let t=n;while(t&&t.kind!=='fs')t=t.p;return t;}
+// what a filesystem holds beyond its targets' trees: on btrfs, the subvolumes no target walks are the usual reason
+function unaccName(n){const fs=n.p&&n.p.fs;if(!fs)return 'unaccounted';if(fs.type==='lvmthin')return 'in no listed volume';
+  const big=unwalked(fs).filter(g=>g.count>=10).sort((a,b)=>b.count-a.count)[0];return big?`${big.count} subvolumes in ${maskPath(big.in)}`:'in no walked file';}
+function unwalked(fs){return (fs&&fs.btrfs&&Array.isArray(fs.btrfs.unwalked))?fs.btrfs.unwalked:[];}
 function pathOf(n){
   switch(n.kind){
     case 'root':return 'Fleet';case 'host':return hostName(n.H);
     case 'fs':return hostName(n.H)+' · '+maskPath(n.fs.mount);
     case 'free':case 'reserved':case 'unacc':return hostName(n.H)+' · '+maskPath(n.p.fs.mount)+' · '+nameOf(n);
+    case 'part':return (n.p.kind==='fs'?hostName(n.H)+' · '+maskPath(n.p.fs.mount):maskPath(n.p.path))+' · '+nameOf(n);
     case 'here':return maskPath(n.p.path)+' · files here';case 'gap':return maskPath(n.p.path)+' · '+nameOf(n);
     case 'more':return maskPath(n.p.path)+' · '+n.name;
     case 'dir':return maskPath(n.path);
@@ -611,7 +627,7 @@ function pathOf(n){
 }
 
 /* ======================================================================= kinds (name heuristics, no fleet-specific names) */
-const KINDS=[{k:'media',label:'Media'},{k:'downloads',label:'Downloads and seeding'},{k:'personal',label:'Personal files'},{k:'backups',label:'Backups and objects'},{k:'apps',label:'App data'},{k:'telemetry',label:'Logs and metrics'},{k:'system',label:'System'},{k:'other',label:'Other'},{k:'vm',label:'Inside VMs (not scanned)'}];
+const KINDS=[{k:'media',label:'Media'},{k:'downloads',label:'Downloads and seeding'},{k:'personal',label:'Personal files'},{k:'backups',label:'Backups and objects'},{k:'apps',label:'App data'},{k:'telemetry',label:'Logs and metrics'},{k:'system',label:'System'},{k:'other',label:'Other'},{k:'vm',label:'Inside VMs, folders not scanned'}];
 const KIDX=Object.fromEntries(KINDS.map((k,i)=>[k.k,i]));
 const KIND_RX=[
   ['downloads',/^(torrents?|downloads?|seeding|cross-?seeds?|usenet|incomplete|nzbs?|sabnzbd|qbittorrent|transmission|deluge|autobrr|radarr|sonarr|lidarr|readarr|prowlarr|whisparr)\b|^torrents?[_-]/i],
@@ -667,7 +683,9 @@ async function getJSON(url,ms){const r=await fetchT(url,ms);let j=null;try{j=awa
 function fsp(t){return normFsPath(t.fs_path);}
 function computeOuter(H){
   const ts=H.info.targets||[];H.outer=new Map();
-  ts.forEach((t,i)=>{let best=t,bi=i;ts.forEach((o,j)=>{if(o===t||o.fs!==t.fs)return;if(!inside(fsp(t),fsp(o)))return;const lo=fsp(o).length,lb=fsp(best).length;if(lo<lb||(lo===lb&&j<bi)){best=o;bi=j;}});H.outer.set(t.name,best);});
+  // `skips`: targets inside another by path that its walk never reaches (excluded, or another btrfs subvolume): they
+  // stand beside it
+  ts.forEach((t,i)=>{let best=t,bi=i;ts.forEach((o,j)=>{if(o===t||o.fs!==t.fs)return;if(!inside(fsp(t),fsp(o)))return;if(Array.isArray(o.skips)&&o.skips.includes(t.name))return;const lo=fsp(o).length,lb=fsp(best).length;if(lo<lb||(lo===lb&&j<bi)){best=o;bi=j;}});H.outer.set(t.name,best);});
 }
 function mapPath(T,O,path){if(!inside(path,T.path))return null;const fsrel=joinRel(fsp(T),relPath(path,T.path));if(!inside(fsrel,fsp(O)))return null;return joinRel(O.path,relPath(fsrel,fsp(O)));}
 function isOuter(H,T){return H.outer.get(T.name)===T;}
@@ -700,7 +718,7 @@ function diskOf(n){const g=n&&n.p&&guestOf(n.p);return g&&(g.disks||[]).find(d=>
 let FLEET_DIRTY=true;
 // A harvester nested in a hypervisor guest is drawn inside that guest's disks, not at the top (unless some of its
 // filesystems are on no pool disk: those stay under its own host block).
-function rebuildRoot(){ROOT.kids=HARV.filter(h=>h.status!=='duplicate'&&!(h.status==='ok'&&h.nestIn&&!h.node.kids.length)).map(h=>h.node);}
+function rebuildRoot(){ROOT.kids=HARV.filter(h=>h.status!=='duplicate'&&!(h.status==='ok'&&h.nestIn&&!h.node.kids.length)&&!(h.status!=='ok'&&h.lastNest)).map(h=>h.node);}
 function rebuildHost(H){
   const hn=H.node;hn.id='h:'+(H.key||H.url);hn.offline=H.status!=='ok';hn.p=ROOT;
   if(H.status!=='ok'){hn.kids=[];H.fss=[];hn.t=0;rebuildRoot();return;}
@@ -720,12 +738,22 @@ function rollHost(H){
   if(H.status!=='ok')return;let ht=0;const nin=H.nestIn;
   for(const f of H.fss){
     const fs=f.fs,roots=[];let sum=0;
-    for(const T of H.info.targets){if(T.fs!==fs.id||!isOuter(H,T))continue;const r=H.roots.get(T.name)||pendingNode(H,T);r.p=f;roots.push(r);sum+=r.t;}
+    // `uniq`: what the trees hold on disk, counting blocks shared between folders once where a sharing pass knows it
+    let uniq=0;
+    for(const T of H.info.targets){if(T.fs!==fs.id||!isOuter(H,T))continue;const r=H.roots.get(T.name)||pendingNode(H,T);r.p=f;roots.push(r);sum+=r.t;uniq+=r.x!=null?r.x:r.t;}
     const used=+fs.used||0,avail=+fs.avail||0,size=+fs.size||0,res=fs.reserved!=null?+fs.reserved:Math.max(0,size-used-avail);
-    f.unacc.t=Math.max(0,used-sum);f.free.t=avail;f.res.t=Math.max(0,res);f.over=Math.max(0,sum-used);f.scanned=sum;
+    f.unacc.t=Math.max(0,used-uniq);f.free.t=avail;f.res.t=Math.max(0,res);f.over=Math.max(0,sum-used);f.scanned=sum;
     // inside a guest disk only the scanned trees count: the guest's free space is not allocated in the pool
     f.nested=!!(nin&&nin.place.has(fs.id));
-    f.kids=f.nested?roots:[...roots,f.unacc,f.free,f.res].filter(k=>k.t>0||roots.includes(k));
+    // btrfs keeps metadata (and some unallocated space) outside what df counts: drawn so the box is the whole device
+    const bt=fs.btrfs;f.bmeta=f.bslack=null;
+    if(bt&&!f.nested){const ch=c=>(+(c&&c.total)||0)*(+(c&&c.copies)||1),meta=ch(bt.metadata)+ch(bt.system),slack=Math.max(0,(+bt.device_size||0)-size-meta);
+      const mu=(+(bt.metadata&&bt.metadata.used)||0)*(+(bt.metadata&&bt.metadata.copies)||1);
+      f.bmeta={kind:'part',sub:'bmeta',kd:'system',H,p:f,id:f.id+'|~bmeta',t:meta,label:`btrfs metadata · ${pct(meta?mu/meta:0)} used`,
+        why:`btrfs's own trees (${bt.metadata&&bt.metadata.copies>1?bt.metadata.copies+' copies, ':''}${fmtB(mu)} in use) in ${fmtB(meta)} of chunks set aside for them. df counts none of it. A metadata-only balance (btrfs balance -musage=…) hands empty chunks back to unallocated space.`};
+      if(slack>=GiB)f.bslack={kind:'part',sub:'bslack',kd:'system',H,p:f,id:f.id+'|~bslack',t:slack,label:'unallocated, not counted free',
+        why:`device space btrfs has not allocated to any chunk, beyond the ${fmtB(avail)} df reports as available. btrfs counts ${fmtB((+(bt.data&&bt.data.total)||0)-(+(bt.data&&bt.data.used)||0)+(+bt.unallocated||0))} as free for data; df ${fmtB(avail)}.`};}
+    f.kids=f.nested?roots:[...roots,f.unacc,f.free,f.res,f.bmeta,f.bslack].filter(k=>k&&(k.t>0||roots.includes(k)));
     let t=0;for(const k of f.kids)t+=k.t;f.t=t;if(!f.nested){f.p=H.node;ht+=t;}
   }
   H.node.kids=H.fss.filter(f=>!f.nested);H.node.t=ht;
@@ -734,12 +762,15 @@ function rollHost(H){
 // goes into the first guest disk whose key it lists as "drive-<key>".
 function nestPass(){
   for(const H of HARV)H.nestIn=null;
+  // `lastNest`: the guest a harvester was last matched to. It keeps that identity while it, or its hypervisor's
+  // harvester, cannot be asked (offline), so a VM never turns back into a machine of its own.
   for(const P of HARV){if(P.status!=='ok')continue;
     for(const T of P.info.targets){if(T.kind!=='lvm_thin'||!Array.isArray(T.guests)||!P.roots.has(T.name))continue;
       for(const g of T.guests){if(!g||g.type!=='qemu'||!g.uuid)continue;const id=String(g.uuid).toLowerCase();
         const N=HARV.find(h=>h!==P&&h.status==='ok'&&!h.nestIn&&h.info.machine&&h.info.machine.uuid&&String(h.info.machine.uuid).toLowerCase()===id);if(!N)continue;
         const place=new Map();for(const fs of N.info.filesystems){const ds=Array.isArray(fs.disks)?fs.disks:[];const d=(g.disks||[]).find(d=>d&&d.path&&ds.includes('drive-'+d.key));if(d)place.set(fs.id,d);}
         if(place.size)N.nestIn={P,T,g,place};}}}
+  for(const H of HARV){if(H.nestIn)H.lastNest={P:H.nestIn.P,g:H.nestIn.g};else if(H.lastNest&&H.status==='ok'&&H.lastNest.P.status==='ok')H.lastNest=null;}
 }
 function attachNest(){
   for(const P of HARV){if(!P.nestDisks)continue;for(const d of P.nestDisks){d.nest=null;syncDir(d);}P.nestDisks=null;}
@@ -747,7 +778,7 @@ function attachNest(){
     for(const f of N.fss){const d=ni.place.get(f.fs.id);if(!d)continue;if(!by.has(d.path))by.set(d.path,[]);by.get(d.path).push(f);}
     for(const [path,fs] of by){const r=findDir(ni.P,ni.T,path);if(!r||r.rest.length)continue;const dn=r.node;dn.nest=fs;for(const f of fs)f.p=dn;syncDir(dn);(ni.P.nestDisks=ni.P.nestDisks||[]).push(dn);}}
 }
-function rollFleet(){if(!FLEET_DIRTY)return;nestPass();for(const H of HARV)rollHost(H);attachNest();rebuildRoot();let t=0;for(const h of ROOT.kids)t+=h.t;ROOT.t=t;FLEET_DIRTY=false;}
+function rollFleet(){if(!FLEET_DIRTY)return;nestPass();resyncDisks();attachLuns();for(const H of HARV)rollHost(H);attachNest();rebuildRoot();let t=0;for(const h of ROOT.kids)t+=h.t;ROOT.t=t;FLEET_DIRTY=false;}
 
 function buildDir(raw,parent,H,T,path,depth){
   const n={id:H.key+'|'+T.name+'|'+path,kind:'dir',name:String(raw.n),path,p:parent,H,T,depth,t:+raw.t||0,a:+raw.a||0,f:+raw.f||0,d:+raw.d||0,l:+raw.l||0,o:+raw.o||0,x:raw.x==null?null:+raw.x,m:raw.m==null?null:+raw.m,k:+raw.k||0,r:+raw.r||0,c:[],ph:null,byName:null};
@@ -764,15 +795,78 @@ function vfields(n,raw){n.v=String(raw.v);if(raw.vmid!=null)n.vmid=raw.vmid;if(r
 function syncDir(n){
   let s=0;for(const c of n.c)s+=c.t;if(n.ph)for(const c of n.ph.values())s+=c.t;
   let ns=0;if(n.nest)for(const f of n.nest)ns+=f.t;
-  const has=n.c.length>0||(n.ph&&n.ph.size>0)||!!(n.nest&&n.nest.length);
+  // a VM or stopped container disk no harvester walks: the filesystems its hypervisor's harvester knows of
+  const gi=n.v==='disk'&&!n.nest&&!n.c.length?guestFs(n):null;
+  const has=n.c.length>0||(n.ph&&n.ph.size>0)||!!(n.nest&&n.nest.length)||!!gi||!!n.lun;
+  let parts=[];
   if(has){let here=n.t-n.r-s-ns,gap=0;
-    if(n.nest){gap=Math.max(0,here);here=0;}else if(n.v==='disk'&&n.u>0){gap=Math.max(0,Math.min(n.u,here));here-=gap;}
+    if(n.nest||gi){gap=Math.max(0,here);here=0;}else if(n.v==='disk'&&n.u>0){gap=Math.max(0,Math.min(n.u,here));here-=gap;}
+    if(n.lun&&here>0){parts=lunParts(n,here);here=0;}
     if(here>0){n.here=n.here||{kind:'here',p:n,H:n.H,T:n.T,id:n.id+'|~here'};n.here.t=here;}else n.here=null;
-    if(gap>0){n.gap=n.gap||{kind:'gap',p:n,H:n.H,T:n.T,id:n.id+'|~gap'};n.gap.t=gap;}else n.gap=null;
+    if(gap>0)parts=parts.concat(gapParts(n,gap,gi));
+    const plain=parts.length===1&&parts[0].sub==='gap';
+    if(plain){n.gap=n.gap||{kind:'gap',p:n,H:n.H,T:n.T,id:n.id+'|~gap'};n.gap.t=gap;parts=[];}else n.gap=null;
+    setParts(n,parts);
     if(n.r>0){n.more=n.more||{kind:'more',p:n,H:n.H,T:n.T,id:n.id+'|~more'};n.more.t=n.r;const m=Math.max(0,n.k-n.c.length);n.more.name=m?m+' more folder'+(m===1?'':'s'):'more folders';}else n.more=null;
-    n.kids=[...n.c];if(n.ph)n.kids.push(...n.ph.values());if(n.nest)n.kids.push(...n.nest);if(n.here)n.kids.push(n.here);if(n.gap)n.kids.push(n.gap);if(n.more)n.kids.push(n.more);}
-  else{n.here=null;n.more=null;n.gap=null;n.kids=[];}
+    n.kids=[...n.c];if(n.ph)n.kids.push(...n.ph.values());if(n.nest)n.kids.push(...n.nest);if(n.here)n.kids.push(n.here);if(n.gap)n.kids.push(n.gap);if(n.pn)n.kids.push(...n.pn.values());if(n.more)n.kids.push(n.more);}
+  else{n.here=null;n.more=null;n.gap=null;n.pn=null;n.kids=[];}
 }
+// Named pieces of what no walked folder holds: `{key, sub, label, t, why}`. sub: gfs (a filesystem inside a guest),
+// meta (its own metadata), nofile (used, in no file), otherfs, swap, untrimmed (freed inside, still allocated).
+function setParts(n,parts){if(!parts.length){n.pn=null;return;}const old=n.pn||new Map();n.pn=new Map();
+  for(const x of parts){if(!(x.t>0))continue;const p=old.get(x.key)||{kind:'part',p:n,H:n.H,T:n.T,id:n.id+'|~p_'+x.key};Object.assign(p,x);p.kd=x.kd||kindOf(n)||'vm';n.pn.set(x.key,p);}}
+// Fill `left` bytes with pieces in order, each at most what is left.
+function fillParts(list,left){const out=[];for(const x of list){if(left<=0)break;const t=Math.min(left,Math.max(0,x.t||0));if(t<=0)continue;out.push({...x,t});left-=t;}return {out,left};}
+function trimHint(n){const g=guestOf(n.p),d=diskOf(n);if(!g)return '';if(g.type==='lxc')return ` pct fstrim ${HIDE?'<id>':g.vmid} on the host returns it.`;
+  return d&&!d.discard?' The disk has discard off, so a trim inside cannot return it: turn discard on first.':' fstrim inside the guest returns it (discard is on).';}
+// A disk's bytes beyond its walked folders (`gap`), as far as the harvesters can name them.
+function gapParts(n,gap,gi){const g=guestOf(n.p),who=g?guestPlace(g):'the guest';
+  if(gi){const list=gi.map((x,i)=>({key:'gfs'+i,sub:'gfs',label:`${maskPath(x.mount||'?')} · ${x.type||'?'}`,t:+x.used||0,fs:x,
+      why:`a filesystem inside ${who}: ${fmtB(+x.used||0)} used of ${fmtB(+x.size||0)}, `+(x.from==='agent'?'from the guest agent at the last scan.':'from its superblock (it is stopped; metadata included).')+' Its folders need a harvester inside.'}));
+    const {out,left}=fillParts(list,gap);const agent=gi.some(x=>x.from==='agent');
+    if(left>0)out.push({key:'trim',sub:'untrimmed',t:left,label:agent?'freed, not trimmed · swap · metadata':'freed, not trimmed',why:`allocated in the pool beyond what ${who}'s filesystems use: blocks freed inside and not trimmed yet`+(agent?', plus swap and each filesystem\'s own metadata (the agent does not tell these apart).':'.')+trimHint(n)});
+    return out;}
+  if(n.nest){const N=n.nest[0].H,ids=new Set(n.nest.map(f=>f.fs.id)),lay=((N.info.machine&&N.info.machine.disks)||[]).find(d=>d.name==='drive-'+n.key);
+    if(!lay)return [{sub:'gap',t:gap}];
+    const leaves=[];(function w(b){if(b.parts&&b.parts.length){for(const c of b.parts)w(c);return;}leaves.push(b);})(lay);
+    let meta=0,nofile=0,waiting=false;const other=[],swaps=[];
+    for(const b of leaves){if(b.use==='fs'&&ids.has(b.fs)){meta+=+b.overhead||0;const fn=n.nest.find(f=>f.fs.id===b.fs);if(fn){nofile+=Math.max(0,(+b.used||0)-fn.t);if(fn.kids.some(r=>r.pending))waiting=true;}}
+      else if(b.use==='fs')other.push(b);else if(b.use==='swap')swaps.push(b);}
+    const list=[...other.map((b,i)=>({key:'other'+i,sub:'otherfs',t:(+b.used||0)+(+b.overhead||0),label:`${maskPath(b.mount)} · ${b.type}, not scanned`,why:`another filesystem on this disk that no target scans: ${fmtB(+b.used||0)} used of ${fmtB(+b.fs_size||0)}.`})),
+      ...swaps.map((b,i)=>({key:'swap'+i,sub:'swap',t:+b.swap_used||0,label:`swap · ${fmtB(+b.swap_used||0)} in use`,why:`a ${fmtB(+b.size||0)} swap partition with ${fmtB(+b.swap_used||0)} in use now. Pages swapped out earlier and freed can keep more of it allocated.`})),
+      {key:'meta',sub:'meta',t:meta,label:'filesystem metadata',why:`what ${who}'s filesystems keep for themselves: journals, inode tables, bitmaps (the partition size less what df counts).`},
+      waiting?{key:'nofile',sub:'pending',t:nofile,label:'not scanned yet',why:'df used minus what the scans found so far: some targets have not finished their first scan, and their folders appear when they do.'}
+        :{key:'nofile',sub:'nofile',t:nofile,label:'used, in no scanned file',why:'df used minus what the scans found: folders they exclude (.git, node_modules), files deleted while still open, and changes since the last scan.'}];
+    const {out,left}=fillParts(list,gap);
+    if(left>0)out.push({key:'trim',sub:'untrimmed',t:left,label:'freed, not trimmed yet',why:`allocated in the pool, but in none of ${who}'s files, metadata or swap: blocks freed inside it and not trimmed yet`+(swaps.length?' (and swap pages written earlier)':'')+'.'+trimHint(n)});
+    return out;}
+  // a container walked from the host: its statvfs splits what no file accounts for
+  const d=diskOf(n),x=d&&(d.fs||[]).find(f=>f.from==='walk');
+  if(!x)return [{sub:'gap',t:gap}];
+  const files=Math.max(0,n.t-n.u),list=[{key:'meta',sub:'meta',t:+x.overhead||0,label:'filesystem metadata',why:'what the filesystem keeps for itself: journal, inode tables, bitmaps (the volume size less what df counts).'},
+    {key:'nofile',sub:'nofile',t:Math.max(0,(+x.used||0)-files),label:'used, in no walked file',why:'df used inside the container minus what the walk found: files deleted while open, and paths the walk skips.'}];
+  const {out,left}=fillParts(list,gap);
+  if(left>0)out.push({key:'trim',sub:'untrimmed',t:left,label:'freed, not trimmed yet',why:`allocated in the pool beyond what ${who}'s filesystem uses: blocks freed inside it and not trimmed yet.`+trimHint(n)});
+  return out;}
+// An iSCSI LUN another harvester's guest uses: its files are that guest's filesystem.
+function lunParts(n,here){const L=n.lun,x=L.fs,who=guestPlace(L.g),used=+x.used||0;
+  const {out,left}=fillParts([{key:'lunfs',sub:'gfs',label:`${who} · ${maskPath(x.mount)} · ${x.type||'?'}`,t:used,kd:kindOf(n),why:`${who} logs in to this LUN over iSCSI and mounts it at ${maskPath(x.mount)}: ${fmtB(used)} used of ${fmtB(+x.size||0)} (its guest agent, through ${hostName(L.H)}).`}],here);
+  if(left>0)out.push({key:'luntrim',sub:'untrimmed',t:left,kd:kindOf(n),label:`freed in ${who}, not trimmed`,why:`the LUN's blocks beyond what ${who}'s filesystem uses: blocks freed inside it and not trimmed yet, and the filesystem's own metadata. fstrim ${maskPath(x.mount)} inside ${who} returns them to this volume.`});
+  return out;}
+// The guest-side filesystems of a VM disk (guest agent) or a stopped container's (superblock), if any.
+function guestFs(n){const d=diskOf(n);if(!d||d.walked)return null;const fs=(d.fs||[]).filter(x=>x.from==='agent'||x.from==='superblock');return fs.length?fs:null;}
+// An iSCSI LUN by the serial a guest sees: QEMU and LIO give `36001405` + 25 hex digits of the LUN's id; Synology's
+// spells its UUID's first 25 characters with each '-' as 'd'.
+function lunOf(serial){const s=String(serial||'').toLowerCase();if(!/^36001405[0-9a-f]{16,}$/.test(s))return null;const key=s.slice(8);
+  const hit=name=>{const u=String(name||'').toLowerCase();if(!/^[0-9a-f]{8}-[0-9a-f]{4}-/.test(u))return false;return [u.replace(/-/g,'d'),u.replace(/-/g,'')].some(v=>v.slice(0,key.length)===key.slice(0,v.length)&&Math.min(v.length,key.length)>=16);};
+  for(const H of HARV){if(H.status!=='ok')continue;for(const root of H.roots.values()){const cand=[root,...root.c];for(const c of cand){if(hit(String(c.path).split('/').pop()))return {H,node:c};}}}
+  return null;}
+function attachLuns(){for(const H of HARV){if(!H.lunNodes)continue;for(const n of H.lunNodes){n.lun=null;syncDir(n);}H.lunNodes=null;}
+  for(const P of HARV){if(P.status!=='ok')continue;for(const T of P.info.targets){if(T.kind!=='lvm_thin'||!Array.isArray(T.guests))continue;
+    for(const g of T.guests)for(const x of (g&&g.remote_fs)||[]){const L=lunOf(x.serial);if(!L)continue;L.node.lun={H:P,g,fs:x};syncDir(L.node);(L.H.lunNodes=L.H.lunNodes||[]).push(L.node);}}}}
+// guest filesystems change with each scan's /api/info, not the tree: redo the pool's disks
+function resyncDisks(){for(const H of HARV){if(H.status!=='ok')continue;for(const [name,root] of H.roots){if(!root.T||root.T.kind!=='lvm_thin')continue;
+  for(const g of root.c)for(const d of g.c)if(d.v==='disk'&&!d.nest)syncDir(d);}}}
 function treeTs(j){return Math.max(+j.scanned_at||0,+j.live_at||0);}
 function tsOf(n){for(let t=n;t;t=t.p)if(t.ts)return t.ts;return 0;}
 function countNodes(n){let c=1;for(const k of n.c)c+=countNodes(k);return c;}
@@ -785,11 +879,11 @@ function findDir(H,O,path){
 function findById(id){
   if(id==='@')return ROOT;
   if(id.startsWith('h:')){const H=HARV.find(h=>'h:'+(h.key||h.url)===id);return H?H.node:null;}
-  if(id.startsWith('f:')){for(const H of HARV)for(const f of H.fsNodes.values())if(f.id===id)return f;return null;}
+  if(id.startsWith('f:')){for(const H of HARV)for(const f of H.fsNodes.values()){if(f.id===id)return f;for(const x of [f.bmeta,f.bslack])if(x&&x.id===id)return x;}return null;}
   const m=/^(.*?)\|(.*)\|(\/.*?)(\|~\w+)?$/.exec(id);if(!m)return null;
   const H=HARV.find(h=>h.key===m[1]);if(!H)return null;const T=H.targets.get(m[2]);if(!T)return null;
   const r=findDir(H,T,m[3]);if(!r)return H.pend.get(T.name)||null;let n=r.node;
-  if(!r.rest.length&&m[4]){const s=m[4]==='|~here'?n.here:m[4]==='|~gap'?n.gap:n.more;if(s)return s;}
+  if(!r.rest.length&&m[4]){if(m[4].startsWith('|~p_')){const x=n.pn&&n.pn.get(m[4].slice(4));if(x)return x;}const s=m[4]==='|~here'?n.here:m[4]==='|~gap'?n.gap:n.more;if(s)return s;}
   return n;
 }
 async function loadTrees(H){if(H.status!=='ok')return;await Promise.all(H.info.targets.filter(T=>isOuter(H,T)).map(T=>loadTree(H,T)));}
@@ -1043,9 +1137,9 @@ function flush(){
   if(D.feed)flushFeed();
   if(cur==='blockmap'){if(D.tree)BM.needLayout=true;if(D.hist)BM.needBase=true;if(D.info)FLEET_DIRTY=true;if(D.grow)BM.needLayout=true;bmSchedule();if(D.hist||D.info||D.grow)bmLegend();
     if(D.live||D.io||D.feed)storiesLater();if((D.grow||D.hist)&&(BM.mode==='rings'||BM.mode==='time'))renderBmSide();if((D.hist||D.grow)&&BM.mode==='time'){BM.needLayout=true;drawTimeChart();}if(D.tree&&BM.mode==='reclaim'){RECL_AT=0;sideLater();}}
-  else if(cur==='overview'&&D.io)ovIoLater();
+  // block I/O arrives every second from a thin pool: it must not keep trees and info from redrawing the overview
+  else if(cur==='overview'){if(D.hist||D.info||D.tree)ovFull();else if(D.live)ovLive();if(D.io)ovIoLater();}
   else if(cur==='changes'){if(D.hist||(D.tree&&!HM.built))renderChanges();else if(D.live)hmNow();}
-  else if(cur==='overview'){if(D.hist||D.info||D.tree)ovFull();else if(D.live)ovLive();}
   else if(cur==='sharing'){if(D.tree||D.info)shareLater();}
   else if(cur==='sources'){if(D.info||D.conn||D.tree||D.hist)srcLater();}
 }
@@ -1053,18 +1147,23 @@ function flush(){
 /* ======================================================================= header */
 function renderHeader(){
   rollFleet();const ok=HARV.filter(h=>h.status==='ok'),fsN=ok.reduce((a,h)=>a+h.info.filesystems.length,0);
-  const live=ok.filter(h=>h.sse==='open').length;
-  $('#brand-sub').textContent=HARV.length?`${ok.length} of ${HARV.filter(h=>h.status!=='duplicate').length} harvesters · ${fsN} filesystems · ${live} live`:'no harvester';
+  const live=ok.filter(h=>h.sse==='open').length,machines=HARV.filter(isMachine),gN=guestCount();
+  $('#brand-sub').textContent=HARV.length?`${machines.length} machine${machines.length===1?'':'s'}`+(gN?` · ${gN} guests`:'')+` · ${ok.length} of ${HARV.filter(h=>h.status!=='duplicate').length} harvesters · ${fsN} filesystems · ${live} live`:'no harvester';
   const hs=$('#hosts');hs.replaceChildren();
-  for(const H of HARV){if(H.status==='duplicate')continue;const st=H.status!=='ok'?'down':H.sse==='open'?'open':'wait';
-    const ni=H.nestIn,s=el('span',{'data-h':H.idx},el('i',{class:'cdot '+st}),hostName(H),ni?el('small',{text:'in '+hostName(ni.P)}):null);
-    hoverTip(s,()=>[{v:hostName(H),l:H.status==='ok'?(H.sse==='open'?'live stream connected':'live stream '+H.sse):H.status+(H.err?': '+maskText(H.err):'')},ni?{l:`runs inside ${hostName(ni.P)}, guest ${guestLabel(ni.g)}: drawn inside its disks in the Block map`,c:'m'}:null,{l:urlText(H.shown,H.idx)+(H.relay?' · relayed by '+hostName(H.relay):''),c:'m'},H.status==='ok'?{v:liveRate(H).toFixed(1)+'/min',l:'changes, last 5 min'}:null]);
+  // one chip per machine; the harvesters inside its guests ride along in it
+  const stOf=H=>H.status!=='ok'?'down':H.sse==='open'?'open':'wait';
+  for(const H of machines){const ins=insideOf(H),all=[H,...ins],st=all.some(h=>stOf(h)==='down')?'down':all.every(h=>stOf(h)==='open')?'open':'wait';
+    const s=el('span',{'data-h':H.idx},el('i',{class:'cdot '+st}),hostName(H),ins.length?el('small',{text:' + '+ins.map(hostName).join(', ')}):null);
+    hoverTip(s,()=>all.flatMap(h=>{const ni=h.nestIn;return [{v:h===H?hostName(h):hostName(h),c:h===H?'h':'',l:(h===H?'':'harvester inside · ')+(h.status==='ok'?(h.sse==='open'?'live stream connected':'live stream '+h.sse):h.status+(h.err?': '+maskText(h.err):''))},
+      ni?{l:`its disks are ${guestLabel(ni.g)}'s volumes in ${hostName(ni.P)}'s pool: drawn there`,c:'m'}:null,{l:urlText(h.shown,h.idx)+(h.relay?' · relayed by '+harvName(h.relay):''),c:'m'},h.status==='ok'?{v:liveRate(h).toFixed(1)+'/min',l:'changes, last 5 min'}:null];}));
     hs.append(s);}
   const r=$('#range');if(!r.children.length){for(const k in RANGES)r.append(el('button',{type:'button','data-k':k,text:RANGES[k].label,onclick:()=>{RANGE=RANGES[k];store.set('range',k);for(const b of r.children)b.setAttribute('aria-pressed',String(b.dataset.k===k));HIST.status==='ok'&&(HIST.status='loading');loadHistory();show();}}));}
   for(const b of r.children)b.setAttribute('aria-pressed',String(RANGES[b.dataset.k]===RANGE));
   const c=$('#hist-chip');c.replaceChildren(histChip());
   for(const x of document.querySelectorAll('.vh-chip'))x.replaceChildren(histChip());
 }
+// guests in every thin pool (not the "volumes no guest refers to" bucket)
+function guestCount(){let n=0;for(const H of HARV)if(H.status==='ok')for(const T of H.info.targets)if(T.kind==='lvm_thin'&&Array.isArray(T.guests))n+=T.guests.filter(g=>g&&g.vmid!=null).length;return n;}
 function histChip(){
   if(FATAL)return '';
   if(HIST.status==='none')return chip('need','No history: metrics_url not set');
@@ -1076,10 +1175,25 @@ function histChip(){
 }
 
 /* ======================================================================= OVERVIEW */
-function fsRows(){const out=[];for(const H of HARV){if(H.status!=='ok')continue;for(const f of H.fss)if(!f.fs.synthetic)out.push({H,f,fs:f.fs,cap:CAP.get(H.key+'|'+f.fs.id)});}return out;}
+function fsRows(){const out=[];for(const H of HARV){if(H.status!=='ok')continue;for(const f of H.fss)if(!f.fs.synthetic)out.push({H,f,fs:f.fs,cap:CAP.get(H.key+'|'+f.fs.id)});}
+  const order=r=>{const M=machineOf(r.H);return (M?M.idx:99)*2+(r.H.nestIn?1:0);};return out.sort((a,b)=>order(a)-order(b));}
+// Filesystems inside guests no harvester runs in, as the hypervisor's harvester tells them: the guest agent (VMs),
+// a walk's statvfs (running containers), a superblock (stopped ones), and disks outside the pool (iSCSI). They sit
+// inside the pool, so they never add to the totals.
+function guestFsRows(){const out=[];
+  for(const H of HARV){if(H.status!=='ok')continue;for(const T of H.info.targets){if(T.kind!=='lvm_thin'||!Array.isArray(T.guests))continue;
+    // a guest whose own harvester answers is listed by that one; otherwise by what the hypervisor knows
+    for(const g of T.guests){if(!g||g.vmid==null||insideOf(H).some(N=>N.status==='ok'&&N.nestIn&&N.nestIn.g.vmid===g.vmid))continue;
+      const fss=[...(g.disks||[]).flatMap(d=>(d.fs||[]).map(x=>({x,d}))),...(g.remote_fs||[]).map(x=>({x,d:null,remote:true}))];
+      for(const {x,d,remote} of fss){if(!(+x.size>=GiB))continue;const size=+x.size||0,used=+x.used||0;
+        out.push({H,g,guest:true,remote:!!remote,disk:d,fs:{id:'g:'+g.vmid+'|'+x.mount,type:x.type||'?',mount:x.mount||'?',size,used,avail:Math.max(0,size-used),reserved:0},f:{nested:true,over:0,unacc:{t:0}},
+          src:x.from==='agent'?'from the guest agent':x.from==='superblock'?'stopped: from its superblock':'from the scan',noHist:'no history'});}}}}
+  return out;}
+function rowPlace(r){return r.guest?guestPlace(r.g):hostName(r.H);}
 function metaUse(fs){const m=fs&&fs.meta;return m&&+m.size>0?(+m.used||0)/(+m.size):null;}
 function fsStats(r){const fs=r.fs,u=fs.size?fs.used/fs.size:0,cap=r.cap;let slope=null,eta=null,why='';
-  if(cap&&cap.status==='ok'){if(cap.span>=12*3600){slope=cap.slope;if(slope>0)eta=fs.avail/slope;}else why='collecting since '+fmtSince(cap.start);}
+  if(r.noHist)why=r.noHist;
+  else if(cap&&cap.status==='ok'){if(cap.span>=12*3600){slope=cap.slope;if(slope>0)eta=fs.avail/slope;}else why='collecting since '+fmtSince(cap.start);}
   else if(!METRICS)why='no metrics_url';else if(cap&&cap.status==='error')why='query failed';else if(cap)why='no history yet';else why='loading';
   return {u,slope,eta,why};}
 function sev(u){return u>=0.9?'crit':u>=0.8?'warn':'';}
@@ -1090,16 +1204,17 @@ function renderOverview(){
   if(FATAL){v.append(FATAL());return;}
   rollFleet();
   const ok=HARV.filter(h=>h.status==='ok');
-  const rows=fsRows(),top=rows.filter(r=>!r.f.nested),nestN=rows.length-top.length;   // a VM's filesystems already sit inside its pool
+  const rows=[...fsRows(),...guestFsRows()],top=rows.filter(r=>!r.f.nested),nestN=rows.length-top.length;   // a VM's filesystems already sit inside its pool
+  const machines=HARV.filter(isMachine),okM=machines.filter(h=>h.status==='ok'),gN=guestCount();
   const used=top.reduce((a,r)=>a+(+r.fs.used||0),0),size=top.reduce((a,r)=>a+(+r.fs.size||0),0),avail=top.reduce((a,r)=>a+(+r.fs.avail||0),0);
   v.append(el('div',{class:'view-head'},el('div',null,el('h1',{text:'Everything stored, on every machine'}),
-    el('p',{text:ok.length?`${ok.length} harvester${ok.length===1?'':'s'} report ${rows.length} filesystem${rows.length===1?'':'s'}. Sizes are allocated blocks from the latest scans plus live changes; history comes from VictoriaMetrics.`:'Waiting for a harvester to answer.'})),el('span',{class:'vh-chip'},histChip())));
+    el('p',{text:ok.length?`${machines.length} machine${machines.length===1?'':'s'}`+(gN?` and the ${gN} guests inside them`:'')+`: ${rows.length} filesystem${rows.length===1?'':'s'}, from ${ok.length} harvester${ok.length===1?'':'s'}. Sizes are allocated blocks from the latest scans plus live changes; history comes from VictoriaMetrics.`:'Waiting for a harvester to answer.'})),el('span',{class:'vh-chip'},histChip())));
   // hero: the filesystem that fills first, or the fullest
   let hero=null;for(const r of rows){const st=fsStats(r);r.st=st;if(st.eta!=null&&(!hero||hero.st.eta==null||st.eta<hero.st.eta))hero=r;}
   if(!hero||hero.st.eta==null||hero.st.eta>5*365){hero=rows.slice().sort((a,b)=>b.st.u-a.st.u)[0]||null;}
   const heroP=el('div',{class:'panel hero'});
   if(hero){const st=hero.st,fs=hero.fs;const s=sev(st.u);
-    heroP.append(el('div',{class:'ph'},el('span',{class:'eyebrow',text:hostName(hero.H)+' · '+maskPath(fs.mount)}),chip(s||'good',pct(st.u)+' used')));
+    heroP.append(el('div',{class:'ph'},el('span',{class:'eyebrow',text:rowPlace(hero)+' · '+maskPath(fs.mount)}),chip(s||'good',pct(st.u)+' used')));
     if(st.eta!=null&&st.eta<=5*365){heroP.append(el('div',{class:'fig'},String(Math.max(0,Math.round(st.eta))),el('small',{text:'days left'})),el('p',{text:`${fmtB(fs.avail)} free of ${fmtB(fs.size)}. It grew ${fmtB(st.slope)} a day over the last ${fmtSpan(hero.cap.span)}, so at that pace it fills around ${fmtDate(Date.now()/1000+st.eta*DAY)}.`}));}
     else{heroP.append(el('div',{class:'fig'},pct(st.u),el('small',{text:'used'})),el('p',{text:`${fmtB(fs.avail)} free of ${fmtB(fs.size)} on the fullest filesystem. `+(st.slope!=null?(st.slope<=0?'It is not growing.':`It grows ${fmtB(st.slope)} a day, so it lasts ${etaText(st)}.`):`No forecast yet: ${st.why}.`)}));}
   }else heroP.append(el('p',{class:'empty',text:'No filesystem reported yet.'}));
@@ -1109,7 +1224,7 @@ function renderOverview(){
   v.append(el('div',{class:'ov-top'},heroP,el('div',{class:'kpis'},
     kpi('Stored',fmtB(used),`${pct(size?used/size:0)} of ${fmtB(size)} on ${top.length} filesystems`+(nestN?` · ${nestN} inside VMs counted in their pool`:'')),
     kpi('Free',fmtB(avail),top.length?`most on ${hostName((top.slice().sort((a,b)=>b.fs.avail-a.fs.avail)[0]||{}).H)}`:''),
-    kpi('Machines',`${ok.length} of ${HARV.filter(h=>h.status!=='duplicate').length}`,ok.length===HARV.length?'every harvester answers':HARV.filter(h=>h.status==='offline').map(hostName).join(', ')+' offline'),
+    kpi('Machines',`${okM.length} of ${machines.length}`,(gN?`${gN} guests inside · `:'')+(ok.length===HARV.length?`${ok.length} harvesters answer`:HARV.filter(h=>h.status==='offline').map(hostName).join(', ')+' offline')),
     kpi('Live changes',rate.toFixed(rate<10?1:0)+' / min',`${fmtN(evs)} since ${fmtHM(PAGE_T0)}`),
     kpi('Scans',`${allT.length-bad} of ${allT.length} OK`,bad?`${bad} with errors, see Sources`:'no scan errors'))));
   const grid=el('div',{class:'ov-grid'});v.append(grid);
@@ -1125,11 +1240,11 @@ function capacityPanel(rows){
   const tb=el('tbody');
   for(const r of rows){const st=r.st||fsStats(r),fs=r.fs,mu=metaUse(fs),s=sev(Math.max(st.u,mu||0)),lvm=fs.type==='lvmthin',ni=r.f.nested&&r.H.nestIn,nd=ni&&ni.place.get(fs.id);
     const notes=[fs.type];if(lvm&&+fs.provisioned>0&&fs.size)notes.push(`${fmtB(+fs.provisioned)} provisioned, ${(fs.provisioned/fs.size).toFixed(2)}× the pool`);if(mu!=null)notes.push(`metadata ${pct(mu)} of ${fmtB(+fs.meta.size)}`);
-    if(nd)notes.push(`inside ${hostName(ni.P)} › ${guestLabel(ni.g)} › ${nd.key}`);if(r.f.over>0)notes.push(lvm?'volumes share blocks':'files share blocks');if(r.f.unacc.t>0)notes.push(`${fmtB(r.f.unacc.t)} ${lvm?'in no listed volume':'not in any target'}`);
+    if(nd)notes.push(`inside ${hostName(ni.P)} › ${guestLabel(ni.g)} › ${nd.key}`);if(r.guest)notes.push(r.remote?(()=>{const L=lunOf((r.g.remote_fs||[]).find(x=>x.mount===r.fs.mount)?.serial);return L?`an iSCSI LUN on ${hostName(L.H)}`:`on a disk outside ${hostName(r.H)}'s pool`;})():`inside ${hostName(r.H)} › ${guestLabel(r.g)}${r.disk?' › '+r.disk.key:''}`,r.src);if(r.f.over>0)notes.push(lvm?'volumes share blocks':'files share blocks');if(r.f.unacc.t>=64*MiB)notes.push(`${fmtB(r.f.unacc.t)} ${lvm?'in no listed volume':'not in any target'}`);
     const meter=el('div',{class:'meter '+s,role:'meter','aria-valuenow':Math.round(st.u*100),'aria-valuemin':0,'aria-valuemax':100,'aria-label':'used'},el('i',{style:`width:${(Math.min(1,st.u)*100).toFixed(1)}%`}));
     const sp=r.cap&&r.cap.status==='ok'&&r.cap.v.length>2?sparkline(r.cap.v,s==='crit'?C.crit:C.accent):el('span',{style:'color:var(--muted);font-size:12px',text:st.why||'–'});
     const tr=el('tr',null,
-      el('td',{class:'pool-name'},el('b',null,el('i',{class:'dot',style:`background:${hostColor(r.H)}`}),hostName(r.H)+' · ',el('span',{class:'mono',style:'font-size:12.5px;color:var(--ink)',text:maskPath(fs.mount)})),el('span',{class:'wrap',style:'white-space:normal'},el('span',{class:'ps',style:'margin-right:6px;vertical-align:middle'},s==='crit'?chip('crit','Critical'):s==='warn'?chip('warn','Watch'):chip('good','OK')),notes.join(' · '))),
+      el('td',{class:'pool-name'},el('b',null,el('i',{class:'dot',style:`background:${hostColor(r.H)}`}),rowPlace(r)+' · ',el('span',{class:'mono',style:'font-size:12.5px;color:var(--ink)',text:maskPath(fs.mount)})),el('span',{class:'wrap',style:'white-space:normal'},el('span',{class:'ps',style:'margin-right:6px;vertical-align:middle'},s==='crit'?chip('crit','Critical'):s==='warn'?chip('warn','Watch'):chip('good','OK')),notes.join(' · '))),
       el('td',{class:'hs'},s==='crit'?chip('crit','Critical'):s==='warn'?chip('warn','Watch'):chip('good','OK')),
       el('td',{class:'hs',style:'width:20%'},meter),
       el('td',{class:'r num'},fmtB(fs.used),el('span',{class:'u2'},' / '+fmtB(fs.size))),
@@ -1137,7 +1252,7 @@ function capacityPanel(rows){
       el('td',{class:'hs'},sp),
       el('td',{class:'r num hs'},st.slope==null?'–':fmtD(st.slope)),
       el('td',{class:'r num wrap-ph'},etaText(st)));
-    hoverTip(tr,()=>[{v:hostName(r.H)+' · '+maskPath(fs.mount),c:'h'},{v:pct(st.u),l:lvm?'of the pool allocated':'used'},mu!=null?{v:pct(mu),l:'thin metadata used: a full metadata volume stops the pool',c:mu>=0.8?'':'m'}:null,nd?{l:`a filesystem of ${hostName(r.H)}, on ${hostName(ni.P)}'s thin volume ${guestLabel(ni.g)} › ${nd.key}: it can fill before the pool does`,c:'m'}:null,r.cap&&r.cap.status==='ok'?{l:`history from ${r.cap.src}, since ${fmtSince(r.cap.start)}`,c:'m'}:{l:st.why,c:'m'},st.eta!=null?{l:'full around '+fmtDate(Date.now()/1000+st.eta*DAY),c:'m'}:null]);
+    hoverTip(tr,()=>[{v:rowPlace(r)+' · '+maskPath(fs.mount),c:'h'},r.guest?{l:`${fs.type} · ${r.src} at the last scan of ${hostName(r.H)}'s pool: no history, so no forecast`,c:'m'}:null,{v:pct(st.u),l:lvm?'of the pool allocated':'used'},mu!=null?{v:pct(mu),l:'thin metadata used: a full metadata volume stops the pool',c:mu>=0.8?'':'m'}:null,nd?{l:`a filesystem of ${hostName(r.H)}, on ${hostName(ni.P)}'s thin volume ${guestLabel(ni.g)} › ${nd.key}: it can fill before the pool does`,c:'m'}:null,r.cap&&r.cap.status==='ok'?{l:`history from ${r.cap.src}, since ${fmtSince(r.cap.start)}`,c:'m'}:{l:st.why,c:'m'},st.eta!=null?{l:'full around '+fmtDate(Date.now()/1000+st.eta*DAY),c:'m'}:null]);
     tb.append(tr);}
   return el('div',{class:'panel c12'},el('div',{class:'ph'},el('h2',{text:'Capacity'}),el('span',{class:'sub',text:'df from each harvester · trend from up to 90 days of VictoriaMetrics, growth per day from the last 30, independent of the range above'})),
     rows.length?el('div',{class:'tbl-wrap'},el('table',null,el('thead',null,el('tr',null,...['Filesystem','Status','','Used','Free','90 days','Per day','Full in'].map((h,i)=>el('th',{class:([3,4,6,7].includes(i)?'r ':'')+([1,2,4,5,6].includes(i)?'hs':''),text:h})))),tb)):el('p',{class:'empty',text:'No filesystems yet.'}));
@@ -1147,13 +1262,13 @@ function guestsPanel(H,T){
   const fs=H.info.filesystems.find(f=>f.id===T.fs)||{},size=+fs.size||0,root=H.roots.get(T.name),agg=ioAgg();
   const rows=T.guests.filter(g=>g&&g.path).map(g=>{const f=root&&findDir(H,T,g.path),gn=f&&!f.rest.length?f.node:null;
     const alloc=gn?gn.t:(g.disks||[]).reduce((a,d)=>a+(+d.allocated||0),0),prov=(g.disks||[]).reduce((a,d)=>a+(+d.size||0),0);
-    const N=HARV.find(h=>h.nestIn&&h.nestIn.P===H&&h.nestIn.g.vmid===g.vmid);let used=null;
+    const N=HARV.find(h=>h.nestIn&&h.nestIn.P===H&&h.nestIn.g.vmid===g.vmid);let used=guestUsed(g);
     if(N){used=0;for(const id of N.nestIn.place.keys()){const x=N.info.filesystems.find(y=>y.id===id);if(x)used+=+x.used||0;}}
     return {g,alloc,prov,N,used,id:H.key+'|'+T.name+'|'+g.path};}).sort((a,b)=>b.alloc-a.alloc||(a.g.vmid??1e9)-(b.g.vmid??1e9));
   const tb=el('tbody');
-  for(const r of rows){const g=r.g,u=r.prov?r.alloc/r.prov:0,io=agg.get(r.id),recl=r.N?r.alloc-r.used:null,typ=g.type==='qemu'?'VM':g.type==='lxc'?'CT':'–';
+  for(const r of rows){const g=r.g,u=r.prov?r.alloc/r.prov:0,io=agg.get(r.id),recl=r.used!=null?r.alloc-r.used:null,typ=g.type==='qemu'?'VM':g.type==='lxc'?'CT':'–';
     const tr=el('tr',null,
-      el('td',{class:'pool-name'},el('b',null,el('i',{class:'dot vmtex',style:`background:${r.N?hostColor(r.N):C.vm}`}),el('span',{style:'color:var(--ink);font-size:13px',text:guestLabel(g)})),r.N?el('span',{style:'display:block',text:'harvester '+hostName(r.N)+' inside'}):null,
+      el('td',{class:'pool-name'},el('b',null,el('i',{class:'dot vmtex',style:`background:${r.N?hostColor(r.N):C.vm}`}),el('span',{style:'color:var(--ink);font-size:13px',text:guestLabel(g)})),el('span',{style:'display:block',text:guestDetail(g,r.N)}),
         el('span',{class:'psb'},(g.type==='none'?'volumes no guest refers to':typ+(g.template?' · template':g.running?' · running':' · stopped'))+(recl!=null?' · '+fmtB(Math.max(0,recl))+' reclaimable':''))),
       el('td',{class:'hs'},el('span',{style:'margin-right:6px;color:var(--ink-2)',text:typ}),g.type==='none'?null:g.template?chip('need','template'):g.running?chip('good','running'):chip('need','stopped')),
       el('td',{class:'r num'},fmtB(r.alloc),el('span',{class:'u2 psb'},'of '+fmtB(r.prov))),
@@ -1165,20 +1280,29 @@ function guestsPanel(H,T){
     hoverTip(tr,()=>{const a=ioAgg().get(r.id);const out=[{v:guestLabel(g),c:'h'},{l:(g.type==='lxc'?'container':g.type==='qemu'?'virtual machine':'volumes no guest refers to')+(g.template?', template':'')+(g.type==='none'?'':g.running?', running':', stopped'),c:'m'},{v:fmtB(r.alloc),l:`allocated of ${fmtB(r.prov)} provisioned (${pct(u)})`},{v:size?pct(r.alloc/size):'–',l:'of the pool'}];
       for(const d of g.disks||[])out.push({v:d.key,l:`${fmtB(+d.allocated||0)} of ${fmtB(+d.size||0)}`+(HIDE?'':' · '+d.lv)+(d.discard?' · discard on':' · no discard')+(d.walked?' · walked':'')});
       if(a)out.push({v:fmtRate(a.w),l:'writing'},{v:fmtRate(a.r),l:'reading'});
-      if(r.N)out.push({v:fmtB(Math.max(0,recl)),l:`reclaimable: allocated minus the ${fmtB(r.used)} its filesystems use. Blocks freed inside the guest stay allocated until it trims them (fstrim, with discard on).`});
+      if(recl!=null)out.push({v:fmtB(Math.max(0,recl)),l:`reclaimable: allocated minus the ${fmtB(r.used)} its filesystems use. Blocks freed inside the guest stay allocated until it trims them (`+(g.type==='lxc'?'pct fstrim':'fstrim, with discard on')+').'});
+      for(const x of g.remote_fs||[]){const L=lunOf(x.serial);out.push({v:fmtB(+x.used||0),l:`${maskPath(x.mount)} is on `+(L?`an iSCSI LUN on ${hostName(L.H)}: drawn there`:'a disk outside this pool')});}
       return out;});
     tb.append(tr);}
   const th=(t,c)=>el('th',{class:c||'',text:t});
   return el('div',{class:'panel c12'},el('div',{class:'ph'},el('h2',{text:'Guests · '+hostName(H)+' · '+maskPath(fs.mount||T.name)}),el('span',{class:'sub',text:`${rows.length} guests · ${fmtB(+fs.used||0)} of ${fmtB(size)} allocated · write rate from block I/O every ${fmtEvery(+T.poll_s||2)}`})),
     el('div',{class:'tbl-wrap'},el('table',null,el('thead',null,el('tr',null,th('Guest'),th('Type','hs'),th('Allocated','r'),th('of provisioned','hs'),th('Provisioned','r hs'),th('Of pool','r hs'),th('Writing','r'),th('Reclaimable','r hs'))),tb)));
 }
+// How much of a guest the atlas can see, and from where.
+function guestDetail(g,N){if(N)return 'folders and live changes: a harvester inside';const ds=g.disks||[],from=f=>ds.some(d=>(d.fs||[]).some(x=>x.from===f));
+  if(ds.some(d=>d.walked))return 'folders, walked from the host';if(from('agent'))return 'filesystems, from the guest agent';if(from('superblock'))return 'filesystems, from the superblock (stopped)';
+  if(ds.some(d=>d.estimated!=null))return 'blocks only: inactive, allocation estimated';return g.type==='qemu'&&g.running?(g.agent===false?'blocks only: the guest agent did not answer':'blocks only: no guest agent'):'blocks only';}
+function guestUsed(g){let u=0,any=false;for(const d of g.disks||[])for(const x of d.fs||[]){u+=+x.used||0;any=true;}return any?u:null;}
 function ovIo(){const agg=ioAgg();for(const td of document.querySelectorAll('#v-overview [data-io]')){const a=agg.get(td.dataset.io);td.textContent=a&&a.w>=1?fmtRate(a.w):td.textContent==='–'?'–':'idle';}}
 function fillsPanel(){
-  const byK={};let free=0,unacc=0,res=0,shared=false;
-  for(const n of fleetLeaves()){if(n.kind==='free'){free+=n.t;continue;}if(n.kind==='reserved'){res+=n.t;continue;}if(n.kind==='unacc'||n.kind==='gap'){unacc+=n.t;continue;}if(n.kind==='host'||n.kind==='root'||n.kind==='fs')continue;const k=kindOf(n)||'other';byK[k]=(byK[k]||0)+n.t;}
+  const byK={};let free=0,unacc=0,res=0,trim=0,meta=0,swap=0,shared=false;
+  for(const n of fleetLeaves()){if(n.kind==='free'){free+=n.t;continue;}if(n.kind==='reserved'){res+=n.t;continue;}if(n.kind==='unacc'||n.kind==='gap'){unacc+=n.t;continue;}if(n.kind==='host'||n.kind==='root'||n.kind==='fs')continue;
+    if(n.kind==='part'&&n.sub!=='gfs'&&n.sub!=='otherfs'){if(n.sub==='untrimmed')trim+=n.t;else if(n.sub==='meta'||n.sub==='bmeta')meta+=n.t;else if(n.sub==='swap')swap+=n.t;else if(n.sub==='bslack')free+=n.t;else if(n.sub!=='pending')unacc+=n.t;continue;}
+    const k=kindOf(n)||'other';byK[k]=(byK[k]||0)+n.t;}
   for(const H of HARV)if(H.status==='ok')for(const f of H.fss)if(f.over>0)shared=true;
   const parts=KINDS.map(k=>({label:k.label,v:byK[k.k]||0,c:kindColor(k.k),vm:k.k==='vm'})).filter(p=>p.v>0);
-  if(unacc>0)parts.push({label:'Not in any target',v:unacc,c:C.dark});if(res>0)parts.push({label:'Reserved',v:res,c:C.axis});
+  if(trim>0)parts.push({label:'Freed in guests, not trimmed',v:trim,c:mix(C.dark,C.warn,0.3)});if(meta>0)parts.push({label:'Filesystem metadata',v:meta,c:C.s3});if(swap>0)parts.push({label:'Swap',v:swap,c:C.s2});
+  if(unacc>0)parts.push({label:'In no file',v:unacc,c:C.dark});if(res>0)parts.push({label:'Reserved',v:res,c:C.axis});
   parts.push({label:'Free',v:free,c:C.free,free:true});
   const tot=parts.reduce((a,p)=>a+p.v,0)||1;
   const sb=el('div',{class:'segbar',role:'img','aria-label':'What fills the fleet, by kind'});
@@ -1659,7 +1783,7 @@ const HEAT=new Map(),HEAT_TAU=20000,HEAT_REF=Math.log10(1+256*MiB/(32*KiB));
 function heatBump(ids,b,now){for(const id of ids){const a=HEAT.get(id);if(a){a.v=a.v*Math.exp(-(now-a.t)/HEAT_TAU)+b;a.t=now;}else HEAT.set(id,{v:b,t:now});}
   if(HEAT.size>20000){for(const [k,a] of HEAT)if(a.v*Math.exp(-(now-a.t)/HEAT_TAU)<1)HEAT.delete(k);}}
 function heatBucket(id,now){const a=HEAT.get(id);if(!a)return 0;const v=a.v*Math.exp(-(now-a.t)/HEAT_TAU);return v<1?0:v/(HEAT_TAU/1000);}
-function rateOf(n,agg,now){if(n.rest){let s=0;for(const x of n.parts)s+=rateOf(x,agg,now);return s;}switch(n.kind){case 'free':case 'reserved':case 'unacc':case 'more':case 'gap':return 0;case 'here':return heatBucket(n.p.id+'|~here',now);}
+function rateOf(n,agg,now){if(n.rest){let s=0;for(const x of n.parts)s+=rateOf(x,agg,now);return s;}switch(n.kind){case 'free':case 'reserved':case 'unacc':case 'more':case 'gap':case 'part':return 0;case 'here':return heatBucket(n.p.id+'|~here',now);}
   const io=agg.get(n.id);return heatBucket(n.id,now)+(io?io.w:0);}
 function heatOf(rate){return rate>0?Math.min(1,Math.log10(1+rate/(32*KiB))/HEAT_REF):0;}
 const COLD=30*DAY;
@@ -1688,7 +1812,7 @@ async function loadGrowth(force){
   BM.needLayout=true;BM.needBase=true;invalidate('grow');}
 function growRec(n){for(let a=n;a;a=a.p){if(a.kind==='fs'||a.kind==='host'||a.kind==='root')return null;const r=GROW.by&&GROW.by.get(a.id);if(r)return {r,a};}return null;}
 // bytes/day: a folder's own trend, or its share of the nearest ancestor's that has history; a filesystem's df trend
-function growthOf(n){if(n.kind==='fs'){const m=fsModel(n);return m&&m.slope?m.slope:0;}if(n.kind==='free'||n.kind==='reserved'||n.kind==='unacc')return 0;
+function growthOf(n){if(n.kind==='fs'){const m=fsModel(n);return m&&m.slope?m.slope:0;}if(n.kind==='free'||n.kind==='reserved'||n.kind==='unacc'||n.kind==='part')return 0;
   const x=growRec(n);if(!x||!x.a.t)return 0;return x.r.slope*(n===x.a?1:(n.t||0)/x.a.t);}
 function seriesAt(r,days){const g=GROW,i=(g.t1+days*DAY-g.t0)/g.step;if(i<=r.i0)return r.S[r.i0];if(i>=g.n)return r.S[g.n];const a=Math.floor(i),b=Math.min(g.n,a+1),f=i-a,va=r.S[a],vb=r.S[b];return isFinite(va)&&isFinite(vb)?va+(vb-va)*f:isFinite(va)?va:vb;}
 // Δ over the last `days` (as much as history holds) for rings: folders from their series, filesystems from df
@@ -1708,7 +1832,7 @@ function timeSize(n,s){
     case 'host':case 'fs':{let x=0;for(const k of n.kids)x+=sizeOf(k);return x;}case 'root':return s;}
   const f=forecast(n,s);return n.p&&n.p.kind==='fs'?f*usedScale(n.p):f;}
 // where a folder's own history and trend take it along the slider
-function forecast(n,s){if(n.kind==='unacc')return s;const t=BM.t,f=fsOf(n),m=f&&fsModel(f),tc=m&&isFinite(m.tFull)?Math.min(t,m.tFull):t;
+function forecast(n,s){if(n.kind==='unacc'||n.kind==='part')return s;const t=BM.t,f=fsOf(n),m=f&&fsModel(f),tc=m&&isFinite(m.tFull)?Math.min(t,m.tFull):t;
   if(tc<0){const x=growRec(n);if(!x||!(x.r.now>0))return s;return s*Math.max(0,seriesAt(x.r,tc))/x.r.now;}
   return Math.max(s*0.02,s+growthOf(n)*tc);}
 // A filesystem keeps its capacity along the slider: its used part follows the df model, and the forecasts of the
@@ -1726,15 +1850,17 @@ function reclaimItems(){
   for(const H of HARV){if(H.status!=='ok')continue;
     for(const T of H.info.targets){if(T.kind!=='lvm_thin'||!Array.isArray(T.guests)||!isOuter(H,T))continue;const f=H.fsNodes.get(T.fs);
       for(const g of T.guests){if(!g||!g.path)continue;const r=findDir(H,T,g.path),gn=r&&!r.rest.length?r.node:null;if(!gn)continue;
-        if(g.type==='lxc'&&g.running){const ds=gn.c.filter(d=>d.v==='disk'&&d.u>0&&d.c.length),u=ds.reduce((a,d)=>a+d.u,0);
-          const parts=ds.map(d=>d.gap?{n:d.gap,db:-d.gap.t}:{n:d,db:-d.u}),b=-parts.reduce((a,x)=>a+x.db,0);
-          if(u>=512*MiB&&b>0)out.push({key:'trim|'+H.key+'|'+g.vmid,title:'Trim '+guestLabel(g),where:hostName(H)+' · '+(f?maskPath(f.fs.mount):tgName(T.name)),basis:'m',basisText:'measured',bytes:b,
-            cmd:'pct fstrim '+(HIDE?'<id>':g.vmid),why:'Allocated blocks no file in the container accounts for: blocks freed inside it and not trimmed yet, plus some filesystem metadata.',parts});}
-        const N=HARV.find(h=>h.nestIn&&h.nestIn.P===H&&h.nestIn.g.vmid===g.vmid);
-        if(N&&g.type==='qemu'){let used=0;for(const id of N.nestIn.place.keys()){const x=N.info.filesystems.find(y=>y.id===id);if(x)used+=+x.used||0;}const recl=gn.t-used;
-          if(recl>=GiB){const gaps=gn.c.filter(d=>d.v==='disk'&&d.gap&&d.gap.t>0).map(d=>d.gap),gs=gaps.reduce((a,x)=>a+x.t,0);
-            out.push({key:'vmtrim|'+H.key+'|'+g.vmid,title:'Run fstrim inside '+guestLabel(g),where:hostName(H)+' · '+guestLabel(g),basis:'m',basisText:'measured',bytes:recl,cmd:'sudo fstrim -av   # on '+hostName(N),
-              why:`The VM holds ${fmtB(recl)} more than its filesystems use. With discard on, a trim inside it returns those blocks to the pool.`,parts:gs>0?gaps.map(x=>({n:x,db:-Math.min(x.t,recl*x.t/gs)})):[{n:gn,db:-recl}]});}}}}}
+        // the "freed, not trimmed" pieces of its disks: what a trim inside it hands back to the pool
+        const ups=[];for(const d of gn.c)if(d.v==='disk'&&d.pn)for(const x of d.pn.values())if(x.sub==='untrimmed')ups.push(x);
+        const b=ups.reduce((a,x)=>a+x.t,0),lxc=g.type==='lxc',off=!lxc&&ups.some(x=>{const di=diskOf(x.p);return di&&!di.discard;}),mixed=ups.some(x=>x.p.pn&&[...x.p.pn.values()].some(y=>y.sub==='gfs'&&y.fs&&y.fs.from==='agent'));
+        if(b>=(lxc?512*MiB:GiB))out.push({key:(lxc?'trim|':'vmtrim|')+H.key+'|'+g.vmid,title:(lxc?'Trim ':'Run fstrim inside ')+guestLabel(g),where:hostName(H)+' · '+(lxc?(f?maskPath(f.fs.mount):tgName(T.name)):guestLabel(g)),basis:mixed?'e':'m',basisText:mixed?'at most: allocated minus filesystem use':'allocated minus filesystem use',bytes:b,
+          cmd:lxc?'pct fstrim '+(HIDE?'<id>':g.vmid):'sudo fstrim -av   # inside '+guestPlace(g),
+          why:mixed?`${guestPlace(g)} holds ${fmtB(b)} in the pool beyond what its filesystems use (guest agent). Most is usually blocks freed inside it and not trimmed yet; its swap and its filesystems' own metadata are in there too, and a trim does not return those.`+(off?' Turn discard on for its disk first, or the trim stays inside the VM.':' With discard on, a trim inside it returns the freed blocks.')
+            :`${guestPlace(g)} holds ${fmtB(b)} in the pool beyond what its files, filesystem metadata and swap take: blocks freed inside it and not trimmed yet.`+(lxc?'':off?' Turn discard on for its disk first, or the trim stays inside the VM.':' With discard on, a trim inside it returns them.'),parts:ups.map(x=>({n:x,db:-x.t}))});}}}
+  // iSCSI LUNs: the guest's trim returns blocks to the volume the LUN is on
+  for(const H of HARV)for(const n of H.lunNodes||[]){const x=n.pn&&n.pn.get('luntrim');if(!x||x.t<GiB)continue;const L=n.lun;
+    out.push({key:'luntrim|'+n.id,title:'Run fstrim on '+maskPath(L.fs.mount)+' inside '+guestLabel(L.g),where:hostName(H)+' · '+tail(maskPath(n.path),2),basis:'e',basisText:'at most: LUN blocks minus filesystem use',bytes:x.t,cmd:'sudo fstrim -v '+maskPath(L.fs.mount)+'   # inside '+guestPlace(L.g),
+      why:`The LUN takes ${fmtB(n.t)} on ${hostName(H)}; the filesystem in it uses ${fmtB(+L.fs.used||0)}. Most of the difference is usually blocks it freed and has not trimmed; the filesystem's own metadata is in there too, and a trim does not return that. A trim inside ${guestPlace(L.g)} hands the freed blocks back to ${hostName(H)}, if the LUN is thin.`,parts:[{n:x,db:-x.t}]});}
   // big folders nothing touched for months (newest mtime in the subtree); download and cache folders after a month
   const cold=[];
   for(const H of HARV){if(H.status!=='ok')continue;for(const root of H.roots.values()){const f=H.fsNodes.get(root.T.fs),min=Math.max(8*GiB,(f&&f.fs?+f.fs.size||0:0)*0.004);
@@ -1783,16 +1909,17 @@ const cfs=px=>isPhone()?Math.max(12,px):px;
 function fit(ctx,s,max){if(max<=0)return '';if(ctx.measureText(s).width<=max)return s;let lo=0,hi=s.length;while(lo<hi){const m=(lo+hi+1)>>1;if(ctx.measureText(s.slice(0,m)+'…').width<=max)lo=m;else hi=m-1;}return lo>0?s.slice(0,lo)+'…':'';}
 function leafFill(ctx,n){
   if(n.kind==='free')return pattern(ctx,'free');if(n.kind==='reserved')return pattern(ctx,'reserved');if(n.kind==='unacc'||n.kind==='gap')return pattern(ctx,'dark');
+  if(n.kind==='part'){if(n.sub==='gfs')return BM.mode==='kind'||BM.mode==='host'?fillFor(ctx,n):C.vm;return pattern(ctx,n.sub==='untrimmed'?'untrimmed':n.sub==='bslack'?'nohist':n.sub==='nofile'?'dark':n.sub==='pending'?'pending':'reserved');}
   if(n.kind==='host'&&n.offline)return pattern(ctx,'reserved');if(n.pending)return pattern(ctx,'pending');
   if(STATIC_LENS.has(BM.mode))return neutral(n);return fillFor(ctx,n);}
 function fillFor(ctx,n){
   if(BM.mode==='kind')return kindColor(kindOf(n)||'other');if(BM.mode==='host')return hostColor(n.H);
   const d=bmDelta(n);return divColor(d==null?0:divTr(d,BM.sc.lo,BM.sc.hi));}
-function baseColor(n,f){if(typeof f==='string')return f;if(n.kind==='free')return C.free;if(n.kind==='reserved'||n.pending||n.offline)return C.s2;return C.dark;}
+function baseColor(n,f){if(typeof f==='string')return f;if(n.kind==='free')return C.free;if(n.kind==='part')return n.sub==='untrimmed'?mix(C.dark,C.warn,0.3):C.s2;if(n.kind==='reserved'||n.pending||n.offline)return C.s2;return C.dark;}
 // Δ for colouring: VictoriaMetrics over the range where a folder has a series, plus live changes after the newest sample;
 // live changes since the page opened everywhere else.
 function bmDelta(n){
-  switch(n.kind){case 'free':case 'reserved':case 'unacc':case 'gap':return null;case 'here':{const L=LIVE.get(n.p.id);return L?L.own:0;}case 'more':return 0;}
+  switch(n.kind){case 'free':case 'reserved':case 'unacc':case 'gap':case 'part':return null;case 'here':{const L=LIVE.get(n.p.id);return L?L.own:0;}case 'more':return 0;}
   const L=LIVE.get(n.id),hd=HIST.status==='ok'?HIST.histD.get(n.id):undefined;
   if(hd!=null)return hd+(L?L.lh:0);if(n.kind==='dir')return L?L.ld:0;
   let s=0;for(const k of n.kids||[]){const d=bmDelta(k);if(d)s+=d;}return s;}
@@ -2183,7 +2310,9 @@ function bmTip(n){
     if(lvm&&+fs.provisioned>0)rows.push({v:fmtB(+fs.provisioned),l:`provisioned to volumes, ${(fs.provisioned/(fs.size||1)).toFixed(2)}× the pool`});if(mu!=null)rows.push({v:pct(mu),l:`of ${fmtB(+fs.meta.size)} thin metadata used`});
     if(n.nested){const ni=n.H.nestIn,d=ni&&ni.place.get(fs.id);if(d)rows.push({l:`inside ${hostName(ni.P)} › ${guestLabel(ni.g)} › ${d.key}. Only its scanned folders are drawn: its free space is not allocated in the pool.`,c:'m'});}
     if(n.over>0)rows.push({l:lvm?`Volumes add up to ${fmtB(n.over)} more than the pool allocated: snapshots share blocks with their volume.`:`Files add up to ${fmtB(n.over)} more than df used: they share blocks (see Sharing).`,c:'m'});if(n.unacc.t>0)rows.push({v:fmtB(n.unacc.t),l:lvm?'allocated but in no listed volume':'used but in no target'});}
-  if(n.kind==='unacc')rows.push({l:lvm?'pool data allocated minus every listed thin volume: snapshots and volumes the harvester does not list.':'df used minus every target on this filesystem: excluded paths, other users of the disk, metadata, files deleted while open.',c:'m'});
+  if(n.kind==='unacc'&&!(n.p.fs&&n.p.fs.btrfs))rows.push({l:lvm?'pool data allocated minus every listed thin volume (inactive ones by estimate): snapshots and volumes the harvester does not list.':'df used minus every target on this filesystem: excluded paths, other users of the disk, metadata, files deleted while open.',c:'m'});
+  if(n.kind==='part'){rows.push({l:n.why||'',c:'m'});if(n.sub==='gfs'&&n.fs)rows.push({v:pct((+n.fs.used||0)/((+n.fs.size)||1)),l:'of the filesystem used'});}
+  if(n.kind==='unacc'&&n.p.fs&&n.p.fs.btrfs){const gs=unwalked(n.p.fs);rows.push({l:'df used minus what every target here holds, shared blocks counted once.'+(gs.length?' Subvolumes no target walks: '+gs.map(g=>`${g.count} in ${maskPath(g.in)}`+(g.snapshots?` (${g.snapshots} snapshots)`:'')).join(', ')+'.':'')+' Also extents btrfs keeps whole after part of them was overwritten, and excluded folders (@eaDir).',c:'m'});}
   if(n.kind==='gap')rows.push({l:n.p.nest?'allocated in the thin pool but in none of the guest’s scanned folders: blocks freed inside the guest and not trimmed yet, its filesystem metadata, and paths its harvester does not scan.':'allocated blocks no file in the container accounts for: filesystem metadata, and blocks freed inside the container that are still mapped.',c:'m'});
   if(n.kind==='free'){const m=fsModel(n.p);rows.push({l:'available to unprivileged users (df avail)'+(m&&isFinite(m.tFull)?' · gone on '+fmtDay(m.tFull)+' at the current pace':''),c:'m'});}
   if(n.kind==='reserved')rows.push({l:'neither used nor available: kept back for root by the filesystem',c:'m'});
@@ -2194,12 +2323,13 @@ function bmTip(n){
   if(n.who&&Date.now()/1000-n.whoAt<600)rows.push({v:HIDE?'a process':n.who,l:'last writer'+(n.ctr&&!HIDE?' · container '+n.ctr:'')+' · '+fmtAgo(n.whoAt)});
   if(n.kind==='dir'&&n.v){const g=n.v==='guest'?guestOf(n):null,d=n.v==='disk'?diskOf(n):null,io=agg.get(n.id);
     if(n.v==='pool'){const fs=fsOf(n);rows.push({l:`thin pool: ${n.c.length} guests`+(fs&&fs.fs?` · pool ${pct(fs.fs.used/(fs.fs.size||1))} allocated`:''),c:'m'});}
-    if(n.v==='guest')rows.push({l:(n.g==='lxc'?'container':n.g==='qemu'?'virtual machine':'volumes no guest refers to')+(g&&g.template?', template':'')+(n.on?', running':', stopped')+(n.vmid!=null&&!HIDE?' · id '+n.vmid:''),c:'m'});
+    if(n.v==='guest'){rows.push({l:(n.g==='lxc'?'container':n.g==='qemu'?'virtual machine':'volumes no guest refers to')+(g&&g.template?', template':'')+(n.on?', running':', stopped')+(n.vmid!=null&&!HIDE?' · id '+n.vmid:''),c:'m'});
+      if(g){const N=insideOf(n.H).find(h=>h.nestIn&&h.nestIn.g.vmid===g.vmid);rows.push({l:'detail: '+guestDetail(g,N),c:'m'});for(const x of g.remote_fs||[]){const L=lunOf(x.serial);rows.push({v:fmtB(+x.used||0),l:`${maskPath(x.mount)} is on `+(L?`an iSCSI LUN on ${hostName(L.H)}: drawn there`:'a disk outside this pool')});}}}
     if(n.v==='disk'&&n.prov)rows.push({v:fmtB(n.t),l:`allocated of ${fmtB(n.prov)} provisioned, ${pct(n.t/n.prov)}`});
     if(io)rows.push({key:actColor(heatOf(io.w)),sw:1,v:fmtRate(io.w),l:'writing · '+fmtRate(io.r)+' reading'});
     if(d)rows.push({l:(HIDE?'':d.lv+' · ')+(d.discard?'discard on: freed blocks go back to the pool':'no discard: freed blocks stay allocated'),c:'m'});
-    if(n.v==='disk')rows.push({l:n.nest?'holds '+n.nest.map(f=>hostName(f.H)+' '+maskPath(f.fs.mount)).join(', ')+' (its own harvester)':n.c.length?'the container’s folders, walked from the host':'blocks inside a VM: not scanned from here',c:'m'});}
-  if(n.kind!=='free'&&n.kind!=='reserved'&&n.kind!=='unacc'&&n.kind!=='gap'&&!n.pending){
+    if(n.v==='disk')rows.push({l:n.nest?'holds '+n.nest.map(f=>maskPath(f.fs.mount)).join(', ')+', scanned by a harvester inside '+hostName(n.nest[0].H):n.c.length?'the container’s folders, walked from the host':n.pn?'its filesystems, as the hypervisor’s harvester knows them; folders need a harvester inside':d&&d.estimated!=null&&d.allocated==null?'inactive: its allocation cannot be read, so it is sized by the pool’s use no active volume accounts for (estimated)':'blocks inside a VM: nothing tells what is in them',c:'m'});}
+  if(n.kind!=='free'&&n.kind!=='reserved'&&n.kind!=='unacc'&&n.kind!=='gap'&&n.kind!=='part'&&!n.pending){
     if(BM.mode==='change'){const d=bmDelta(n);if(d!=null)rows.push({key:divColor(divTr(d,BM.sc.lo,BM.sc.hi)),sw:1,v:fmtD(d),l:n.kind==='here'?'live since the page opened':bmBasis(n)});}
     if(BM.mode==='rings'||BM.mode==='time'){const d1=deltaOver(n,1),d7=deltaOver(n,7),d30=deltaOver(n,30);if(d7!=null){rows.push({v:fmtD(d1),l:'last day'},{v:fmtD(d7),l:growSpan()<7?'since '+fmtDay(-growSpan()):'last 7 days'});if(growSpan()>7)rows.push({v:fmtD(d30),l:growSpan()<30?'since '+fmtDay(-growSpan()):'last 30 days'});}
       const g=growthOf(n);if(g)rows.push({v:fmtD(g)+'/day',l:'trend'+(growRec(n)&&growRec(n).a!==n?' (share of '+nameOf(growRec(n).a)+'’s)':'')});}}
@@ -2214,7 +2344,7 @@ function bmTip(n){
 function bmLegend(){const l=$('#bm-legend');if(!l)return;l.replaceChildren();
   const sw=(c,t,extra)=>el('span',null,el('i',{style:`background:${c};${extra||''}`}),t),m=BM.mode;
   if(m==='kind')KINDS.forEach(k=>l.append(sw(kindColor(k.k),k.label)));
-  else if(m==='host')HARV.filter(h=>h.status==='ok').forEach(h=>l.append(sw(hostColor(h),hostName(h))));
+  else if(m==='host')HARV.filter(h=>h.status==='ok'&&isMachine(h)).forEach(h=>l.append(sw(hostColor(h),hostName(h)+(insideOf(h).length?' and its guests':''))));
   else if(m==='live'){l.append(sw(`linear-gradient(90deg,${actColor(.1)},${actColor(.45)},${actColor(.8)},${actColor(1)})`,'changing now: 64 KiB/s → 256 MiB/s','width:34px'),sw(C.s3,'unchanged 30+ days',`background-image:repeating-linear-gradient(45deg,transparent 0 3px,${C.axis} 3px 4px)`),
     el('span',{class:'muted',text:'Hot cores and trembling edges are writes; walls glow when anything inside is busy. Folders: bytes changed over 20 s. VM disks: block writes, polled.'}));}
   else if(m==='rings')l.append(sw(C.pos,'added: last day, week, month (outside in)'),sw(C.neg,'shrank'),el('span',{class:'muted',text:GROW.status==='ok'?'Ring thickness is bytes added, square-root scale. History since '+fmtSince(GROW.first)+'; deeper folders have no series yet.':GROW.status==='none'?'needs metrics_url':'loading history…'}));
@@ -2222,8 +2352,8 @@ function bmLegend(){const l=$('#bm-legend');if(!l)return;l.replaceChildren();
   else if(m==='links')l.append(sw(C.s3,'shared with another folder',`background-image:repeating-linear-gradient(45deg,transparent 0 3px,${C.share} 3px 4.5px)`),sw(C.s3,'only here: what deleting frees',`box-shadow:inset 0 0 0 1.5px ${C.share}`),el('span',{class:'muted',text:'Threads join folders that reference the same blocks (btrfs sharing pass).'}));
   else if(m==='reclaim')l.append(sw(C.s3,'could come back',`background-image:repeating-linear-gradient(45deg,transparent 0 3px,${C.good} 3px 4.5px)`),sw(C.free,'free space that grows',`box-shadow:inset 0 0 0 2px ${C.good}`));
   else{const s=BM.sc;l.append(sw(divColor(-0.6),'shrank'),sw(C.mid,'no change'),sw(divColor(0.3),'grew ~'+fmtAxis(divInvr(0.3,s.lo,s.hi))),sw(divColor(0.6),'~'+fmtAxis(divInvr(0.6,s.lo,s.hi))),sw(divColor(0.9),'~'+fmtAxis(divInvr(0.9,s.lo,s.hi))),el('span',{class:'muted',text:HIST.status==='ok'?`folders with history: last ${fmtSpan(HIST.t1-HIST.t0)}; others: since ${fmtHM(PAGE_T0)}`:`since ${fmtHM(PAGE_T0)}`}));}
-  l.append(sw(C.free,'free',`background-image:repeating-linear-gradient(135deg,transparent 0 3px,${C.freeLine} 3px 4px)`),sw(C.dark,'not in any target'));
-  if(HARV.some(h=>h.status==='ok'&&h.info.targets.some(t=>t.kind==='lvm_thin'))){const v=el('span',null,el('i',{class:'vmtex',style:`background:${C.vm}`}),'blocks inside a VM disk');l.append(v);}
+  l.append(sw(C.free,'free',`background-image:repeating-linear-gradient(135deg,transparent 0 3px,${C.freeLine} 3px 4px)`),sw(mix(C.dark,C.warn,0.3),'freed in a guest, not trimmed',`background-image:repeating-linear-gradient(45deg,transparent 0 3px,${mix(C.dark,C.warn,0.7)} 3px 4px)`),sw(C.s2,'metadata, swap',`background-image:repeating-linear-gradient(45deg,transparent 0 3px,${C.axis} 3px 4px)`),sw(C.dark,'in no file'));
+  if(HARV.some(h=>h.status==='ok'&&h.info.targets.some(t=>t.kind==='lvm_thin'))){const v=el('span',null,el('i',{style:`background:${C.vm}`}),'a filesystem inside a VM (folders not scanned)');l.append(v);}
   if((BM.layout==='cells'?BM.ctx:BM.focus)===ROOT&&BM.size==='balanced')l.append(el('span',{class:'muted',text:'Machines are drawn at the cube root of their bytes; inside a machine, area is true bytes.'}));}
 document.addEventListener('keydown',e=>{if(current()!=='blockmap'||(e.target&&e.target.closest&&e.target.closest('input,textarea,select')))return;
   if(e.key==='Escape'){if(BM.wall){setWall(false);return;}bmUp();return;}
@@ -2302,14 +2432,14 @@ function renderSources(){
   for(const H of HARV){
     const p=el('div',{class:'panel'});grid.append(p);
     const st=H.status==='ok'?chip('good','online'):H.status==='loading'?chip('need','connecting'):H.status==='duplicate'?chip('need','duplicate'):chip('crit','offline');
-    p.append(el('div',{class:'ph'},el('h2',null,el('i',{class:'dot',style:`background:${hostColor(H)};margin-right:7px`}),hostName(H)),st));
-    const where=urlText(H.shown,H.idx)+(H.relay?' · relayed by '+hostName(H.relay):'');
+    p.append(el('div',{class:'ph'},el('h2',null,el('i',{class:'dot',style:`background:${hostColor(H)};margin-right:7px`}),H.nestIn?'Harvester in '+hostName(H):'Harvester · '+harvName(H)),st));
+    const where=urlText(H.shown,H.idx)+(H.relay?' · relayed by '+harvName(H.relay):'');
     if(H.status!=='ok'){p.append(el('dl',{class:'kv'},el('dt',{text:'URL'}),el('dd',{text:where}),el('dt',{text:'Error'}),el('dd',{class:'err',text:maskText(H.err)||'–'})));continue;}
     const I=H.info,live=I.live||{},ni=H.nestIn,mu=I.machine&&I.machine.uuid;
     const gs=I.targets.filter(t=>t.kind==='lvm_thin'&&Array.isArray(t.guests)).flatMap(t=>t.guests.filter(Boolean)),inside=HARV.filter(h=>h.nestIn&&h.nestIn.P===H);
     p.append(el('dl',{class:'kv'},el('dt',{text:'URL'}),el('dd',{text:where}),
-      el('dt',{text:'Machine'}),el('dd',{text:ni?`inside ${hostName(ni.P)} › ${guestLabel(ni.g)} · `+[...ni.place].map(([id,d])=>{const f=I.filesystems.find(x=>x.id===id);return `${d.key} → ${maskPath(f?f.mount:id)}`;}).join(', '):mu?(HIDE?'uuid known':'uuid '+mu)+(gs.length?'':' · not a guest of any hypervisor here'):'no machine uuid (cannot be nested)'}),
-      gs.length?el('dt',{text:'Guests'}):null,gs.length?el('dd',{text:`${gs.length} in its pool, ${gs.filter(g=>g.running).length} running`+(inside.length?` · ${inside.map(hostName).join(', ')} run${inside.length===1?'s':''} a harvester inside`:'')+(H.ioN?` · ${fmtN(H.ioN)} I/O polls received, last ${fmtAgo(H.lastIo)}`:'')}):null,el('dt',{text:'Host label'}),el('dd',{class:'mono',text:hostLabel(H.key)}),el('dt',{text:'Version'}),el('dd',{text:String(I.version||'?')}),
+      el('dt',{text:'Machine'}),el('dd',{text:ni?`a VM: ${hostName(ni.P)}'s guest ${guestLabel(ni.g)}, drawn inside its disks · `+[...ni.place].map(([id,d])=>{const f=I.filesystems.find(x=>x.id===id);return `${d.key} → ${maskPath(f?f.mount:id)}`;}).join(', '):mu?(HIDE?'uuid known':'uuid '+mu)+(gs.length?' · a hypervisor':I.machine&&I.machine.virt?` · a ${I.machine.virt} VM whose host is not reporting`:' · a physical machine'):'no machine uuid (cannot be nested)'}),
+      gs.length?el('dt',{text:'Guests'}):null,gs.length?el('dd',{text:`${gs.length} in its pool, ${gs.filter(g=>g.running).length} running`+(inside.length?` · ${inside.map(hostName).join(', ')} run${inside.length===1?'s':''} a harvester inside`:'')+` · ${gs.filter(g=>g.agent).length} answer${gs.filter(g=>g.agent).length===1?'s':''} the guest agent`+(H.ioN?` · ${fmtN(H.ioN)} I/O polls received, last ${fmtAgo(H.lastIo)}`:'')}):null,el('dt',{text:'Host label'}),el('dd',{class:'mono',text:hostLabel(H.key)}),el('dt',{text:'Version'}),el('dd',{text:String(I.version||'?')}),
       el('dt',{text:'Clock'}),el('dd',{text:Math.abs(H.skew)<2?'in sync with this browser':`${H.skew>0?'ahead':'behind'} by ${fmtSpan(H.skew)}`}),
       el('dt',{text:'Live source'}),el('dd',null,String(live.source||'?')+(live.active?' · active':' · inactive'),live.error?el('span',{class:'err',text:' · '+maskText(live.error)}):null),
       el('dt',{text:'Event stream'}),el('dd',{text:`${H.sse} · ${fmtN(H.evLive)} changes since the page opened · last ${H.lastEv?fmtAgo(H.lastEv):'none'}`+(H.dup?` · ${fmtN(H.dup)} duplicate reports from nested targets merged`:'')}),
@@ -2358,11 +2488,11 @@ async function boot(){
   // over HTTPS behind a reverse proxy (no mixed content, one SSO cookie). ?peers= and ?metrics= still go direct.
   const ai=(self.info&&self.info.atlas)||{},relay=ai.proxy===true,qp=QS.get('peers'),qm=QS.get('metrics');
   const peers=qp!=null?qp.split(',').map(x=>x.trim()).filter(Boolean):(Array.isArray(ai.peers)?ai.peers:[]);
-  PEERS_HOW=qp!=null?'?peers=':self.info?(relay?'atlas.peers, relayed by '+hostName(self):'atlas.peers'):'none (this harvester is offline)';
+  PEERS_HOW=qp!=null?'?peers=':self.info?(relay?'atlas.peers, relayed by '+harvName(self):'atlas.peers'):'none (this harvester is offline)';
   METRICS=qm!=null?(qm||null):ai.metrics_url||null;
   if(METRICS&&!/^https?:\/\//.test(METRICS))METRICS=normUrl(METRICS);
   METRICS_SHOWN=METRICS;METRICS_HOW=qm!=null?'?metrics=':'atlas.metrics_url';
-  if(qm==null&&relay&&METRICS){METRICS=self.url+'/api/metrics';METRICS_HOW='atlas.metrics_url, relayed by '+hostName(self);}
+  if(qm==null&&relay&&METRICS){METRICS=self.url+'/api/metrics';METRICS_HOW='atlas.metrics_url, relayed by '+harvName(self);}
   const ps=peers.map((p,i)=>qp==null&&relay?addHarvester(self.url+'/api/peer/'+i,false,{shown:normUrl(p)||String(p),relay:self}):addHarvester(p,false)).filter(Boolean);
   renderHeader();
   await Promise.all(ps.map(loadInfo));

@@ -7,6 +7,9 @@
 //!   would free within the subvolume. Snapshots and other subvolumes are not looked at.
 //! - [`Watcher`]: which directories changed since the last poll, from the generation numbers
 //!   btrfs stamps on every metadata block. For kernels without fanotify's directory events.
+//! - [`space`] and [`subvolumes`]: how the volume's devices are split into data, metadata and
+//!   unallocated space, and every subvolume with its path, so the atlas can name the bytes no
+//!   target walks (`df` sees only data).
 
 use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::ffi::CString;
@@ -21,6 +24,9 @@ use crate::tree::NONE;
 
 const IOC_TREE_SEARCH_V2: u64 = 0xC070_9411;
 const IOC_INO_LOOKUP: u64 = 0xD000_9412;
+const IOC_SPACE_INFO: u64 = 0xC010_9414;
+const IOC_DEV_INFO: u64 = 0xD000_941E;
+const IOC_FS_INFO: u64 = 0x8400_941F;
 const SUPER_MAGIC: i64 = 0x9123_683E;
 const FIRST_FREE_OBJECTID: u64 = 256;
 const ROOT_TREE: u64 = 1;
@@ -32,6 +38,14 @@ const DIR_ITEM: u32 = 84;
 const DIR_INDEX: u32 = 96;
 const EXTENT_DATA: u32 = 108;
 const ROOT_ITEM: u32 = 132;
+const ROOT_BACKREF: u32 = 144;
+const FS_TREE: u64 = 5;
+const LAST_FREE_OBJECTID: u64 = u64::MAX - 255;
+
+const BLOCK_GROUP_DATA: u64 = 1;
+const BLOCK_GROUP_SYSTEM: u64 = 2;
+const BLOCK_GROUP_METADATA: u64 = 4;
+const SPACE_INFO_GLOBAL_RSV: u64 = 1 << 49;
 
 const KEY_LEN: usize = 104;
 const HEADER_LEN: usize = 32;
@@ -233,6 +247,26 @@ impl Searcher {
         Ok(args[0])
     }
 
+    /// The path of directory inode `dir` inside subvolume `tree`, with a trailing `/` (empty
+    /// for the subvolume's root).
+    fn lookup(&self, tree: u64, dir: u64) -> io::Result<Vec<u8>> {
+        let mut args = vec![0u64; 4096 / 8];
+        args[0] = tree;
+        args[1] = dir;
+        // SAFETY: `args` is a 4096-byte `btrfs_ioctl_ino_lookup_args`.
+        let status =
+            unsafe { libc::ioctl(self.fd.as_raw_fd(), IOC_INO_LOOKUP as _, args.as_mut_ptr()) };
+        if status != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: plain bytes over our own buffer.
+        let bytes =
+            unsafe { std::slice::from_raw_parts(args.as_ptr() as *const u8, args.len() * 8) };
+        let name = &bytes[16..];
+        let end = name.iter().position(|&b| b == 0).unwrap_or(name.len());
+        Ok(name[..end].to_vec())
+    }
+
     /// The last committed generation of subvolume `tree`.
     fn generation(&mut self, tree: u64) -> io::Result<u64> {
         let mut generation = None;
@@ -257,6 +291,253 @@ impl Searcher {
         )?;
         generation.ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no root item"))
     }
+}
+
+/// One kind of block group: its logical size and use, and how many copies its profile keeps
+/// (DUP and RAID1 keep 2, so it takes twice `total` of the devices).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Chunks {
+    pub total: u64,
+    pub used: u64,
+    pub copies: u64,
+}
+
+/// A btrfs volume's space as btrfs itself keeps it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Space {
+    /// All devices together, and how much of them chunks take.
+    pub device_size: u64,
+    pub device_allocated: u64,
+    pub data: Chunks,
+    pub metadata: Chunks,
+    pub system: Chunks,
+}
+
+impl Space {
+    pub fn to_json(self) -> serde_json::Value {
+        let chunks =
+            |c: &Chunks| serde_json::json!({"total": c.total, "used": c.used, "copies": c.copies});
+        serde_json::json!({
+            "device_size": self.device_size,
+            "unallocated": self.device_size.saturating_sub(self.device_allocated),
+            "data": chunks(&self.data), "metadata": chunks(&self.metadata),
+            "system": chunks(&self.system),
+        })
+    }
+}
+
+/// Copies a block group profile keeps (RAID5/6 are counted as one: their parity is not a copy).
+fn copies(flags: u64) -> u64 {
+    const RAID1: u64 = 1 << 4;
+    const DUP: u64 = 1 << 5;
+    const RAID10: u64 = 1 << 6;
+    const RAID1C3: u64 = 1 << 9;
+    const RAID1C4: u64 = 1 << 10;
+    if flags & RAID1C4 != 0 {
+        4
+    } else if flags & RAID1C3 != 0 {
+        3
+    } else if flags & (RAID1 | DUP | RAID10) != 0 {
+        2
+    } else {
+        1
+    }
+}
+
+/// `BTRFS_IOC_SPACE_INFO` records (`flags, total_bytes, used_bytes`), summed per kind.
+fn sum_space(records: &[(u64, u64, u64)]) -> (Chunks, Chunks, Chunks) {
+    let (mut data, mut metadata, mut system) =
+        (Chunks::default(), Chunks::default(), Chunks::default());
+    for &(flags, total, used) in records {
+        if flags & SPACE_INFO_GLOBAL_RSV != 0 {
+            continue;
+        }
+        let kind = if flags & BLOCK_GROUP_DATA != 0 && flags & BLOCK_GROUP_METADATA != 0 {
+            // Mixed block groups: count them as data.
+            &mut data
+        } else if flags & BLOCK_GROUP_DATA != 0 {
+            &mut data
+        } else if flags & BLOCK_GROUP_METADATA != 0 {
+            &mut metadata
+        } else if flags & BLOCK_GROUP_SYSTEM != 0 {
+            &mut system
+        } else {
+            continue;
+        };
+        kind.total += total;
+        kind.used += used;
+        kind.copies = kind.copies.max(copies(flags));
+    }
+    (data, metadata, system)
+}
+
+fn open_dir(path: &Path) -> io::Result<OwnedFd> {
+    let path = CString::new(path.as_os_str().as_bytes())
+        .map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
+    // SAFETY: `path` is NUL-terminated.
+    let fd = unsafe {
+        libc::open(
+            path.as_ptr(),
+            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC,
+        )
+    };
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: `open` returned a descriptor nothing else owns.
+    Ok(unsafe { OwnedFd::from_raw_fd(fd) })
+}
+
+/// The volume `path` is on: its devices' size and allocation, and its block groups by kind.
+pub fn space(path: &Path) -> io::Result<Space> {
+    let fd = open_dir(path)?;
+    let ioctl = |cmd: u64, buf: &mut [u64]| -> io::Result<()> {
+        // SAFETY: each caller passes a buffer of the size the command's struct has.
+        let status = unsafe { libc::ioctl(fd.as_raw_fd(), cmd as _, buf.as_mut_ptr()) };
+        if status != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    };
+    // `btrfs_ioctl_space_args`: space_slots, total_spaces, then the records.
+    let mut head = [0u64; 2];
+    ioctl(IOC_SPACE_INFO, &mut head)?;
+    let slots = head[1].min(64) as usize;
+    let mut args = vec![0u64; 2 + slots * 3];
+    args[0] = slots as u64;
+    ioctl(IOC_SPACE_INFO, &mut args)?;
+    let filled = (args[1] as usize).min(slots);
+    let records: Vec<(u64, u64, u64)> = (0..filled)
+        .map(|i| (args[2 + i * 3], args[3 + i * 3], args[4 + i * 3]))
+        .collect();
+    let (data, metadata, system) = sum_space(&records);
+    // `btrfs_ioctl_fs_info_args` (1024 bytes): max_id first.
+    let mut info = vec![0u64; 1024 / 8];
+    ioctl(IOC_FS_INFO, &mut info)?;
+    let (mut device_size, mut device_allocated) = (0, 0);
+    for devid in 1..=info[0].min(4096) {
+        // `btrfs_ioctl_dev_info_args` (4096 bytes): devid, uuid, bytes_used, total_bytes.
+        let mut dev = vec![0u64; 4096 / 8];
+        dev[0] = devid;
+        match ioctl(IOC_DEV_INFO, &mut dev) {
+            Ok(()) => {
+                device_allocated += dev[3];
+                device_size += dev[4];
+            }
+            Err(error) if error.raw_os_error() == Some(libc::ENODEV) => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(Space {
+        device_size,
+        device_allocated,
+        data,
+        metadata,
+        system,
+    })
+}
+
+/// A subvolume, with its path from the volume's top level (`/@syno/data`), the way
+/// `/proc/self/mountinfo` writes a mount's root and the harvester a target's `fs_path`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Subvolume {
+    pub id: u64,
+    pub path: String,
+    /// Made by snapshotting another subvolume (it shares that one's extents).
+    pub snapshot: bool,
+}
+
+/// Every subvolume of the volume `path` is on. Needs `CAP_SYS_ADMIN`.
+pub fn subvolumes(path: &Path) -> io::Result<Vec<Subvolume>> {
+    let mut searcher = Searcher::open(path, 1 << 16)?;
+    let mut snapshots: HashSet<u64> = HashSet::new();
+    // child → (parent, directory inode in the parent, name)
+    let mut backrefs: HashMap<u64, (u64, u64, Vec<u8>)> = HashMap::new();
+    searcher.search(
+        ROOT_TREE,
+        Key {
+            objectid: FIRST_FREE_OBJECTID,
+            kind: ROOT_ITEM,
+            offset: 0,
+        },
+        Key {
+            objectid: LAST_FREE_OBJECTID,
+            kind: ROOT_BACKREF,
+            offset: u64::MAX,
+        },
+        0,
+        None,
+        |item| {
+            match item.key.kind {
+                // `btrfs_root_item`: parent_uuid at 263, in items new enough to have it.
+                ROOT_ITEM if item.data.len() >= 279 => {
+                    if item.data[263..279].iter().any(|&b| b != 0) {
+                        snapshots.insert(item.key.objectid);
+                    }
+                }
+                ROOT_BACKREF if item.data.len() >= 18 => {
+                    let len = u16::from_le_bytes([item.data[16], item.data[17]]) as usize;
+                    if let Some(name) = item.data.get(18..18 + len) {
+                        backrefs.insert(
+                            item.key.objectid,
+                            (item.key.offset, u64_at(item.data, 0), name.to_vec()),
+                        );
+                    }
+                }
+                _ => {}
+            }
+            true
+        },
+    )?;
+    let mut dirs: HashMap<(u64, u64), Vec<u8>> = HashMap::new();
+    let mut paths: HashMap<u64, Option<Vec<u8>>> = HashMap::from([(FS_TREE, Some(Vec::new()))]);
+    let ids: Vec<u64> = backrefs.keys().copied().collect();
+    for id in &ids {
+        resolve(*id, &backrefs, &mut dirs, &mut paths, &searcher, 0);
+    }
+    let mut out: Vec<Subvolume> = ids
+        .into_iter()
+        .filter_map(|id| {
+            let path = paths.get(&id)?.as_ref()?;
+            Some(Subvolume {
+                id,
+                path: String::from_utf8_lossy(path).into_owned(),
+                snapshot: snapshots.contains(&id),
+            })
+        })
+        .collect();
+    out.sort_by(|a, b| a.path.cmp(&b.path));
+    Ok(out)
+}
+
+/// The path of subvolume `id` from the top level, through its parents' backrefs.
+fn resolve(
+    id: u64,
+    backrefs: &HashMap<u64, (u64, u64, Vec<u8>)>,
+    dirs: &mut HashMap<(u64, u64), Vec<u8>>,
+    paths: &mut HashMap<u64, Option<Vec<u8>>>,
+    searcher: &Searcher,
+    depth: usize,
+) -> Option<Vec<u8>> {
+    if let Some(known) = paths.get(&id) {
+        return known.clone();
+    }
+    let found = (|| {
+        let (parent, dir, name) = backrefs.get(&id)?;
+        if depth > 64 {
+            return None;
+        }
+        let mut path = resolve(*parent, backrefs, dirs, paths, searcher, depth + 1)?;
+        if let std::collections::hash_map::Entry::Vacant(entry) = dirs.entry((*parent, *dir)) {
+            entry.insert(searcher.lookup(*parent, *dir).ok()?);
+        }
+        path.push(b'/');
+        path.extend_from_slice(&dirs[&(*parent, *dir)]);
+        path.extend_from_slice(name);
+        Some(path)
+    })();
+    paths.insert(id, found.clone());
+    found
 }
 
 /// The parts of a tree the sharing pass needs, copied so the tree stays unlocked meanwhile.
@@ -627,6 +908,37 @@ mod tests {
         let next = key.successor().unwrap();
         assert_eq!((next.objectid, next.kind, next.offset), (5, 109, 0));
         assert!(Key::MAX.successor().is_none());
+    }
+
+    #[test]
+    fn space_info_sums_kinds_and_counts_copies() {
+        // /volume1 on the NAS: data single, metadata DUP, system DUP, the global reserve.
+        let records = [
+            (BLOCK_GROUP_DATA, 51_399_224_197_120, 49_367_724_167_168),
+            (BLOCK_GROUP_SYSTEM | (1 << 5), 8_388_608, 753_664),
+            (
+                BLOCK_GROUP_METADATA | (1 << 5),
+                355_408_543_744,
+                17_045_241_856,
+            ),
+            (SPACE_INFO_GLOBAL_RSV | 2, 2_147_483_648, 0),
+        ];
+        let (data, metadata, system) = sum_space(&records);
+        assert_eq!(
+            (data.total, data.used, data.copies),
+            (51_399_224_197_120, 49_367_724_167_168, 1)
+        );
+        assert_eq!((metadata.used, metadata.copies), (17_045_241_856, 2));
+        assert_eq!(system.total, 8_388_608);
+        let space = Space {
+            device_size: 53_985_591_427_072,
+            device_allocated: 52_110_058_061_824,
+            data,
+            metadata,
+            system,
+        };
+        assert_eq!(space.to_json()["unallocated"], 1_875_533_365_248u64);
+        assert_eq!(copies(1 << 9), 3);
     }
 
     #[test]

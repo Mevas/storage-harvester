@@ -174,6 +174,19 @@ pub fn usage(path: &Path) -> Option<Usage> {
 /// device (btrfs and other filesystems on anonymous devices, or no `/sys`).
 pub fn disks_of(id: &str) -> Vec<String> {
     let mut disks = Vec::new();
+    for disk in whole_disks(id) {
+        if let Some(name) = disk_id(&disk) {
+            if !disks.contains(&name) {
+                disks.push(name);
+            }
+        }
+    }
+    disks
+}
+
+/// The sysfs directories of the whole disks under block device `id`.
+fn whole_disks(id: &str) -> Vec<PathBuf> {
+    let mut disks: Vec<PathBuf> = Vec::new();
     let mut seen = Vec::new();
     let mut stack = vec![PathBuf::from(format!("/sys/dev/block/{id}"))];
     while let Some(path) = stack.pop() {
@@ -196,13 +209,281 @@ pub fn disks_of(id: &str) -> Vec<String> {
         } else {
             device
         };
-        if let Some(name) = disk_id(&disk) {
-            if !disks.contains(&name) {
-                disks.push(name);
+        if !disks.contains(&disk) {
+            disks.push(disk);
+        }
+    }
+    disks
+}
+
+/// One block device on a disk under a reported filesystem: the disk itself, a partition, or a
+/// device-mapper or md device built on one, and what it holds. The atlas splits a VM disk's
+/// blocks that no scanned file accounts for with these: other filesystems, swap, and each
+/// filesystem's own metadata.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Block {
+    /// The kernel's name: `sda`, `sda2`, `dm-0`.
+    pub dev: String,
+    /// A whole disk's stable name ([`disk_id`]), a device-mapper device's name.
+    pub name: Option<String>,
+    pub size: u64,
+    pub content: Content,
+    /// Partitions of a disk, or the devices built on this one (LVM, md, crypt).
+    pub parts: Vec<Block>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum Content {
+    /// A mounted filesystem. `overhead` is what it keeps for itself (journal, inode tables,
+    /// bitmaps): the device's size less the blocks `statvfs` counts.
+    Filesystem {
+        id: String,
+        fstype: String,
+        mount: String,
+        used: u64,
+        size: u64,
+        overhead: u64,
+    },
+    /// A swap area, and how much of it is in use now.
+    Swap { used: u64 },
+    /// A device-mapper thin pool: its volumes are the `lvm_thin` target's business.
+    ThinPool,
+    /// Something else is built on it (`parts`), or nothing this machine has mounted.
+    #[default]
+    Other,
+}
+
+impl Block {
+    pub fn to_json(&self) -> serde_json::Value {
+        use serde_json::json;
+        let mut object = json!({ "dev": self.dev, "size": self.size });
+        if let Some(name) = &self.name {
+            object["name"] = json!(name);
+        }
+        match &self.content {
+            Content::Filesystem {
+                id,
+                fstype,
+                mount,
+                used,
+                size,
+                overhead,
+            } => {
+                object["use"] = json!("fs");
+                object["fs"] = json!(id);
+                object["type"] = json!(fstype);
+                object["mount"] = json!(mount);
+                object["used"] = json!(used);
+                object["fs_size"] = json!(size);
+                object["overhead"] = json!(overhead);
+            }
+            Content::Swap { used } => {
+                object["use"] = json!("swap");
+                object["swap_used"] = json!(used);
+            }
+            Content::ThinPool => object["use"] = json!("thin_pool"),
+            Content::Other => {
+                object["use"] = json!(if self.parts.is_empty() {
+                    "none"
+                } else {
+                    "holder"
+                });
+            }
+        }
+        if !self.parts.is_empty() {
+            object["parts"] = json!(self.parts.iter().map(Block::to_json).collect::<Vec<_>>());
+        }
+        object
+    }
+}
+
+/// The whole disks under the filesystems `ids` (`major:minor`), each with its partitions and
+/// what is on them. Empty without `/sys` (or for filesystems on no block device).
+pub fn layout(ids: &[String], host_root: &Path) -> Vec<Block> {
+    let mounts = fs::read_to_string("/proc/self/mountinfo")
+        .map(|text| parse_mountinfo(&text))
+        .unwrap_or_default();
+    let swaps = fs::read_to_string("/proc/swaps")
+        .map(|text| parse_swaps(&text))
+        .unwrap_or_default();
+    let mut disks: Vec<PathBuf> = Vec::new();
+    for id in ids {
+        for disk in whole_disks(id) {
+            if !disks.contains(&disk) {
+                disks.push(disk);
             }
         }
     }
     disks
+        .iter()
+        .map(|disk| {
+            let mut block = describe(disk, &mounts, &swaps, host_root, 0);
+            block.name = disk_id(disk);
+            block
+        })
+        .collect()
+}
+
+fn describe(
+    device: &Path,
+    mounts: &[Mount],
+    swaps: &[(String, u64)],
+    host_root: &Path,
+    depth: usize,
+) -> Block {
+    let read = |file: &str| fs::read_to_string(device.join(file)).map(|t| t.trim().to_string());
+    let dev = device
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let size = read("size")
+        .ok()
+        .and_then(|sectors| sectors.parse::<u64>().ok())
+        .unwrap_or(0)
+        * 512;
+    let name = read("dm/name").ok().filter(|name| !name.is_empty());
+    let pool = name.as_deref().is_some_and(|name| name.ends_with("-tpool"));
+    let mut parts = Vec::new();
+    if depth < 4 && !pool {
+        let mut partitions: Vec<PathBuf> = fs::read_dir(device)
+            .map(|entries| {
+                entries
+                    .flatten()
+                    .map(|entry| entry.path())
+                    .filter(|path| path.join("partition").exists())
+                    .collect()
+            })
+            .unwrap_or_default();
+        if partitions.is_empty() {
+            partitions = fs::read_dir(device.join("holders"))
+                .map(|entries| {
+                    entries
+                        .flatten()
+                        .filter_map(|entry| fs::canonicalize(entry.path()).ok())
+                        .collect()
+                })
+                .unwrap_or_default();
+        }
+        partitions.sort();
+        for part in partitions {
+            let mut block = describe(&part, mounts, swaps, host_root, depth + 1);
+            // A partition's own holders hang under it.
+            if block.parts.is_empty() && block.content == Content::Other {
+                block.parts = fs::read_dir(part.join("holders"))
+                    .map(|entries| {
+                        entries
+                            .flatten()
+                            .filter_map(|entry| fs::canonicalize(entry.path()).ok())
+                            .map(|holder| describe(&holder, mounts, swaps, host_root, depth + 2))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+            }
+            parts.push(block);
+        }
+    }
+    let number = read("dev").unwrap_or_default();
+    let content = if pool {
+        Content::ThinPool
+    } else if !parts.is_empty() {
+        Content::Other
+    } else if let Some((_, used)) = swaps
+        .iter()
+        .find(|(swap, _)| *swap == dev || name.as_deref() == Some(swap.as_str()))
+    {
+        Content::Swap { used: *used }
+    } else if let Some(mount) =
+        mounts
+            .iter()
+            .filter(|mount| mount.id == number)
+            .min_by_key(|mount| {
+                (
+                    mount.root != Path::new("/"),
+                    mount.point.components().count(),
+                )
+            })
+    {
+        match usage(&mount.point) {
+            Some(usage) => Content::Filesystem {
+                id: number.clone(),
+                fstype: mount.fstype.clone(),
+                mount: host_path(&mount.point, host_root),
+                used: usage.used,
+                size: usage.size,
+                overhead: size.saturating_sub(usage.size),
+            },
+            None => Content::Other,
+        }
+    } else {
+        Content::Other
+    };
+    Block {
+        dev,
+        name,
+        size,
+        content,
+        parts,
+    }
+}
+
+/// `/proc/swaps`: each swap area's device name (`sdb1`, or a device-mapper name for
+/// `/dev/mapper/x`) and the bytes in use.
+fn parse_swaps(text: &str) -> Vec<(String, u64)> {
+    text.lines()
+        .skip(1)
+        .filter_map(|line| {
+            let fields: Vec<&str> = line.split_whitespace().collect();
+            if fields.get(1) != Some(&"partition") {
+                return None;
+            }
+            let name = fields.first()?.rsplit('/').next()?.to_string();
+            let used: u64 = fields.get(3)?.parse().ok()?;
+            Some((name, used * 1024))
+        })
+        .collect()
+}
+
+/// Which hypervisor this machine runs under, if any: `qemu` (KVM/Proxmox), `vmware`,
+/// `hyperv`, `virtualbox`, `xen`, or `vm` for one the CPU flags give away but the firmware
+/// does not name. `None` on bare metal.
+pub fn machine_virt(host_root: &Path) -> Option<String> {
+    let dmi = |file: &str| {
+        [
+            host_root.join("sys/class/dmi/id").join(file),
+            PathBuf::from("/sys/class/dmi/id").join(file),
+        ]
+        .iter()
+        .find_map(|path| fs::read_to_string(path).ok())
+        .map(|text| text.trim().to_string())
+        .unwrap_or_default()
+    };
+    let cpuinfo = fs::read_to_string("/proc/cpuinfo").unwrap_or_default();
+    virt_from(&dmi("sys_vendor"), &dmi("product_name"), &cpuinfo)
+}
+
+fn virt_from(vendor: &str, product: &str, cpuinfo: &str) -> Option<String> {
+    let both = format!("{vendor} {product}").to_ascii_lowercase();
+    let named = [
+        ("qemu", "qemu"),
+        ("kvm", "qemu"),
+        ("vmware", "vmware"),
+        ("virtualbox", "virtualbox"),
+        ("innotek", "virtualbox"),
+        ("xen", "xen"),
+    ]
+    .iter()
+    .find(|(needle, _)| both.contains(needle))
+    .map(|(_, kind)| kind.to_string());
+    if named.is_some() {
+        return named;
+    }
+    if both.contains("microsoft") && both.contains("virtual") {
+        return Some("hyperv".to_string());
+    }
+    let flagged = cpuinfo.lines().any(|line| {
+        line.starts_with("flags") && line.split_whitespace().any(|flag| flag == "hypervisor")
+    });
+    flagged.then(|| "vm".to_string())
 }
 
 /// A disk's stable name: the vendor-specific designator of SCSI VPD page 0x83 (QEMU names its
@@ -325,6 +606,82 @@ mod tests {
         page[3] = (page.len() - 4) as u8;
         assert_eq!(vpd83_vendor_id(&page).as_deref(), Some("drive-virtio1"));
         assert_eq!(vpd83_vendor_id(b"\x00\x80\x00\x00"), None);
+    }
+
+    #[test]
+    fn swaps_and_hypervisors_are_read() {
+        let swaps = parse_swaps(
+            "Filename\t\t\t\tType\t\tSize\t\tUsed\t\tPriority\n\
+             /dev/sdb1                               partition\t8388604\t\t6541156\t\t10\n\
+             /swapfile                               file\t\t1048572\t\t0\t\t-2\n\
+             /dev/mapper/pbs-swap                    partition\t8388604\t\t0\t\t-3\n",
+        );
+        assert_eq!(
+            swaps,
+            vec![
+                ("sdb1".to_string(), 6541156 * 1024),
+                ("pbs-swap".to_string(), 0)
+            ]
+        );
+        let flags = "flags\t\t: fpu vme de pse hypervisor lahf_lm\n";
+        assert_eq!(
+            virt_from("QEMU", "Standard PC (i440FX + PIIX, 1996)", flags).as_deref(),
+            Some("qemu")
+        );
+        assert_eq!(
+            virt_from("Microsoft Corporation", "Virtual Machine", "").as_deref(),
+            Some("hyperv")
+        );
+        assert_eq!(
+            virt_from("Some Board Co", "Venus Series", flags).as_deref(),
+            Some("vm")
+        );
+        assert_eq!(
+            virt_from(
+                "Micro Computer (HK) Tech Limited",
+                "Venus Series",
+                "flags : fpu vme\n"
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn a_block_describes_its_contents_as_json() {
+        let disk = Block {
+            dev: "sdb".to_string(),
+            name: Some("drive-scsi1".to_string()),
+            size: 200,
+            content: Content::Other,
+            parts: vec![
+                Block {
+                    dev: "sdb1".to_string(),
+                    size: 80,
+                    content: Content::Swap { used: 60 },
+                    ..Block::default()
+                },
+                Block {
+                    dev: "sdb2".to_string(),
+                    size: 120,
+                    content: Content::Filesystem {
+                        id: "8:18".to_string(),
+                        fstype: "ext4".to_string(),
+                        mount: "/mnt/scratch".to_string(),
+                        used: 50,
+                        size: 115,
+                        overhead: 5,
+                    },
+                    ..Block::default()
+                },
+            ],
+        };
+        let json = disk.to_json();
+        assert_eq!(json["name"], "drive-scsi1");
+        assert_eq!(json["use"], "holder");
+        assert_eq!(json["parts"][0]["use"], "swap");
+        assert_eq!(json["parts"][0]["swap_used"], 60);
+        assert_eq!(json["parts"][1]["fs"], "8:18");
+        assert_eq!(json["parts"][1]["overhead"], 5);
     }
 
     #[test]
