@@ -47,6 +47,56 @@ pub struct AtlasConfig {
     /// the harvester's own `storage_harvester_filesystem_*` series.
     #[serde(default)]
     pub capacity_queries: Vec<CapacityQuery>,
+    /// Pictures of image and video files, for the targets that turn them on.
+    #[serde(default)]
+    pub thumbnails: ThumbnailConfig,
+    /// A Plex server whose posters the atlas shows on the folders of its libraries.
+    #[serde(default)]
+    pub plex: Option<PlexConfig>,
+}
+
+/// How `/api/thumb` makes pictures (with ffmpeg) and where it keeps them.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ThumbnailConfig {
+    /// Made pictures and posters live here, a few KiB each, the least recently made going first
+    /// past `cache_mib`.
+    #[serde(default = "default_thumbnail_cache_dir")]
+    pub cache_dir: PathBuf,
+    #[serde(default = "default_thumbnail_cache_mib")]
+    pub cache_mib: u64,
+    #[serde(default = "default_ffmpeg")]
+    pub ffmpeg: PathBuf,
+    #[serde(default = "default_ffprobe")]
+    pub ffprobe: PathBuf,
+    /// ffmpeg runs at once; more requests wait for one.
+    #[serde(default = "default_thumbnail_jobs")]
+    pub jobs: usize,
+}
+
+impl Default for ThumbnailConfig {
+    fn default() -> Self {
+        Self {
+            cache_dir: default_thumbnail_cache_dir(),
+            cache_mib: default_thumbnail_cache_mib(),
+            ffmpeg: default_ffmpeg(),
+            ffprobe: default_ffprobe(),
+            jobs: default_thumbnail_jobs(),
+        }
+    }
+}
+
+/// A Plex server, read with the token in `token_env` (default `PLEX_TOKEN`).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PlexConfig {
+    /// `http://host:32400`.
+    pub url: String,
+    #[serde(default = "default_plex_token_env")]
+    pub token_env: String,
+    /// Plex's paths for library folders, and the same folders as this harvester's targets show
+    /// them: `/data/media: /volume1/data/media`.
+    pub paths: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -142,6 +192,10 @@ pub struct Defaults {
     /// each directory holds alone. Absent: never.
     #[serde(default, deserialize_with = "deserialize_optional_duration")]
     pub sharing_interval: Option<Duration>,
+    /// Whether `/api/thumb` makes pictures of the target's image and video files. It reads their
+    /// contents, so it is off unless a target turns it on.
+    #[serde(default)]
+    pub thumbnails: bool,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
@@ -202,6 +256,8 @@ pub struct TargetConfig {
     #[serde(default, deserialize_with = "deserialize_explicit_duration")]
     pub sharing_interval: Option<Option<Duration>>,
     #[serde(default)]
+    pub thumbnails: Option<bool>,
+    #[serde(default)]
     pub labels: BTreeMap<String, String>,
 }
 
@@ -225,6 +281,7 @@ pub struct Target {
     pub tree_max_directories: usize,
     pub live: bool,
     pub sharing_interval: Option<Duration>,
+    pub thumbnails: bool,
     /// Set at startup when the fanotify source runs: the walk then records each directory's
     /// file handle, the key fanotify reports changes by.
     pub collect_handles: bool,
@@ -266,6 +323,7 @@ impl Default for Defaults {
             tree_max_directories: default_tree_max_directories(),
             live: true,
             sharing_interval: None,
+            thumbnails: false,
         }
     }
 }
@@ -393,6 +451,8 @@ impl Config {
             sharing_interval: target
                 .sharing_interval
                 .unwrap_or(self.defaults.sharing_interval),
+            // A thin pool's nodes are guests and disks, not files.
+            thumbnails: lvm.is_none() && target.thumbnails.unwrap_or(self.defaults.thumbnails),
             collect_handles: false,
             lvm,
             labels: target.labels.clone(),
@@ -412,6 +472,19 @@ impl Config {
         for peer in &self.atlas.peers {
             if !(peer.starts_with("http://") || peer.starts_with("https://")) {
                 bail!("atlas peer {peer:?} must be an http(s) URL");
+            }
+        }
+        if self.atlas.thumbnails.jobs == 0 {
+            bail!("atlas.thumbnails.jobs must be at least 1");
+        }
+        if let Some(plex) = &self.atlas.plex {
+            if !plex.url.starts_with("http://") {
+                bail!("atlas.plex.url {:?} must be an http:// URL", plex.url);
+            }
+            for (from, to) in &plex.paths {
+                if !from.starts_with('/') || !to.starts_with('/') {
+                    bail!("atlas.plex.paths {from:?}: {to:?} must both be absolute");
+                }
             }
         }
         if self.live.btrfs_poll_interval.is_zero() {
@@ -646,6 +719,30 @@ fn default_baseline_interval() -> Duration {
 
 fn default_timeout() -> Duration {
     Duration::from_secs(30)
+}
+
+fn default_thumbnail_cache_dir() -> PathBuf {
+    PathBuf::from("/var/cache/storage-harvester")
+}
+
+fn default_thumbnail_cache_mib() -> u64 {
+    512
+}
+
+fn default_ffmpeg() -> PathBuf {
+    PathBuf::from("ffmpeg")
+}
+
+fn default_ffprobe() -> PathBuf {
+    PathBuf::from("ffprobe")
+}
+
+fn default_thumbnail_jobs() -> usize {
+    2
+}
+
+fn default_plex_token_env() -> String {
+    "PLEX_TOKEN".to_string()
 }
 
 fn default_true() -> bool {

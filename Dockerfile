@@ -6,7 +6,11 @@ COPY Cargo.toml Cargo.lock* ./
 COPY src ./src
 RUN cargo build --release
 
-FROM alpine:3.22
+# 3.24 for ffmpeg 8: it turns photos by their EXIF orientation and reads DNG raws (3.22 has 6.1).
+FROM alpine:3.24
+
+# ffmpeg makes the atlas's thumbnails of image and video files (`thumbnails: true` targets).
+RUN apk add --no-cache ffmpeg
 
 RUN adduser -S -D -H -u 10001 -s /sbin/nologin storage-harvester
 
