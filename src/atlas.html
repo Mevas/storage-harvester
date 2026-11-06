@@ -622,7 +622,7 @@ function pathOf(n){
     case 'part':return (n.p.kind==='fs'?hostName(n.H)+' · '+maskPath(n.p.fs.mount):maskPath(n.p.path))+' · '+nameOf(n);
     case 'here':return maskPath(n.p.path)+' · files here';case 'gap':return maskPath(n.p.path)+' · '+nameOf(n);
     case 'more':{const q=n.p&&n.p.kind==='here'?n.p.p:n.p;return (q&&q.kind==='dir'?maskPath(q.path):pathOf(q))+' · '+n.name;}
-    case 'file':return maskPath(joinPath(n.p.p.path,n.name));
+    case 'file':return maskPath(joinPath((n.p.kind==='here'?n.p.p:n.p).path,n.name));
     case 'dir':return maskPath(n.path);
   }
   return '';
@@ -810,14 +810,17 @@ function syncDir(n){
   if(has){let here=n.t-n.r-s-ns,gap=0;
     if(n.nest||gi){gap=Math.max(0,here);here=0;}else if(n.v==='disk'&&n.u>0){gap=Math.max(0,Math.min(n.u,here));here-=gap;}
     if(n.lun&&here>0){parts=lunParts(n,here);here=0;}
-    if(here>0){n.here=n.here||{kind:'here',p:n,H:n.H,T:n.T,id:n.id+'|~here'};n.here.t=here;if(FILES.has(n.here.id))filesSync(n.here);}else n.here=null;
+    if(here>0){n.here=n.here||{kind:'here',p:n,H:n.H,T:n.T,id:n.id+'|~here'};n.here.t=here;n.here.leaf=false;if(FILES.has(n.here.id))filesSync(n.here);}else n.here=null;
     if(gap>0)parts=parts.concat(gapParts(n,gap,gi));
     const plain=parts.length===1&&parts[0].sub==='gap';
     if(plain){n.gap=n.gap||{kind:'gap',p:n,H:n.H,T:n.T,id:n.id+'|~gap'};n.gap.t=gap;parts=[];}else n.gap=null;
     setParts(n,parts);
     if(n.r>0){n.more=n.more||{kind:'more',p:n,H:n.H,T:n.T,id:n.id+'|~more'};n.more.t=n.r;const m=Math.max(0,n.k-n.c.length);n.more.name=m?m+' more folder'+(m===1?'':'s'):'more folders';}else n.more=null;
     n.kids=[...n.c];if(n.ph)n.kids.push(...n.ph.values());if(n.nest)n.kids.push(...n.nest);if(n.here)n.kids.push(n.here);if(n.gap)n.kids.push(n.gap);if(n.pn)n.kids.push(...n.pn.values());if(n.more)n.kids.push(n.more);}
-  else{n.here=null;n.more=null;n.gap=null;n.pn=null;n.kids=[];}
+  else{n.more=null;n.gap=null;n.pn=null;
+    // a folder with no subfolders: once its files are listed, they are its children (no "files here" level)
+    if(n.t>0&&!n.v&&!n.placeholder){n.here=n.here||{kind:'here',p:n,H:n.H,T:n.T,id:n.id+'|~here'};n.here.t=n.t;n.here.leaf=true;if(FILES.has(n.here.id))filesSync(n.here);n.kids=n.here.kids||[];}
+    else{n.here=null;n.kids=[];}}
 }
 // Named pieces of what no walked folder holds: `{key, sub, label, t, why}`. sub: gfs (a filesystem inside a guest),
 // meta (its own metadata), nofile (used, in no file), otherfs, swap, untrimmed (freed inside, still allocated).
@@ -975,12 +978,14 @@ async function loadFiles(h,force){
   catch(e){const m=errText(e);F.err=e&&e.status===404&&/^HTTP 404$|relay passes/.test(m)?hostName(d.H)+'’s harvester does not list files yet: it needs updating':m;F.errAt=Date.now();}
   finally{F.loading=false;const x=findById(id);if(x&&x.kind==='here')filesSync(x);BM.needLayout=true;bmSchedule();filesCardLater();}}
 // a "files here" cell's children from its listing: one node per file (by name), and the files past the listing as one
-function filesSync(h){const F=FILES.get(h.id);if(!F||!F.files){h.kids=[];return;}const d=h.p,old=h.byName||new Map(),kd=kindOf(d)||'other';h.byName=new Map();const kids=[];let shown=0;
-  for(const f of F.files){const name=String(f.n);const x=old.get(name)||{kind:'file',id:d.id+'|~f:'+name,name,H:d.H,T:d.T};x.p=h;x.t=Math.max(0,+f.b||0);x.a=+f.a||0;x.m=f.m==null?null:+f.m;x.l=+f.l||1;x.sym=!!f.s;x.kd=kd;
+function filesSync(h){const F=FILES.get(h.id);if(!F||!F.files){h.kids=[];return;}const d=h.p,par=h.leaf?d:h,old=h.byName||new Map(),kd=kindOf(d)||'other';h.byName=new Map();const kids=[];let shown=0;
+  for(const f of F.files){const name=String(f.n);const x=old.get(name)||{kind:'file',id:d.id+'|~f:'+name,name,H:d.H,T:d.T};x.p=par;x.t=Math.max(0,+f.b||0);x.a=+f.a||0;x.m=f.m==null?null:+f.m;x.l=+f.l||1;x.sym=!!f.s;x.kd=kd;
     shown+=x.t;h.byName.set(name,x);if(x.t>0)kids.push(x);}
   const restN=F.count-F.files.length,restB=Math.max(0,F.bytes-shown);
-  if(restN>0&&restB>0){h.fmore=h.fmore||{kind:'more',id:d.id+'|~fmore',p:h,H:d.H,T:d.T,files:true};h.fmore.t=restB;h.fmore.name=fmtN(restN)+' more file'+(restN===1?'':'s');kids.push(h.fmore);}else h.fmore=null;
-  h.kids=kids;}
+  if(restN>0&&restB>0){h.fmore=h.fmore||{kind:'more',id:d.id+'|~fmore',H:d.H,T:d.T,files:true};h.fmore.p=par;h.fmore.t=restB;h.fmore.name=fmtN(restN)+' more file'+(restN===1?'':'s');kids.push(h.fmore);}else h.fmore=null;
+  h.kids=kids;if(h.leaf)d.kids=kids;}
+// the "files here" whose files a cell shows: its own, or a folder with no subfolders
+const filesHere=n=>n.kind==='here'?n:n.kind==='dir'&&n.here&&n.here.leaf?n.here:null;
 
 /* ======================================================================= live events */
 function liveIds(H,O,path){
@@ -1627,7 +1632,8 @@ function overweight(S,W,M){for(let guard=0;guard<80;guard++){let fixed=false;
 // It runs in a local frame (centred on the group's outline, about 1000 units across, kept as g.fo and g.ff): sites
 // and weights are kept in that frame, so a group deep in the map relaxes as precisely as one at the top, and its
 // children move with its outline as that changes.
-function relaxGroup(P,K,iters,flick,damp,rnd,g){const n=K.length;if(!n)return 0;g.fo=pCen(P);g.ff=Math.sqrt(Math.abs(pArea(P)))/1000||1;if(n===1){K[0].poly=P;return 0;}
+function relaxGroup(P,K,iters,flick,damp,rnd,g){const n=K.length;if(!n)return 0;g.fo=pCen(P);g.ff=Math.sqrt(Math.abs(pArea(P)))/1000||1;
+  if(n===1){K[0].poly=P;K[0].site=[0,0];K[0].w=Math.abs(pArea(P))/(g.ff*g.ff)/2;return 0;}
   const o=g.fo,f=g.ff,L=P.map(p=>[(p[0]-o[0])/f,(p[1]-o[1])/f]),err=relaxLocal(L,K,iters,flick,damp,rnd);
   for(const k of K)if(k.poly)k.poly=k.poly.map(p=>[o[0]+p[0]*f,o[1]+p[1]*f]);return err;}
 // the smallest weight that gives site i a cell of its own: a speck around it, which the weight updates then grow
@@ -1796,11 +1802,11 @@ function bmRelayout(step){SIZE_GEN++;
   const cv=$('#bm-cv');if(!cv)return;rollFleet();const W=cv.clientWidth,H=cv.clientHeight;if(!W||!H)return;const cells=BM.layout==='cells';
   // A new canvas size stretches the same world (a scrollbar that comes and goes as the side panel changes, a rotated
   // phone, wall mode): every group keeps its layout, and the camera keeps looking at the same place at the same zoom.
+  const anchor=cells&&BM.cellsBuilt?camAnchor(BM.csW||W,BM.csH||H):null;
   if(cells&&(BM.csW!==W||BM.csH!==H)){if(BM.csW)worldStretch(W/BM.csW,H/BM.csH,W,H);BM.csW=W;BM.csH=H;}
   // a node held since before a tree reload is a detached copy: fly to the current one with its id
   if(cells&&BM.flyReq){const n=BM.flyReq.n,f=n&&n!==ROOT&&!n.rest&&n.id?findById(n.id):null;if(f&&f.id===n.id)BM.flyReq.n=f;BM.want=BM.flyReq.n===ROOT?null:BM.flyReq.n;}
-  const anchor=cells?camAnchor(W,H):null;
-  BM.restOf=new Map();BM.cells=cells?bmBuildCells(W,H):bmBuildBlocks(W,H);if(anchor)camFollow(anchor,W,H);BM.layGen=BM.camGen;
+  BM.restOf=new Map();BM.cells=cells?bmBuildCells(W,H):bmBuildBlocks(W,H);BM.cellsBuilt=cells;if(anchor)camFollow(anchor,W,H);BM.layGen=BM.camGen;
   BM.byNode=new Map(BM.cells.map(c=>[c.n,c]));BM.byId=new Map(BM.cells.map(c=>[c.n.id,c]));
   camProject(W,H);
   if(cells&&BM.flyReq){const fr=BM.flyReq;BM.flyReq=null;const c=BM.byNode.get(fr.n)||BM.byNode.get(drawnNode(fr.n));if(c)flyTo(camFor(c,W,H),fr.jump);}
@@ -1838,7 +1844,7 @@ function camContext(W,H){let c=BM.cells[0];if(!c)return;const cx=W/2,cy=H/2,VA=W
   const was=BM.ctx;BM.ctxCell=c;BM.ctx=c.n;if(was!==c.n){crumbsLater();filesCardLater();}}
 // a pruned folder that fills much of a zoomed-in view loads its own subtree
 function camDeepen(W,H){if(BM.cam.k<1.05)return;const VA=W*H;
-  for(const c of BM.cells){if(!c.vis)continue;const n=c.n;if(n.kind==='here'){if(c.A>=VA*.03)loadFiles(n);continue;}if(c.A<VA*.12)continue;
+  for(const c of BM.cells){if(!c.vis)continue;const n=c.n,h=filesHere(n);if(h&&c.A>=VA*.03)loadFiles(h);if(n.kind==='here'||c.A<VA*.12)continue;
     if(n.kind==='dir'&&!n.isRoot&&!n.full&&!n.pending&&!n.placeholder)deepen(n);else if(n.kind==='more'&&!n.rest&&n.p&&n.p.kind==='dir'&&!n.p.isRoot)deepen(n.p);}}
 const crumbsLater=throttle(()=>{if(current()==='blockmap')renderCrumbs();},150);
 
@@ -1876,17 +1882,17 @@ function camStep(now,W,H){const dt=Math.min(64,now-(BM.camAt||now));BM.camAt=now
 function camZoomBy(f){const cv=$('#bm-cv');if(!cv||BM.layout!=='cells')return;const W=cv.clientWidth,H=cv.clientHeight,kt=BM.zt?BM.zt.k:BM.cam.k;BM.fly=BM.vel=null;BM.want=null;
   BM.zt={k:Math.max(1,Math.min(f>1?kmaxAt(W/2,H/2):KMAX,kt*f)),sx:W/2,sy:H/2};bmSchedule();}
 // zooming stops once a cell with nothing more inside fills the view
-function kmaxAt(sx,sy){const c=bmHitXY(sx,sy);if(!c)return KMAX;const n=c.n;if(c.box||bmKids(n).length||(n.kind==='dir'&&!n.full&&!n.pending)||(n.kind==='more'&&!n.rest&&!n.files)||(listable(n)&&!(FILES.get(n.id)||{}).at))return KMAX;
+function kmaxAt(sx,sy){const c=bmHitXY(sx,sy);if(!c)return KMAX;const n=c.n;if(c.box||bmKids(n).length||(n.kind==='dir'&&!n.full&&!n.pending)||(n.kind==='more'&&!n.rest&&!n.files)||(listable(filesHere(n))&&!(FILES.get(filesHere(n).id)||{}).at))return KMAX;
   const cv=$('#bm-cv'),m=Math.min(cv.clientWidth,cv.clientHeight),s=Math.max(1,c.bb[2]-c.bb[0],c.bb[3]-c.bb[1]);return Math.max(BM.cam.k,BM.cam.k*m*1.4/s);}
 // a click goes one level below the cell the camera is in, toward what was clicked (skipping levels that would not zoom)
 function bmClickCell(r){const chain=[];for(let c=r;c;c=c.par)if(c===r||!c.n.rest)chain.unshift(c);const cv=$('#bm-cv'),W=cv.clientWidth,H=cv.clientHeight;
   let i=chain.indexOf(BM.ctxCell);if(i<0)i=Math.max(0,chain.findIndex(c=>c.d>0&&c.A<W*H*.5)-1);
-  let t=chain[i+1];if(!t){const n=r.n;if(n.kind==='dir'&&!n.full&&!n.pending)deepen(n,true);if(n.kind==='here')loadFiles(n,true);return;}
+  let t=chain[i+1];if(!t){const n=r.n;if(n.kind==='dir'&&!n.full&&!n.pending)deepen(n,true);if(filesHere(n))loadFiles(filesHere(n),true);return;}
   while(chain[i+2]&&camFor(t,W,H).k<BM.cam.k*1.25)t=chain[++i+1];
   const n=t.n;
   if(n.kind==='more'&&!n.rest){if(n.p&&n.p.kind==='dir')deepen(n.p,true);if(t.par&&t.par!==BM.ctxCell)flyCell(t.par);return;}
-  if(!(bmKids(n).length||(n.kind==='dir'&&!n.full&&!n.pending)||listable(n)))return;
-  flyCell(t);if(n.kind==='dir')deepen(n);if(n.kind==='here')loadFiles(n,true);}
+  if(!(bmKids(n).length||(n.kind==='dir'&&!n.full&&!n.pending)||listable(filesHere(n))))return;
+  flyCell(t);if(n.kind==='dir')deepen(n);if(filesHere(n))loadFiles(filesHere(n),true);}
 // out: to the nearest cell, from the one the camera is in, that is a real step out (Up, Esc, right-click)
 function bmUp(){if(BM.layout!=='cells'){if(BM.focus.p)zoomTo(BM.focus.p);return;}const cv=$('#bm-cv');if(!cv)return;const W=cv.clientWidth,H=cv.clientHeight;
   let p=BM.ctxCell;while(p&&p.d>0&&(p.n.rest||camFor(p,W,H).k>BM.cam.k*.8))p=p.par;if(p)flyCell(p);else if(BM.cam.k>1.001)flyCell(BM.cells[0]);}
@@ -2238,7 +2244,7 @@ function zoomTo(n,fromRect){if(!n)return;untip();
   if(BM.layout==='cells'){BM.tap=null;BM.hov=null;BM.want=n===ROOT?null:n;BM.flyReq={n};BM.needLayout=true;bmSchedule();if(n.kind==='dir')deepen(n);return;}
   BM.focus=n;BM.tap=null;BM.anim=fromRect&&!REDUCED?{from:fromRect,t0:performance.now()}:null;BM.needLayout=true;BM.hov=null;bmSchedule();renderCrumbs();filesCardLater();if(n.kind==='dir')deepen(n);}
 function renderCrumbs(){const c=$('#bm-crumbs');if(!c)return;c.replaceChildren();const chain=[],cells=BM.layout==='cells';
-  if(cells){for(let t=BM.ctxCell;t;t=t.par)chain.unshift(t.n);if(!chain.length)chain.push(ROOT);}else{let t=BM.focus;while(t){chain.unshift(t);t=t.p;}}
+  if(cells){for(let t=BM.ctxCell;t;t=t.par)if(!t.n.rest)chain.unshift(t.n);if(!chain.length)chain.push(ROOT);}else{let t=BM.focus;while(t){chain.unshift(t);t=t.p;}}
   const F=chain[chain.length-1],P=chain[chain.length-2],canUp=cells?!!P||BM.cam.k>1.001:!!BM.focus.p;
   const up=$('#bm-up');if(up){up.disabled=!canUp;up.title=canUp?'Up to '+nameOf(P||ROOT)+' (Esc)':'';}requestAnimationFrame(()=>{c.scrollLeft=c.scrollWidth;});
   chain.forEach((n,i)=>{if(i)c.append(el('span',{class:'sep',text:'›'}));if(i===chain.length-1)c.append(el('b',{text:`${nameOf(n)} · ${fmtB(sizeOf(n))}`}));else c.append(el('button',{type:'button',text:nameOf(n),onclick:()=>zoomTo(n)}));});
@@ -2388,6 +2394,8 @@ function renderBlockmap(){
     check('Free space',BM.free,c=>{BM.free=c;BM.cs.clear();if(BM.layout==='cells'&&BM.ctx&&BM.ctx!==ROOT)BM.flyReq={n:BM.ctx,jump:true};BM.needLayout=true;bmSchedule();}),
     check('Cushions',BM.cushion,c=>{BM.cushion=c;BM.needBase=true;bmSchedule();}));
   const cv=el('canvas',{id:'bm-cv',role:'img','aria-label':'Map of all storage. Use the trail above to navigate.'});
+  // the canvas changes size without a window resize too (a scrollbar that comes and goes): lay out again at once
+  if(window.ResizeObserver){if(BM.ro)BM.ro.disconnect();BM.ro=new ResizeObserver(()=>{BM.needLayout=true;bmSchedule();});BM.ro.observe(cv);}
   const up=el('button',{type:'button',class:'btn sm',id:'bm-up','aria-label':'Zoom out one level',onclick:bmUp},'↑ Up');
   const stage=el('div',{class:'bm-stage '+BM.layout,id:'bm-stage'},cv,el('div',{class:'bm-zoom'},
     el('button',{type:'button',class:'btn sm','aria-label':'Zoom in',title:'Zoom in (+)',onclick:()=>camZoomBy(2.5)},'+'),

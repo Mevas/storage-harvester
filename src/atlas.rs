@@ -838,6 +838,14 @@ fn list_files(
         at.push(b'/');
     }
     let base = at.len();
+    // A folder the scan walked that has since become a symlink is not followed out of the target.
+    if !target.follow_symlinks
+        && std::fs::symlink_metadata(OsStr::from_bytes(scan))?
+            .file_type()
+            .is_symlink()
+    {
+        return Err(std::io::ErrorKind::NotFound.into());
+    }
     for entry in std::fs::read_dir(OsStr::from_bytes(scan))? {
         seen += 1;
         if seen > FILES_SCAN_MAX {
