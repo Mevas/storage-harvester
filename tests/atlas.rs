@@ -260,6 +260,36 @@ targets:
 }
 
 #[test]
+fn files_does_not_follow_a_walked_folder_swapped_for_a_symlink() {
+    let host = Host::new();
+    write_file(&host.data().join("show/Season 01/e01.mkv"), 10_000);
+    let outside = host.tmp.path().join("outside");
+    write_file(&outside.join("Season 01/secret.key"), 10);
+    // No rescan and no live updates: the tree keeps the walked folders while the disk changes.
+    let h = host.start(
+        "\
+defaults:
+  baseline_interval: 1h
+  live: false
+targets:
+  - name: data
+    path: /srv/data
+",
+    );
+    first_scan(&h);
+    let files = "/api/files?target=data&path=/srv/data/show/Season%2001";
+    assert_eq!(json(&h, files).1["files"][0]["n"], "e01.mkv");
+
+    // A parent of the walked folder becomes a symlink to a folder outside the target.
+    std::fs::rename(host.data().join("show"), host.tmp.path().join("show-was")).unwrap();
+    link(outside.to_str().unwrap(), &host.data().join("show"));
+    let tree = "/api/tree?target=data&path=/srv/data/show/Season%2001";
+    assert_eq!(json(&h, tree).0, 200, "the tree still holds the folder");
+    let (status, body) = json(&h, files);
+    assert_eq!(status, 404, "{body}");
+}
+
+#[test]
 fn info_describes_targets_filesystems_and_nesting() {
     let host = Host::new();
     realistic_tree(&host.data(), 5);
