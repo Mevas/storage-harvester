@@ -768,6 +768,9 @@ function rollHost(H){
 }
 // API-v2 §5: a harvester whose machine.uuid is a qemu guest's uuid sits inside that guest. Each of its filesystems
 // goes into the first guest disk whose key it lists as "drive-<key>".
+const NEST_HOLD_MS=5*60e3;
+// each of the guest's filesystems → the guest disk it lists as "drive-<key>"
+function placeOf(N,g){const place=new Map();for(const fs of N.info.filesystems){const ds=Array.isArray(fs.disks)?fs.disks:[];const d=(g.disks||[]).find(d=>d&&d.path&&ds.includes('drive-'+d.key));if(d)place.set(fs.id,d);}return place;}
 function nestPass(){
   for(const H of HARV)H.nestIn=null;
   // `lastNest`: the guest a harvester was last matched to. It keeps that identity while it, or its hypervisor's
@@ -776,8 +779,12 @@ function nestPass(){
     for(const T of P.info.targets){if(T.kind!=='lvm_thin'||!Array.isArray(T.guests)||!P.roots.has(T.name))continue;
       for(const g of T.guests){if(!g||g.type!=='qemu'||!g.uuid)continue;const id=String(g.uuid).toLowerCase();
         const N=HARV.find(h=>h!==P&&h.status==='ok'&&!h.nestIn&&h.info.machine&&h.info.machine.uuid&&String(h.info.machine.uuid).toLowerCase()===id);if(!N)continue;
-        const place=new Map();for(const fs of N.info.filesystems){const ds=Array.isArray(fs.disks)?fs.disks:[];const d=(g.disks||[]).find(d=>d&&d.path&&ds.includes('drive-'+d.key));if(d)place.set(fs.id,d);}
-        if(place.size)N.nestIn={P,T,g,place};}}}
+        const place=placeOf(N,g);if(place.size){N.nestIn={P,T,g,place};N.heldNest={P,T,g,at:Date.now()};}}}}
+  // A hypervisor's guest list can miss a guest for a poll (its config unreadable for a moment): the guest keeps the
+  // match it had for a few minutes while both harvesters answer, so the VM does not jump out to the top level and
+  // back, moving every machine on the map.
+  for(const N of HARV){const h=N.heldNest;if(N.nestIn||!h||N.status!=='ok'||h.P.status!=='ok'||Date.now()-h.at>NEST_HOLD_MS)continue;
+    const place=placeOf(N,h.g);if(place.size)N.nestIn={P:h.P,T:h.P.targets.get(h.T.name)||h.T,g:h.g,place};}
   for(const H of HARV){if(H.nestIn)H.lastNest={P:H.nestIn.P,g:H.nestIn.g};else if(H.lastNest&&H.status==='ok'&&H.lastNest.P.status==='ok')H.lastNest=null;}
 }
 function attachNest(){
@@ -1711,10 +1718,11 @@ function bmBuildCells(W,H){
   const want=new Set();for(let t=BM.want;t;t=t.p)want.add(t);
   let moving=false,fading=false,deferred=false;
   const root=cellOf(ROOT,BM.root.poly,0);root.al=1;out.push(root);
-  (function rec(c){const n=c.n,ks=bmKids(n),b=c.wbb,sa=c.wA*k*k,forced=want.has(n);
+  (function rec(c){const n=c.n,ks=bmKids(n),b=c.wbb,sa=c.wA*k*k,forced=want.has(n),kept=BM.keep&&BM.keep.has(n.id);
     const shut=()=>{c.leaf=true;c.box=false;c.kf=1;};
     if(!ks.length)return shut();
-    if(c.d>0&&!forced&&(sa<KID_MIN||b[2]<vx0||b[0]>vx1||b[3]<vy0||b[1]>vy1))return shut();
+    // the groups the camera holds on to stay open wherever this pass moves them: the camera follows them after it
+    if(c.d>0&&!forced&&(sa<KID_MIN||!kept&&(b[2]<vx0||b[0]>vx1||b[3]<vy0||b[1]>vy1)))return shut();
     let kids=[];for(const x of ks){const v=weightOf(n,x);if(v>0)kids.push({n:x,v,st:cellState(x.id)});}if(!kids.length)return shut();
     kids.sort((a,b)=>b.v-a.v);
     // Siblings under 1.2% (two or more), and past MAXK, fold into one cell: zooming into it shows them. A child shown
@@ -1806,8 +1814,8 @@ function bmRelayout(step){SIZE_GEN++;
   if(cells&&(BM.csW!==W||BM.csH!==H)){if(BM.csW)worldStretch(W/BM.csW,H/BM.csH,W,H);BM.csW=W;BM.csH=H;}
   // a node held since before a tree reload is a detached copy: fly to the current one with its id
   if(cells&&BM.flyReq){const n=BM.flyReq.n,f=n&&n!==ROOT&&!n.rest&&n.id?findById(n.id):null;if(f&&f.id===n.id)BM.flyReq.n=f;BM.want=BM.flyReq.n===ROOT?null:BM.flyReq.n;}
-  BM.restOf=new Map();BM.cells=cells?bmBuildCells(W,H):bmBuildBlocks(W,H);BM.cellsBuilt=cells;if(anchor)camFollow(anchor,W,H);BM.layGen=BM.camGen;
-  BM.byNode=new Map(BM.cells.map(c=>[c.n,c]));BM.byId=new Map(BM.cells.map(c=>[c.n.id,c]));
+  BM.restOf=new Map();BM.keep=anchor?new Set(anchor.chain):null;BM.cells=cells?bmBuildCells(W,H):bmBuildBlocks(W,H);BM.keep=null;BM.cellsBuilt=cells;BM.layGen=BM.camGen;
+  BM.byNode=new Map(BM.cells.map(c=>[c.n,c]));BM.byId=new Map(BM.cells.map(c=>[c.n.id,c]));if(anchor)camFollow(anchor,W,H);
   camProject(W,H);
   if(cells&&BM.flyReq){const fr=BM.flyReq;BM.flyReq=null;const c=BM.byNode.get(fr.n)||BM.byNode.get(drawnNode(fr.n));if(c)flyTo(camFor(c,W,H),fr.jump);}
   if(cells){camContext(W,H);camDeepen(W,H);}
@@ -1822,13 +1830,16 @@ function camProject(W,H){const {k,x,y}=BM.layout==='cells'?BM.cam:CAM1;
 // Groups keep their layouts by node id, and their children follow their outlines: the world stretches with the canvas.
 function worldStretch(sx,sy,W,H){const c=BM.cam;
   c.x=W/2-(W/sx/2-c.x)*sx;c.y=H/2-(H/sy/2-c.y)*sy;camClamp(c,W,H);BM.fly=BM.zt=BM.vel=null;camMoved();}
-// The camera holds on to the deepest open group under the view's centre that fills at least half the view: when a
-// relayout moves that group (a size changed somewhere above it), the camera moves with it, so what is on screen
-// stays put however deep the view is.
+// The camera holds on to the deepest cell under the view's centre that fills at least a quarter of the view: when a
+// relayout moves it (a size changed somewhere above it), the camera moves with it, so what is on screen stays put
+// however deep the view is. The cells around it keep their places in its parent, which this pass keeps open. If that
+// cell is gone (folded into "N smaller"), the camera holds on to the nearest of its ancestors still there.
 function camAnchor(W,H){const cam=BM.cam;if(cam.k<1.05||BM.fly)return null;const wx=(W/2-cam.x)/cam.k,wy=(H/2-cam.y)/cam.k;let best=null;
-  for(const c of BM.cells){if(!c.box||c.d===0||c.al<.5||c.A<W*H*.5||(best&&c.d<=best.d))continue;const b=c.wbb;if(wx<b[0]||wx>b[2]||wy<b[1]||wy>b[3]||!pIn(c.wp,wx,wy))continue;best=c;}
-  const g=best&&BM.cs.get(best.n.id+'|g');if(!g||!g.fo)return null;return {id:best.n.id,ux:(wx-g.fo[0])/g.ff,uy:(wy-g.fo[1])/g.ff};}
-function camFollow(a,W,H){const g=BM.cs.get(a.id+'|g');if(!g||!g.fo||BM.fly)return;const c=BM.cam,x=W/2-(g.fo[0]+a.ux*g.ff)*c.k,y=H/2-(g.fo[1]+a.uy*g.ff)*c.k;
+  for(const c of BM.cells){if(c.d===0||c.al<.5||c.A<W*H*.25||(best&&c.d<=best.d))continue;const b=c.wbb;if(wx<b[0]||wx>b[2]||wy<b[1]||wy>b[3]||!pIn(c.wp,wx,wy))continue;best=c;}
+  if(!best)return null;const at=new Map();for(let c=best;c&&c.d>0;c=c.par){const o=pCen(c.wp),s=Math.sqrt(c.wA);at.set(c.n.id,[(wx-o[0])/s,(wy-o[1])/s]);}
+  return {chain:[...at.keys()],at};}
+function camFollow(a,W,H){if(BM.fly)return;let c0=null;for(const id of a.chain)if((c0=BM.byId.get(id)))break;if(!c0)return;
+  const [ux,uy]=a.at.get(c0.n.id),o=pCen(c0.wp),s=Math.sqrt(c0.wA),c=BM.cam,x=W/2-(o[0]+ux*s)*c.k,y=H/2-(o[1]+uy*s)*c.k;
   if(Math.abs(x-c.x)+Math.abs(y-c.y)<.05)return;c.x=x;c.y=y;camClamp(c,W,H);camMoved();}
 // The cell the camera is in (the trail's end): the deepest one under the centre that covers most of the view, or
 // the one it flew to.
