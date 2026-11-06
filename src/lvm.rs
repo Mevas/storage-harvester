@@ -4,13 +4,20 @@
 //! - A disk's size is its *allocated* thin blocks, what the pool spends on it. Its provisioned
 //!   size, what the guest sees, rides along as `p`.
 //! - A running container's root disk also holds the container's own directories, walked from
-//!   the host through `/proc/<pid>/root`. A VM's disks are opaque here; a harvester inside the
-//!   VM fills them in on the atlas, matched by SMBIOS UUID and disk serial.
+//!   the host through `/proc/<pid>/root`, and its filesystem's use (`statvfs`). A stopped
+//!   container's disks show their ext4 use from the superblock, read without mounting.
+//! - A running VM's disks show their filesystems' use, from the QEMU guest agent
+//!   (`qm guest cmd <vmid> get-fsinfo`) when the VM has one; filesystems on disks outside the
+//!   pool (iSCSI) ride along with their serial. A harvester inside the VM fills its disks in
+//!   with folders on the atlas, matched by SMBIOS UUID and disk serial.
+//! - An inactive volume's allocation cannot be read; its share of the pool's use that no
+//!   active volume accounts for stands in, marked `estimated`.
 //! - Allocation and I/O are followed live by polling device-mapper every
 //!   `live.block_poll_interval`.
 //!
 //! Everything is read-only:
 //! - `lvs` (at each scan): the pool's thin volumes, active or not.
+//! - `qm guest cmd <vmid> get-fsinfo` (at each scan, VMs with `agent` on).
 //! - `dmsetup table` (at each scan) and device-mapper status (each poll, by ioctl; `dmsetup
 //!   status` if that fails): the pool's chunk size and usage, and each active
 //!   volume's mapped sectors.
@@ -76,6 +83,50 @@ pub struct Guest {
     pub uuid: Option<String>,
     pub node: u32,
     pub disks: Vec<Disk>,
+    /// The guest agent answered at the last scan (`None`: not asked, no agent configured).
+    pub agent: Option<bool>,
+    /// Filesystems the guest agent reports on disks outside this pool (an iSCSI LUN).
+    pub remote_fs: Vec<GuestFs>,
+}
+
+/// A filesystem inside a guest, as the guest agent, a walk or a superblock tells it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GuestFs {
+    pub mount: String,
+    pub fstype: String,
+    /// The guest's device name (`sda1`), when known.
+    pub dev: String,
+    pub used: u64,
+    pub size: u64,
+    /// The filesystem's own metadata (journal, inode tables): the volume's size less `size`.
+    pub overhead: Option<u64>,
+    /// `agent`, `walk` (statvfs of a running container's root) or `superblock`.
+    pub from: &'static str,
+    /// The disk's serial and bus as the guest sees them (for filesystems outside the pool).
+    pub serial: Option<String>,
+    pub bus: Option<String>,
+}
+
+impl GuestFs {
+    fn to_json(&self) -> Value {
+        let mut object = json!({
+            "mount": self.mount, "type": self.fstype, "used": self.used, "size": self.size,
+            "from": self.from,
+        });
+        if !self.dev.is_empty() {
+            object["dev"] = json!(self.dev);
+        }
+        if let Some(overhead) = self.overhead {
+            object["overhead"] = json!(overhead);
+        }
+        if let Some(serial) = &self.serial {
+            object["serial"] = json!(serial);
+        }
+        if let Some(bus) = &self.bus {
+            object["bus"] = json!(bus);
+        }
+        object
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -111,6 +162,13 @@ pub struct Disk {
     /// Mapped thin blocks, as last seen; `None` until the volume has been active once (LVM
     /// cannot tell an inactive volume's allocation).
     pub allocated: Option<u64>,
+    /// For a volume never seen active: its share of the pool's use no active volume accounts
+    /// for. The node is sized by it until the volume is active.
+    pub estimated: Option<u64>,
+    /// Its filesystems and their use: see [`GuestFs`].
+    pub fs: Vec<GuestFs>,
+    /// Where a container mounts it (`/` for `rootfs`, `mp=` for a mount point).
+    pub mount: Option<String>,
     /// The guest passes TRIM through, so blocks it frees return to the pool.
     pub discard: bool,
     /// Its node holds the container's walked directories.
@@ -136,6 +194,8 @@ struct ThinVolume {
     lv: String,
     size: u64,
     active: bool,
+    /// A snapshot's origin: it shares that volume's blocks.
+    origin: Option<String>,
 }
 
 fn parse_lvs(text: &str, pool: &str) -> Result<Vec<ThinVolume>> {
@@ -151,6 +211,10 @@ fn parse_lvs(text: &str, pool: &str) -> Result<Vec<ThinVolume>> {
                 lv: row["lv_name"].as_str()?.to_string(),
                 size: row["lv_size"].as_str()?.parse().ok()?,
                 active: row["lv_active"].as_str() == Some("active"),
+                origin: row["origin"]
+                    .as_str()
+                    .filter(|origin| !origin.is_empty())
+                    .map(str::to_string),
             })
         })
         .collect())
@@ -251,8 +315,12 @@ struct GuestConfig {
     name: Option<String>,
     uuid: Option<String>,
     template: bool,
+    /// `agent: 1` (or `enabled=1`): the VM runs the QEMU guest agent.
+    agent: bool,
     /// `(key, storage, volume, discard)`.
     volumes: Vec<(String, String, String, bool)>,
+    /// A container's mount points: key → where it mounts (`mp=`).
+    mounts: Vec<(String, String)>,
 }
 
 fn is_volume_key(key: &str, kind: GuestKind) -> bool {
@@ -287,6 +355,11 @@ fn parse_guest_config(text: &str, kind: GuestKind) -> GuestConfig {
             "name" if kind == GuestKind::Qemu => config.name = Some(value.to_string()),
             "hostname" if kind == GuestKind::Lxc => config.name = Some(value.to_string()),
             "template" => config.template = value == "1",
+            "agent" if kind == GuestKind::Qemu => {
+                config.agent = value
+                    .split(',')
+                    .any(|part| part == "1" || part == "enabled=1");
+            }
             "smbios1" => {
                 config.uuid = value
                     .split(',')
@@ -306,6 +379,19 @@ fn parse_guest_config(text: &str, kind: GuestKind) -> GuestConfig {
                     continue;
                 }
                 let options: Vec<&str> = parts.collect();
+                if kind == GuestKind::Lxc {
+                    let mount = if key == "rootfs" {
+                        Some("/".to_string())
+                    } else {
+                        options
+                            .iter()
+                            .find_map(|o| o.strip_prefix("mp="))
+                            .map(str::to_string)
+                    };
+                    if let Some(mount) = mount {
+                        config.mounts.push((key.to_string(), mount));
+                    }
+                }
                 let discard = options.contains(&"discard=on")
                     || options
                         .iter()
@@ -629,7 +715,7 @@ impl Scanner for LvmScanner {
                     "b",
                     "--nosuffix",
                     "-o",
-                    "lv_name,pool_lv,lv_size,lv_active",
+                    "lv_name,pool_lv,lv_size,lv_active,origin",
                     &lvm.vg,
                 ],
                 COMMAND_DEADLINE,
@@ -684,6 +770,9 @@ impl Scanner for LvmScanner {
             };
             let display = PathBuf::from(tree.display_path(guest.disks[disk_index].node));
             let budget = target.tree_max_directories.saturating_sub(tree.nodes.len());
+            if let Some(fs) = walked_fs(&root, &guest.disks[disk_index]) {
+                pool.guests[guest_index].disks[disk_index].fs.push(fs);
+            }
             match walk_container(target, &root, display, budget, cancel) {
                 Ok(result) => {
                     walks.add(&result);
@@ -699,6 +788,24 @@ impl Scanner for LvmScanner {
                 }
             }
         }
+        // Stopped containers: their volumes' ext4 superblocks.
+        for guest in &mut pool.guests {
+            if guest.kind != GuestKind::Lxc || guest.running {
+                continue;
+            }
+            for disk in &mut guest.disks {
+                if disk.allocated.is_some() {
+                    disk.fs.extend(stopped_volume_fs(disk));
+                }
+            }
+        }
+        let agents: HashSet<u32> = inputs
+            .guests
+            .iter()
+            .filter(|(_, kind, config)| *kind == GuestKind::Qemu && config.agent)
+            .map(|(vmid, _, _)| *vmid)
+            .collect();
+        read_agents(&mut pool, &agents, cancel);
         pool.reindex();
         tree.pool = Some(Box::new(pool));
         let observations = native::reported(target, &tree);
@@ -824,6 +931,9 @@ fn build(target: &Target, lvm: &LvmTarget, inputs: &Inputs) -> Result<(Pool, Dir
             active: mapped.is_some(),
             size: volume.size,
             allocated: mapped.map(|sectors| sectors * SECTOR),
+            estimated: None,
+            fs: Vec::new(),
+            mount: None,
             discard,
             walked: false,
             node: NONE,
@@ -845,7 +955,13 @@ fn build(target: &Target, lvm: &LvmTarget, inputs: &Inputs) -> Result<(Pool, Dir
             .filter_map(|(key, _, volume, discard)| {
                 let volume = volumes.get(volume.as_str())?;
                 claimed.insert(volume.lv.clone());
-                Some(disk(key, volume, *discard))
+                let mut disk = disk(key, volume, *discard);
+                disk.mount = config
+                    .mounts
+                    .iter()
+                    .find(|(k, _)| k == key)
+                    .map(|(_, mount)| mount.clone());
+                Some(disk)
             })
             .collect();
         if disks.is_empty() {
@@ -866,6 +982,8 @@ fn build(target: &Target, lvm: &LvmTarget, inputs: &Inputs) -> Result<(Pool, Dir
             uuid: config.uuid.clone(),
             node: NONE,
             disks,
+            agent: None,
+            remote_fs: Vec::new(),
         });
     }
     let unattached: Vec<Disk> = inputs
@@ -884,8 +1002,11 @@ fn build(target: &Target, lvm: &LvmTarget, inputs: &Inputs) -> Result<(Pool, Dir
             uuid: None,
             node: NONE,
             disks: unattached,
+            agent: None,
+            remote_fs: Vec::new(),
         });
     }
+    estimate_inactive(&mut guests, used, &inputs.volumes);
 
     let mut nodes = vec![synthetic("", NONE, 0)];
     for guest in &mut guests {
@@ -899,7 +1020,7 @@ fn build(target: &Target, lvm: &LvmTarget, inputs: &Inputs) -> Result<(Pool, Dir
         for disk in &mut guest.disks {
             disk.node = nodes.len() as u32;
             let mut node = synthetic(&disk.key, guest.node, 2);
-            let bytes = disk.allocated.unwrap_or(0);
+            let bytes = disk.allocated.or(disk.estimated).unwrap_or(0);
             node.direct.add_size(bytes, bytes);
             disk.unaccounted = bytes;
             nodes.push(node);
@@ -951,6 +1072,217 @@ fn build(target: &Target, lvm: &LvmTarget, inputs: &Inputs) -> Result<(Pool, Dir
     pool.reindex();
     Ok((pool, tree))
 }
+
+/// Gives the volumes never seen active their share of the pool's use that no active volume
+/// accounts for, by provisioned size (each at most its size). Not when the pool holds thin
+/// snapshots: those share blocks, so the difference says nothing about any one volume.
+fn estimate_inactive(guests: &mut [Guest], pool_used: u64, volumes: &[ThinVolume]) {
+    if volumes.iter().any(|volume| volume.origin.is_some()) {
+        return;
+    }
+    let disks = || guests.iter().flat_map(|guest| guest.disks.iter());
+    let active: u64 = disks().filter_map(|disk| disk.allocated).sum();
+    let unknown: u64 = disks()
+        .filter(|disk| disk.allocated.is_none())
+        .map(|disk| disk.size)
+        .sum();
+    let rest = pool_used.saturating_sub(active);
+    if unknown == 0 || rest == 0 {
+        return;
+    }
+    for disk in guests.iter_mut().flat_map(|guest| guest.disks.iter_mut()) {
+        if disk.allocated.is_none() {
+            let share = (rest as u128 * disk.size as u128 / unknown as u128) as u64;
+            disk.estimated = Some(share.min(disk.size));
+        }
+    }
+}
+
+/// An ext4 superblock (the 1024 bytes at offset 1024): `(used, size, overhead)` in bytes,
+/// where `used` counts every block not free (metadata included) and `size` every block.
+fn ext4_usage(sb: &[u8]) -> Option<(u64, u64, Option<u64>)> {
+    let u32_at = |at: usize| -> u64 {
+        sb.get(at..at + 4)
+            .map_or(0, |b| u32::from_le_bytes(b.try_into().unwrap()) as u64)
+    };
+    if sb.len() < 1024 || u16::from_le_bytes([sb[56], sb[57]]) != 0xEF53 {
+        return None;
+    }
+    let block = 1024u64 << u32_at(24).min(16);
+    let wide = u32_at(96) & 0x80 != 0;
+    let blocks = u32_at(4) | if wide { u32_at(0x150) << 32 } else { 0 };
+    let free = u32_at(12) | if wide { u32_at(0x158) << 32 } else { 0 };
+    let overhead = u32_at(0x248);
+    Some((
+        blocks.saturating_sub(free) * block,
+        blocks * block,
+        (overhead > 0).then_some(overhead * block),
+    ))
+}
+
+/// A stopped container's ext4 volume, read from its superblock: no mount, so a start meanwhile
+/// is never blocked. Its free counts are the ones written when it was last unmounted.
+fn stopped_volume_fs(disk: &Disk) -> Option<GuestFs> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut device = fs::File::open(format!("/dev/mapper/{}", disk.dm)).ok()?;
+    device.seek(SeekFrom::Start(1024)).ok()?;
+    let mut sb = vec![0u8; 1024];
+    device.read_exact(&mut sb).ok()?;
+    let (used, size, overhead) = ext4_usage(&sb)?;
+    Some(GuestFs {
+        mount: disk.mount.clone().unwrap_or_default(),
+        fstype: "ext4".to_string(),
+        dev: String::new(),
+        used,
+        size,
+        overhead,
+        from: "superblock",
+        serial: None,
+        bus: None,
+    })
+}
+
+/// A running container's root filesystem by `statvfs` through the walk's descriptor.
+fn walked_fs(root: &fs::File, disk: &Disk) -> Option<GuestFs> {
+    use std::os::fd::AsRawFd;
+    let mut stat = std::mem::MaybeUninit::<libc::statvfs>::uninit();
+    // SAFETY: `root` is an open descriptor and `stat` is valid for writes.
+    if unsafe { libc::fstatvfs(root.as_raw_fd(), stat.as_mut_ptr()) } != 0 {
+        return None;
+    }
+    // SAFETY: `fstatvfs` succeeded.
+    let stat = unsafe { stat.assume_init() };
+    #[allow(clippy::unnecessary_cast)]
+    let (blocks, free, frsize) = (
+        stat.f_blocks as u64,
+        stat.f_bfree as u64,
+        stat.f_frsize as u64,
+    );
+    let size = blocks * frsize;
+    Some(GuestFs {
+        mount: disk.mount.clone().unwrap_or_else(|| "/".to_string()),
+        fstype: fstype_of(root).to_string(),
+        dev: String::new(),
+        used: blocks.saturating_sub(free) * frsize,
+        size,
+        overhead: Some(disk.size.saturating_sub(size)),
+        from: "walk",
+        serial: None,
+        bus: None,
+    })
+}
+
+/// The filesystem type behind a descriptor, by `fstatfs` magic, for the common ones.
+#[cfg(target_os = "linux")]
+fn fstype_of(file: &fs::File) -> &'static str {
+    use std::os::fd::AsRawFd;
+    let mut stat = std::mem::MaybeUninit::<libc::statfs>::uninit();
+    // SAFETY: `file` is an open descriptor and `stat` is valid for writes.
+    if unsafe { libc::fstatfs(file.as_raw_fd(), stat.as_mut_ptr()) } != 0 {
+        return "";
+    }
+    // SAFETY: `fstatfs` succeeded.
+    #[allow(clippy::unnecessary_cast)]
+    match unsafe { stat.assume_init() }.f_type as i64 {
+        0xEF53 => "ext4",
+        0x5846_5342 => "xfs",
+        0x9123_683E => "btrfs",
+        0x2FC1_2FC1 => "zfs",
+        _ => "",
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn fstype_of(_: &fs::File) -> &'static str {
+    ""
+}
+
+/// `get-fsinfo` from a VM's guest agent: each filesystem on a disk, once (a filesystem
+/// mounted at several places keeps its shortest mount point), as `(disk key or None, fs)`.
+/// The key comes from QEMU's serial `…drive-scsi0`; any other serial is a disk outside
+/// Proxmox's config (an iSCSI LUN the guest logs in to itself).
+fn parse_agent_fsinfo(text: &str) -> Vec<(Option<String>, GuestFs)> {
+    let Ok(Value::Array(entries)) = serde_json::from_str::<Value>(text) else {
+        return Vec::new();
+    };
+    let mut out: Vec<(Option<String>, GuestFs)> = Vec::new();
+    for entry in &entries {
+        let (Some(used), Some(size)) = (
+            entry["used-bytes"].as_u64(),
+            entry["total-bytes-privileged"]
+                .as_u64()
+                .or(entry["total-bytes"].as_u64()),
+        ) else {
+            continue;
+        };
+        let Some(disk) = entry["disk"].as_array().and_then(|disks| disks.first()) else {
+            continue;
+        };
+        let serial = disk["serial"].as_str().unwrap_or_default();
+        let key = serial
+            .rsplit_once("drive-")
+            .map(|(_, key)| key.to_string())
+            .filter(|key| !key.is_empty());
+        let fs = GuestFs {
+            mount: entry["mountpoint"].as_str().unwrap_or_default().to_string(),
+            fstype: entry["type"].as_str().unwrap_or_default().to_string(),
+            dev: entry["name"].as_str().unwrap_or_default().to_string(),
+            used,
+            size,
+            overhead: None,
+            from: "agent",
+            serial: (key.is_none() && !serial.is_empty()).then(|| serial.to_string()),
+            bus: disk["bus-type"].as_str().map(str::to_string),
+        };
+        match out
+            .iter_mut()
+            .find(|(_, seen)| !fs.dev.is_empty() && seen.dev == fs.dev)
+        {
+            Some(seen) if fs.mount.len() < seen.1.mount.len() => *seen = (key, fs),
+            Some(_) => {}
+            None => out.push((key, fs)),
+        }
+    }
+    out
+}
+
+/// Asks running VMs with a guest agent for their filesystems.
+fn read_agents(pool: &mut Pool, agents: &HashSet<u32>, cancel: &AtomicBool) {
+    for guest in &mut pool.guests {
+        let Some(vmid) = guest.vmid else { continue };
+        if guest.kind != GuestKind::Qemu || !guest.running || !agents.contains(&vmid) {
+            continue;
+        }
+        if cancel.load(Ordering::Relaxed) {
+            return;
+        }
+        let answer = run(
+            "qm",
+            &["guest", "cmd", &vmid.to_string(), "get-fsinfo"],
+            AGENT_DEADLINE,
+        );
+        let Ok(text) = answer else {
+            guest.agent = Some(false);
+            continue;
+        };
+        guest.agent = Some(true);
+        for (key, fs) in parse_agent_fsinfo(&text) {
+            match key.and_then(|key| guest.disks.iter_mut().find(|disk| disk.key == key)) {
+                Some(disk) => disk.fs.push(fs),
+                // On a disk this pool does not hold: an iSCSI LUN, a passed-through disk, or
+                // a volume on another storage.
+                None if fs.serial.is_some() || fs.bus.as_deref() == Some("unknown") => {
+                    guest.remote_fs.push(fs)
+                }
+                None => {}
+            }
+        }
+    }
+}
+
+/// How long `qm guest cmd` may take: the agent answers in milliseconds, `qm` itself starts in
+/// about half a second.
+const AGENT_DEADLINE: Duration = Duration::from_secs(15);
 
 /// Opens a running container's root directory through its init process, and checks that it
 /// is on the container's own volume (`major:minor`). A PID reused by a host process since
@@ -1082,6 +1414,9 @@ impl Pool {
                 if !disk.active {
                     object.insert("inactive".into(), json!(true));
                 }
+                if disk.allocated.is_none() && disk.estimated.is_some() {
+                    object.insert("est".into(), json!(true));
+                }
             }
         }
     }
@@ -1106,10 +1441,14 @@ impl Pool {
                         "vmid": guest.vmid, "name": guest.name, "type": guest.kind.as_str(),
                         "running": guest.running, "template": guest.template,
                         "uuid": guest.uuid, "path": tree.display_path(guest.node),
+                        "agent": guest.agent,
+                        "remote_fs": guest.remote_fs.iter().map(GuestFs::to_json).collect::<Vec<_>>(),
                         "disks": guest.disks.iter().map(|disk| json!({
                             "key": disk.key, "lv": disk.lv, "path": tree.display_path(disk.node),
                             "size": disk.size, "allocated": disk.allocated, "active": disk.active,
+                            "estimated": disk.estimated, "mount": disk.mount,
                             "discard": disk.discard, "walked": disk.walked,
+                            "fs": disk.fs.iter().map(GuestFs::to_json).collect::<Vec<_>>(),
                             "write_rate": disk.write_rate, "read_rate": disk.read_rate,
                         })).collect::<Vec<_>>(),
                     })
@@ -1140,6 +1479,7 @@ fn set_allocated(tree: &mut DirTree, disk: &mut Disk, allocated: u64) -> (Delta,
         .total_blocks()
         .saturating_sub(disk.unaccounted);
     disk.allocated = Some(allocated);
+    disk.estimated = None;
     if disk.walked && allocated < files {
         let before = tree.nodes[node].sub;
         let own = Delta {
@@ -1563,12 +1903,16 @@ sata0: local-lvm:vm-103-disk-1,size=32G
         assert_eq!(names, ["NUC", "tailscale", "hassos", "Unattached"]);
         let nuc = tree.find("/local-lvm/NUC (100)/scsi0").unwrap();
         assert_eq!(tree.nodes[nuc as usize].total_blocks(), 248346880 * 512);
-        // An inactive volume: listed, size unknown.
+        // An inactive volume: listed, allocation unknown, sized by the pool's use no active
+        // volume accounts for (here more than its size, so its size).
         let hassos = &pool.guests[2].disks[0];
         assert_eq!(
             (hassos.active, hassos.allocated, hassos.size),
             (false, None, 34359738368)
         );
+        assert_eq!(hassos.estimated, Some(34359738368));
+        let hassos_node = tree.find("/local-lvm/hassos (103)/sata0").unwrap();
+        assert_eq!(tree.nodes[hassos_node as usize].total_blocks(), 34359738368);
         // Counters as of the scan, not zero until the first poll.
         let scsi0 = &pool.guests[0].disks[0];
         assert_eq!((scsi0.read, scsi0.written), (10 * 512, 20 * 512));
@@ -1577,7 +1921,7 @@ sata0: local-lvm:vm-103-disk-1,size=32G
             .guests
             .iter()
             .flat_map(|g| &g.disks)
-            .filter_map(|d| d.allocated)
+            .filter_map(|d| d.allocated.or(d.estimated))
             .sum();
         assert_eq!(tree.root().total_blocks(), disks);
 
@@ -1590,6 +1934,118 @@ sata0: local-lvm:vm-103-disk-1,size=32G
         assert!(reported
             .iter()
             .any(|o| o.path == "/local-lvm/NUC (100)/scsi0"));
+    }
+
+    #[test]
+    fn inactive_volumes_share_what_active_ones_leave() {
+        let (mut pool, _) = build(&target(), target().lvm.as_ref().unwrap(), &inputs()).unwrap();
+        for disk in pool.guests.iter_mut().flat_map(|g| g.disks.iter_mut()) {
+            disk.estimated = None;
+        }
+        let active: u64 = pool
+            .guests
+            .iter()
+            .flat_map(|g| &g.disks)
+            .filter_map(|d| d.allocated)
+            .sum();
+        let volumes = parse_lvs(LVS, "data").unwrap();
+        estimate_inactive(&mut pool.guests, active + 1_000_000, &volumes);
+        assert_eq!(pool.guests[2].disks[0].estimated, Some(1_000_000));
+        // Thin snapshots share blocks: no estimate then.
+        let mut snapshots = volumes.clone();
+        snapshots[1].origin = Some("vm-100-disk-0".to_string());
+        pool.guests[2].disks[0].estimated = None;
+        estimate_inactive(&mut pool.guests, active + 1_000_000, &snapshots);
+        assert_eq!(pool.guests[2].disks[0].estimated, None);
+    }
+
+    #[test]
+    fn guest_configs_say_agent_and_mount_points() {
+        let qemu = parse_guest_config(
+            "agent: 1,fstrim_cloned_disks=1\nname: hassos\n",
+            GuestKind::Qemu,
+        );
+        assert!(qemu.agent);
+        assert!(parse_guest_config("agent: enabled=1,type=virtio\n", GuestKind::Qemu).agent);
+        assert!(!parse_guest_config("agent: 0\n", GuestKind::Qemu).agent);
+        let lxc = parse_guest_config(
+            "rootfs: local-lvm:vm-107-disk-0,size=25G\nmp0: local-lvm:vm-107-disk-1,mp=/var/ossec,size=8G\n",
+            GuestKind::Lxc,
+        );
+        assert_eq!(
+            lxc.mounts,
+            [
+                ("rootfs".to_string(), "/".to_string()),
+                ("mp0".to_string(), "/var/ossec".to_string())
+            ]
+        );
+    }
+
+    /// `qm guest cmd 108 get-fsinfo` on the PBS VM (2026-11-06), trimmed: its datastore is an
+    /// iSCSI LUN from the NAS, its root an LVM volume on scsi0, and one filesystem is mounted
+    /// twice.
+    const FSINFO: &str = r#"[
+      {"disk":[{"bus":0,"bus-type":"unknown","dev":"/dev/sdb1","serial":"360014056bae022adfb7cd4f96db6f8d5","target":0,"unit":0}],
+       "mountpoint":"/mnt/synology","name":"sdb1","total-bytes":1026106826752,"total-bytes-privileged":1081099079680,"type":"ext4","used-bytes":486527057920},
+      {"disk":[{"bus":0,"bus-type":"scsi","dev":"/dev/sda2","serial":"0QEMU_QEMU_HARDDISK_drive-scsi0","target":0,"unit":0}],
+       "mountpoint":"/boot/efi","name":"sda2","total-bytes":1071624192,"total-bytes-privileged":1071624192,"type":"vfat","used-bytes":9461760},
+      {"disk":[{"bus":0,"bus-type":"scsi","dev":"/dev/sda3","serial":"0QEMU_QEMU_HARDDISK_drive-scsi0","target":0,"unit":0}],
+       "mountpoint":"/var/lib/x","name":"dm-1","total-bytes":252723838976,"type":"ext4","used-bytes":29099196416},
+      {"disk":[{"bus":0,"bus-type":"scsi","dev":"/dev/sda3","serial":"0QEMU_QEMU_HARDDISK_drive-scsi0","target":0,"unit":0}],
+       "mountpoint":"/","name":"dm-1","total-bytes":252723838976,"type":"ext4","used-bytes":29099196416},
+      {"disk":[],"mountpoint":"/tmp","name":"zram0","total-bytes":1000,"type":"ext4","used-bytes":10},
+      {"disk":[{"bus":0,"bus-type":"scsi","serial":"0QEMU_QEMU_HARDDISK_drive-scsi0"}],"mountpoint":"/proc/x","name":"sda9","type":"proc"}
+    ]"#;
+
+    #[test]
+    fn agent_filesystems_map_to_disks_and_remote_luns() {
+        let found = parse_agent_fsinfo(FSINFO);
+        let summary: Vec<(Option<&str>, &str, u64)> = found
+            .iter()
+            .map(|(key, fs)| (key.as_deref(), fs.mount.as_str(), fs.used))
+            .collect();
+        assert_eq!(
+            summary,
+            [
+                (None, "/mnt/synology", 486527057920),
+                (Some("scsi0"), "/boot/efi", 9461760),
+                (Some("scsi0"), "/", 29099196416),
+            ]
+        );
+        let lun = &found[0].1;
+        assert_eq!(
+            lun.serial.as_deref(),
+            Some("360014056bae022adfb7cd4f96db6f8d5")
+        );
+        assert_eq!(
+            lun.size, 1081099079680,
+            "privileged size: root's reserve is not free space"
+        );
+        assert_eq!(found[1].1.serial, None);
+        assert!(parse_agent_fsinfo("not json").is_empty());
+    }
+
+    #[test]
+    fn ext4_superblocks_give_use_without_mounting() {
+        let mut sb = vec![0u8; 1024];
+        let put =
+            |sb: &mut Vec<u8>, at: usize, v: u32| sb[at..at + 4].copy_from_slice(&v.to_le_bytes());
+        sb[56..58].copy_from_slice(&0xEF53u16.to_le_bytes());
+        put(&mut sb, 24, 2); // 4 KiB blocks
+        put(&mut sb, 4, 6_553_600); // 25 GiB
+        put(&mut sb, 12, 1_000_000);
+        put(&mut sb, 0x248, 150_000);
+        assert_eq!(
+            ext4_usage(&sb),
+            Some((5_553_600 * 4096, 6_553_600 * 4096, Some(150_000 * 4096)))
+        );
+        // 64-bit: the high halves count.
+        put(&mut sb, 96, 0x80);
+        put(&mut sb, 0x150, 1);
+        let (_, size, _) = ext4_usage(&sb).unwrap();
+        assert_eq!(size, ((1u64 << 32) + 6_553_600) * 4096);
+        sb[56] = 0;
+        assert_eq!(ext4_usage(&sb), None);
     }
 
     #[test]
@@ -1718,7 +2174,10 @@ sata0: local-lvm:vm-103-disk-1,size=32G
         };
         let mut last = Counters::new();
 
-        // Started after the scan: picked up by the next poll.
+        // Started after the scan: picked up by the next poll, which replaces the estimate the
+        // scan sized it by (the whole volume here) with its real allocation.
+        let estimate = 34359738368i64;
+        hassos(&|disk| assert_eq!(disk.estimated, Some(estimate as u64)));
         assert!(apply(
             &store,
             lt,
@@ -1726,11 +2185,16 @@ sata0: local-lvm:vm-103-disk-1,size=32G
             &sample(Some(2000), 100, Duration::ZERO),
             &mut last
         ));
-        assert_eq!(total(), before + 2000 * 512);
-        hassos(&|disk| assert_eq!((disk.active, disk.allocated), (true, Some(2000 * 512))));
+        assert_eq!(total() as i64, before as i64 - estimate + 2000 * 512);
+        hassos(&|disk| {
+            assert_eq!(
+                (disk.active, disk.allocated, disk.estimated),
+                (true, Some(2000 * 512), None)
+            )
+        });
         let event: Value = serde_json::from_str(&events.try_recv().unwrap().data).unwrap();
         assert_eq!(event["path"], "/local-lvm/hassos (103)/sata0");
-        assert_eq!(event["db"], 2000 * 512);
+        assert_eq!(event["db"], 2000 * 512 - estimate);
         // Writing: a rate from the second sample on.
         apply(
             &store,
@@ -1761,7 +2225,7 @@ sata0: local-lvm:vm-103-disk-1,size=32G
             &sample(Some(9000), 0, Duration::ZERO),
             &mut last
         ));
-        assert_eq!(total(), before + 2000 * 512);
+        assert_eq!(total() as i64, before as i64 - estimate + 2000 * 512);
     }
 
     /// A scan's reading is older than the polls that ran during it: installing it keeps the

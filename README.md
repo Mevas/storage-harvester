@@ -125,6 +125,27 @@ whole disks each filesystem sits on (`filesystems[].disks`: a QEMU disk reports
 `drive-scsi0`). A Proxmox harvester reports the same for each VM, so the atlas draws a VM's
 harvester inside that VM's disks.
 
+**Machines are physical.** The atlas draws the physical boxes at the top: a harvester inside a
+hypervisor's guest is that guest (`NUC · VM 100`), in its hypervisor's colour, never a machine
+of its own. `machine.virt` (`qemu`, `vmware`, …, from DMI and the CPU's hypervisor flag) says a
+harvester runs in a VM even when its host is not reporting. Every guest shows what the atlas can
+know of it: folders and live changes (a harvester inside), folders (a container walked from the
+host), filesystems (the guest agent, or a stopped container's superblock), or blocks only.
+
+**Nothing is one opaque box.** What no walked folder holds is split into named pieces, from:
+- `machine.disks`: each whole disk under this machine's filesystems, partition by partition
+  (`use`: `fs` with `overhead`, the filesystem's own metadata; `swap` with `swap_used`;
+  `holder` for LVM or md; `thin_pool`). A VM's disk then shows its other filesystems, swap,
+  metadata, and what is left: blocks freed inside it and not trimmed yet.
+- `targets[].skips`: targets inside another by path that its walk never reaches (an excluded
+  folder, another btrfs subvolume). They are drawn beside it, and filesystem totals count them.
+- `filesystems[].btrfs`: btrfs's own split of the devices (`device_size`, `unallocated`, `data`,
+  `metadata` and `system` with their `copies`), and `unwalked`, the subvolumes no target walks
+  grouped by folder (Docker's btrfs layers, snapshots). df counts none of the metadata.
+- Filesystem totals count shared blocks once where a sharing pass has run (a root's `x`).
+- An iSCSI LUN a guest uses (its `remote_fs[].serial`, `36001405` + the LUN's id) is drawn as
+  that guest's filesystem inside the LUN's file on the machine serving it.
+
 ### Block map
 
 Every block is a directory, sized by the blocks it holds. Two layouts:
@@ -151,8 +172,9 @@ Lenses:
   deleting it frees is solid. Threads join folders that share blocks.
 - **Reclaim**: what could come back. Each candidate has its command, and ticking it previews
   the result on the map and in the time machine. The candidates:
-  - untrimmed blocks in running containers' thin volumes (`u`), `pct fstrim <vmid>`;
-  - a VM with its own harvester that holds more than its filesystems use, `fstrim` inside it;
+  - blocks freed inside a guest and not trimmed yet: `pct fstrim <vmid>` for a container,
+    `fstrim` inside a VM, and `fstrim` of an iSCSI LUN's filesystem inside the guest using it
+    (which returns blocks to the machine serving the LUN);
   - folders of at least 8 GiB (and 0.4% of their filesystem) unchanged for 120 days, or
     download and cache folders unchanged for 30.
 - **Kind** and **Machine**: colour by what the folder looks like, or by machine.
@@ -189,13 +211,27 @@ allocation changes become `change` events with
 only (not replayed).
 
 `/api/tree` nodes gain `v` (`pool`, `guest`, `disk`); guests `vmid`, `g` (`qemu`, `lxc`) and
-`on`; disks `key`, `p` (provisioned bytes), `w`/`rd` (bytes/s) and `u` (allocated bytes no
-walked file accounts for). `/api/info` lists the pool as a filesystem (`type: lvmthin`, with
-`provisioned` and thin `meta`) and the target's `guests`, with each VM's SMBIOS UUID.
+`on`; disks `key`, `p` (provisioned bytes), `w`/`rd` (bytes/s), `u` (allocated bytes no
+walked file accounts for) and `est` (sized by an estimate). `/api/info` lists the pool as a
+filesystem (`type: lvmthin`, with `provisioned` and thin `meta`) and the target's `guests`, with
+each VM's SMBIOS UUID.
 
-It needs the host: run the harvester there as root (it only reads), not in a container. Inactive
-volumes are listed with their provisioned size only; LVM cannot tell their allocation until
-they are activated. `lvs` and `dmsetup` are killed after 15 s.
+Each disk in `guests[].disks[].fs` lists the filesystems on it and their use, without logging in
+anywhere:
+- **VMs** with `agent: 1`: the QEMU guest agent's `get-fsinfo` (`qm guest cmd <vmid>
+  get-fsinfo`, at each scan; `from: "agent"`). Filesystems on disks outside the pool, such as an
+  iSCSI LUN the guest logs in to, go in `guests[].remote_fs` with the disk's `serial`. `agent`
+  says whether it answered.
+- **Running containers**: `statvfs` of the walked root (`from: "walk"`, with `overhead`).
+- **Stopped containers**: the ext4 superblock of each volume, read without mounting, so a start
+  is never blocked (`from: "superblock"`; `used` includes metadata).
+
+An inactive volume's allocation cannot be read until it is activated. If the pool holds no thin
+snapshots, the pool's use that no active volume accounts for is shared out among the inactive
+ones by provisioned size (`estimated`, and the tree's `est`), so the pool adds up.
+
+It needs the host: run the harvester there as root (it only reads), not in a container. `lvs`
+and `dmsetup` are killed after 15 s, `qm` after 15 s.
 
 ### Trees
 
